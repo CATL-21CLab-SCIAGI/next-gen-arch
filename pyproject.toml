@@ -1,0 +1,103 @@
+[project]
+name = "next-gen-arch"
+version = "0.1.0"
+description = "A controlled nanochat architecture lab with reproducible ClimbMix scaling results"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [
+    {name = "CATL 21C Lab SCIAGI"},
+]
+keywords = ["language-model", "pytorch", "nanochat", "architecture", "scaling-laws"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "datasets>=4.0.0",
+    "filelock>=3.20.0",
+    "jinja2>=3.1.6",
+    "numpy>=1.26.0",
+    "psutil>=7.1.0",
+    "pyarrow>=21.0.0",
+    "pyyaml>=6.0.3",
+    "requests>=2.32.5",
+    "rustbpe>=0.1.0",
+    "tiktoken>=0.11.0",
+    "tokenizers>=0.22.0",
+    "torch==2.9.1",
+    "wandb>=0.21.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch"
+Issues = "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/issues"
+
+[project.scripts]
+next-gen-arch = "next_gen_arch.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "build>=1.3.0",
+    "pytest>=9.0.0",
+    "ruff>=0.12.0",
+]
+
+[project.optional-dependencies]
+cpu = ["torch==2.9.1"]
+gpu = ["torch==2.9.1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["nanochat", "next_gen_arch", "scripts"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"results/parameter-scale-100m-1b-v1-manifest.json" = "next_gen_arch/data/parameter-scale-100m-1b-v1-manifest.json"
+"results/key-metrics.csv" = "next_gen_arch/data/key-metrics.csv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: long-running or hardware-sensitive tests",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["nanochat", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.uv]
+default-groups = []
+conflicts = [
+    [
+        {extra = "cpu"},
+        {extra = "gpu"},
+    ],
+]
+
+[tool.uv.sources]
+torch = [
+    {index = "pytorch-cpu", extra = "cpu"},
+    {index = "pytorch-cu128", extra = "gpu"},
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

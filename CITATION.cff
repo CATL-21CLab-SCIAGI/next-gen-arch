@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this architecture lab, cite this repository and the original method papers."
+title: "Next-Gen Architecture Lab"
+type: software
+version: 0.1.0
+date-released: 2026-08-24
+license: MIT
+authors:
+  - name: "CATL 21C Lab SCIAGI"
+repository-code: "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch"
+url: "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch"
+keywords:
+  - language models
+  - neural architecture
+  - nanochat
+  - ClimbMix

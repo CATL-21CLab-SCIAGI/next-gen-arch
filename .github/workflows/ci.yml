@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Install CPU environment
+        run: uv sync --extra cpu --group dev
+      - name: Lint maintained tooling
+        run: |
+          uv run ruff check next_gen_arch tests/test_registry.py
+          uv run ruff check --select E9,F63,F7,F82 nanochat scripts
+      - name: Compile source
+        run: uv run python -m compileall -q nanochat next_gen_arch scripts
+      - name: Verify frozen artifacts
+        run: |
+          uv run next-gen-arch verify
+          uv run python -c "from next_gen_arch.results import verify_metrics; print(verify_metrics())"
+      - name: Test
+        env:
+          NANOCHAT_ATTENTION_BACKEND: sdpa
+        run: uv run pytest -m "not slow" -q
+      - name: Build distributions
+        run: uv build

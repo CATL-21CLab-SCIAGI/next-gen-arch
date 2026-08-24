@@ -1,0 +1,33 @@
+name: Experiment proposal
+description: Propose a controlled architecture variant or follow-up.
+title: "[Experiment]: "
+labels: [experiment]
+body:
+  - type: input
+    id: source
+    attributes:
+      label: Primary source
+      description: Paper, official repository, or technical report URL.
+    validations:
+      required: true
+  - type: textarea
+    id: mechanism
+    attributes:
+      label: Isolated mechanism
+      description: State exactly what changes relative to the shared baseline.
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Proposed contract
+      description: Scales, seeds, token budget, controls, metrics, and expected compute.
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and stopping rules
+      description: Numerical, memory, kernel, or attribution risks and fail-fast criteria.
+    validations:
+      required: true

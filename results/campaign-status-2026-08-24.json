@@ -1,0 +1,42 @@
+{
+  "campaign": "parameter-scale-100m-1b-v1",
+  "as_of": "2026-08-24T09:35:00+08:00",
+  "scope": "1B-parameter runs only",
+  "counts": {
+    "complete": 18,
+    "failed": 3,
+    "running": 21,
+    "pending": 6,
+    "total": 48
+  },
+  "completed_three_seed_variants": [
+    "attnres",
+    "baseline",
+    "gated-attention",
+    "glm-mla",
+    "kda",
+    "situ-glu"
+  ],
+  "known_invalid_active_runs": {
+    "mhc": {
+      "runs": 3,
+      "reason": "all three losses became non-finite"
+    },
+    "inkling-relative-attention": {
+      "runs": 2,
+      "reason": "seed 42 and 44 became non-finite"
+    }
+  },
+  "harness_failures": {
+    "engram": {
+      "runs": 3,
+      "reason": "the d12 meta-reference inherited d32 injection layers 7,15,23",
+      "classification": "harness bug, not a model-quality result"
+    }
+  },
+  "pending": [
+    "qwen-gdn seeds 42/43/44",
+    "inkling-sconv-residual seeds 42/43/44"
+  ],
+  "warning": "This is a dated audit snapshot, not a final 1B leaderboard."
+}
