@@ -1,0 +1,7 @@
+extends:
+  - ../base.yaml
+  - ../backends/speedrun.yaml
+  - ../scales/speedrun_100m.yaml
+name: speedrun-qwen-gdn-100m-seed42
+variant: qwen-gdn
+seed: 42

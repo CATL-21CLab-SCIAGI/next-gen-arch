@@ -1,14 +1,14 @@
 [project]
 name = "next-gen-arch"
 version = "0.1.0"
-description = "A controlled nanochat architecture lab with reproducible ClimbMix scaling results"
+description = "A backend-aware architecture lab spanning speedrun experiments and Megatron scaling"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
     {name = "CATL 21C Lab SCIAGI"},
 ]
-keywords = ["language-model", "pytorch", "nanochat", "architecture", "scaling-laws"]
+keywords = ["language-model", "pytorch", "megatron", "architecture", "scaling-laws"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
@@ -57,14 +57,23 @@ cpu = ["torch==2.9.1"]
 gpu = ["torch==2.9.1"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanochat", "next_gen_arch", "scripts"]
+packages = ["src/next_gen_arch"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"results/parameter-scale-100m-1b-v1-manifest.json" = "next_gen_arch/data/parameter-scale-100m-1b-v1-manifest.json"
-"results/key-metrics.csv" = "next_gen_arch/data/key-metrics.csv"
+"results/parameter-scale-100m-1b-v1-manifest.json" = "src/next_gen_arch/data/parameter-scale-100m-1b-v1-manifest.json"
+"results/key-metrics.csv" = "src/next_gen_arch/data/key-metrics.csv"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/third_party",
+    "/.venv",
+    "/dist",
+    "/build",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 markers = [
     "slow: long-running or hardware-sensitive tests",
 ]
@@ -72,7 +81,7 @@ markers = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-extend-exclude = ["nanochat", "scripts"]
+extend-exclude = ["src/next_gen_arch/arch", "src/next_gen_arch/training"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

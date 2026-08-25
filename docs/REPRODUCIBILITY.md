@@ -9,7 +9,9 @@ The repository separates three levels of reproduction:
 ## 1. Install
 
 ```bash
+git submodule update --init --recursive
 uv sync --extra cpu --group dev
+uv run next-gen-arch doctor --backend megatron
 ```
 
 Use `--extra gpu` for the CUDA 12.8 wheel index. The frozen campaign used Python 3.10.12, PyTorch 2.9.1+cu128, CUDA 12.8, BF16, and NVIDIA L20D GPUs. CPU tests are not a throughput reproduction.
@@ -29,7 +31,7 @@ Choose a writable storage directory outside the Git checkout:
 
 ```bash
 export NANOCHAT_BASE_DIR=/path/to/next-gen-arch-data
-uv run python -m nanochat.dataset -n 170
+uv run python -m next_gen_arch.training.dataset -n 170
 ```
 
 The downloader retrieves train shards 0–169 and the fixed validation shard 6542 from the public `karpathy/climbmix-400b-shuffle` dataset. The campaign data directory contained 171 parquet shards and had the following name/size fingerprint:
@@ -53,7 +55,7 @@ The campaign fixed one 32,768-token nanochat BPE for every run. Its recorded art
 You can train a compatible tokenizer for new experiments:
 
 ```bash
-uv run python -m scripts.tok_train \
+uv run python -m next_gen_arch.training.tok_train \
   --vocab-size 32768 \
   --max-chars 2000000000 \
   --doc-cap 10000
@@ -105,7 +107,7 @@ The public manifest retains the frozen experimental source-tree hashes. The cons
 
 ## 7. Numerical failure policy
 
-`scripts/base_train.py` checks:
+`src/next_gen_arch/training/base_train.py` checks:
 
 - validation loss whenever validation runs;
 - every training microstep loss;
@@ -122,6 +124,8 @@ The consolidated trainer maps reference layers proportionally to the target dept
 ## 9. Source and result provenance
 
 - nanochat upstream commit recorded by the campaign: `b9f5025652d51470e2c31117100d9ff48717b911`
+- modded-nanogpt speedrun lineage commit: `f411b3d346aa52d3504324ca93c230fd84c6c07f`
+- Megatron-LM submodule commit: `55ac7082517c3878ae653c07c09c534b8aed49f6`
 - frozen core tree SHA-256: `fc6bf75d17121b3321877d4aede10205fac0b8d4c33ed2e99cb426ca78feec67`
 - frozen Engram fork tree SHA-256: `3ef8c02da5242dfcf3cebe69a24098d7693dcd480473202f691a22ab10ff4652`
 - frozen mHC fork tree SHA-256: `c79b52cc9fc577ef61bdd61858b5bb070c5a3e6a9381d0b04157055d76b9026b`

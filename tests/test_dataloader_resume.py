@@ -8,12 +8,12 @@ if "pyarrow.parquet" not in sys.modules:
     pyarrow.__path__ = []
     sys.modules.setdefault("pyarrow", pyarrow)
     sys.modules["pyarrow.parquet"] = types.ModuleType("pyarrow.parquet")
-if "nanochat.dataset" not in sys.modules:
-    dataset = types.ModuleType("nanochat.dataset")
+if "next_gen_arch.training.dataset" not in sys.modules:
+    dataset = types.ModuleType("next_gen_arch.training.dataset")
     dataset.list_parquet_files = lambda **_: []
-    sys.modules["nanochat.dataset"] = dataset
+    sys.modules["next_gen_arch.training.dataset"] = dataset
 
-import nanochat.dataloader as dataloader
+import next_gen_arch.training.dataloader as dataloader
 
 
 class TinyTokenizer:

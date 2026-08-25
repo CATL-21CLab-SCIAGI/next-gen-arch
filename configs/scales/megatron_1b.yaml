@@ -1,0 +1,23 @@
+model:
+  num_layers: 24
+  hidden_size: 2048
+  ffn_hidden_size: 8192
+  num_attention_heads: 32
+  sequence_length: 2048
+training:
+  precision: bf16
+  optimizer: muon
+  muon_momentum: 0.95
+  micro_batch_size: 2
+  global_batch_size: 256
+  target_train_tokens: 12000000000
+  learning_rate: 0.0004
+  minimum_learning_rate: 0.00004
+  lr_decay_style: cosine
+  lr_warmup_fraction: 0.01
+  weight_decay: 0.1
+  clip_grad: 1.0
+  eval_interval: 250
+  eval_iters: 20
+  save_interval: 1000
+  log_interval: 1

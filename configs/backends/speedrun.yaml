@@ -1,0 +1,6 @@
+backend: speedrun
+paths:
+  data_root: env:NGA_DATA_ROOT
+parallelism:
+  nodes: 1
+  gpus_per_node: 1

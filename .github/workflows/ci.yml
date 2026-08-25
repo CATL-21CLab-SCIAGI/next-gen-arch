@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -26,17 +28,39 @@ jobs:
         run: uv sync --extra cpu --group dev
       - name: Lint maintained tooling
         run: |
-          uv run ruff check next_gen_arch tests/test_registry.py
-          uv run ruff check --select E9,F63,F7,F82 nanochat scripts
+          uv run ruff check src/next_gen_arch tests/test_registry.py tests/test_portable_runtime.py
+          uv run ruff check --select E9,F63,F7,F82 src/next_gen_arch/arch src/next_gen_arch/training
       - name: Compile source
-        run: uv run python -m compileall -q nanochat next_gen_arch scripts
+        run: uv run python -m compileall -q src/next_gen_arch
       - name: Verify frozen artifacts
         run: |
           uv run next-gen-arch verify
           uv run python -c "from next_gen_arch.results import verify_metrics; print(verify_metrics())"
+          uv run next-gen-arch doctor --backend megatron
+      - name: Verify portable launch plans
+        env:
+          NGA_DATA_ROOT: /tmp/next-gen-arch-data
+          NGA_TRAIN_DATA: /tmp/train_text_document
+          NGA_VALID_DATA: /tmp/valid_text_document
+          NGA_DATA_CACHE: /tmp/data-cache
+          NGA_TOKENIZER: /tmp/tokenizer
+          NGA_OUTPUT_DIR: /tmp/megatron-output
+        run: |
+          uv run next-gen-arch render --config configs/experiments/speedrun_qwen_gdn_100m_seed42.yaml
+          uv run next-gen-arch render --config configs/experiments/megatron_baseline_1b_seed42.yaml --json
       - name: Test
         env:
           NANOCHAT_ATTENTION_BACKEND: sdpa
         run: uv run pytest -m "not slow" -q
       - name: Build distributions
         run: uv build
+      - name: Verify upstream is not vendored
+        run: |
+          if tar -tzf dist/*.tar.gz | grep '/third_party/' > /dev/null; then
+            echo 'source archive unexpectedly contains third_party content'
+            exit 1
+          fi
+          if unzip -Z1 dist/*.whl | grep '^third_party/' > /dev/null; then
+            echo 'wheel unexpectedly contains third_party content'
+            exit 1
+          fi

@@ -3,8 +3,8 @@ import math
 import pytest
 import torch
 
-from nanochat.gpt import GPT, GPTConfig
-from nanochat.kimi_kda import (
+from next_gen_arch.arch.base import GPT, GPTConfig
+from next_gen_arch.arch.kimi import (
     KDA_CHUNK_SIZE,
     KDA_CONV_SIZE,
     KimiDeltaAttention,
@@ -15,7 +15,7 @@ from nanochat.kimi_kda import (
     kda_layer_map,
     kda_recurrent_reference,
 )
-from nanochat.model_factory import build_model_from_config_kwargs
+from next_gen_arch.training.models import build_model_from_config_kwargs
 
 
 def tiny_config(**overrides):

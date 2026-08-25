@@ -3,9 +3,9 @@ import copy
 import pytest
 import torch
 
-from nanochat.gpt import GPT, GPTConfig
-from nanochat.kimi_attnres import AttnResRead, KimiAttnRes, KimiAttnResConfig
-from nanochat.model_factory import (
+from next_gen_arch.arch.base import GPT, GPTConfig
+from next_gen_arch.arch.kimi import AttnResRead, KimiAttnRes, KimiAttnResConfig
+from next_gen_arch.training.models import (
     build_model_config,
     build_model_from_config_kwargs,
     instantiate_model,

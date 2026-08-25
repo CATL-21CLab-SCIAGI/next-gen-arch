@@ -1,0 +1,7 @@
+extends:
+  - ../base.yaml
+  - ../backends/megatron.yaml
+  - ../scales/megatron_1b.yaml
+name: megatron-baseline-1b-seed42
+variant: baseline
+seed: 42

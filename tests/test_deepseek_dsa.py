@@ -4,7 +4,7 @@ import inspect
 import pytest
 import torch
 
-from nanochat.deepseek_dsa import (
+from next_gen_arch.arch.dsa import (
     DSA_BACKEND,
     DSACausalSelfAttention,
     DeepSeekDSA,
@@ -12,8 +12,8 @@ from nanochat.deepseek_dsa import (
     LightningIndexer,
     _apply_partial_noninterleaved_rope,
 )
-from nanochat.gpt import GPT, GPTConfig
-from nanochat.model_factory import build_model_from_config_kwargs
+from next_gen_arch.arch.base import GPT, GPTConfig
+from next_gen_arch.training.models import build_model_from_config_kwargs
 
 
 def tiny_config(**overrides):

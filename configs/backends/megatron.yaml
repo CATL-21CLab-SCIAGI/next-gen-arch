@@ -1,0 +1,13 @@
+backend: megatron
+paths:
+  train_data: env:NGA_TRAIN_DATA
+  valid_data: env:NGA_VALID_DATA
+  data_cache: env:NGA_DATA_CACHE
+  tokenizer: env:NGA_TOKENIZER
+  output_dir: env:NGA_OUTPUT_DIR
+parallelism:
+  nodes: 1
+  gpus_per_node: 8
+  tensor: 1
+  pipeline: 1
+  context: 1

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from nanochat.frontier_pool import (
+from next_gen_arch.arch.frontier import (
     FRONTIER_VARIANTS,
     FrontierPoolConfig,
     FrontierPoolGPT,
@@ -16,7 +16,7 @@ from nanochat.frontier_pool import (
     QwenGatedDeltaAttention,
     ZeroCenteredRMSNorm,
 )
-from nanochat.model_factory import build_model_from_config_kwargs
+from next_gen_arch.training.models import build_model_from_config_kwargs
 
 
 def config(variant: str, *, n_layer: int = 2) -> FrontierPoolConfig:

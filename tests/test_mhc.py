@@ -1,7 +1,7 @@
 import torch
 
-from nanochat.gpt import GPT, GPTConfig, MHCConnection
-from nanochat.model_factory import build_model_from_config_kwargs
+from next_gen_arch.arch.base import GPT, GPTConfig, MHCConnection
+from next_gen_arch.training.models import build_model_from_config_kwargs
 
 
 def make_connection():

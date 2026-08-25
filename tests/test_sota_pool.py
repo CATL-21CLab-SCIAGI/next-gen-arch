@@ -3,9 +3,9 @@ import math
 import pytest
 import torch
 
-from nanochat.gpt import GPT, GPTConfig, norm
-from nanochat.model_factory import build_model_from_config_kwargs, model_config_to_dict
-from nanochat.sota_pool import (
+from next_gen_arch.arch.base import GPT, GPTConfig, norm
+from next_gen_arch.training.models import build_model_from_config_kwargs, model_config_to_dict
+from next_gen_arch.arch.sota import (
     CausalDepthwiseConv,
     DynamicTanh,
     SOTA_VARIANTS,

@@ -1,6 +1,6 @@
 # Architecture map
 
-The implementations are compact research adaptations within nanochat. They are not claimed to be the official code from the cited projects. A paper or project link explains the mechanism that motivated each controlled arm; it does not imply exact equivalence to the authors' full system.
+The implementations are compact research adaptations in `src/next_gen_arch/arch`. They are not claimed to be the official code from the cited projects. A paper or project link explains the mechanism that motivated each controlled arm; it does not imply exact equivalence to the authors' full system.
 
 ## Frozen 16-variant grid
 
@@ -27,7 +27,7 @@ The implementations are compact research adaptations within nanochat. They are n
 
 The architecture families ultimately construct one `GPT` interface with shared token embedding, language-model head, loss evaluation, optimizer factory, data loader, and checkpoint manager. Variant-only parameters are initialized from a private RNG so adding a module does not perturb the shared backbone initialization for a matched seed.
 
-Engram and mHC historically lived in separate campaign source trees. Their configuration and forward paths are merged into `nanochat/gpt.py` and `nanochat/model_factory.py` here.
+Engram and mHC historically lived in separate campaign source trees. Their definitions are merged with the shared GPT primitives in `src/next_gen_arch/arch/base.py`; construction and checkpoint compatibility live in `src/next_gen_arch/training/models.py`. Megatron adapters are a separate capability boundary; a speedrun implementation is not automatically considered ported.
 
 ## Implementation caveats
 

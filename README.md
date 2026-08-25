@@ -1,12 +1,12 @@
 # Next-Gen Architecture Lab
 
-[简体中文](README.zh-CN.md) · [Results](docs/RESULTS.md) · [Reproducibility](docs/REPRODUCIBILITY.md) · [Architecture notes](docs/ARCHITECTURES.md)
+[简体中文](README.zh-CN.md) · [Results](docs/RESULTS.md) · [Reproducibility](docs/REPRODUCIBILITY.md) · [Runtimes](docs/RUNTIMES.md) · [Architecture notes](docs/ARCHITECTURES.md)
 
 [![CI](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml/badge.svg)](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](pyproject.toml)
 
-A controlled, reproducible lab for testing next-generation language-model architecture ideas in one small [nanochat](https://github.com/karpathy/nanochat) training stack.
+A controlled, reproducible lab for testing language-model architectures in a fast single-node stack and carrying validated mechanisms into Megatron-LM for larger-scale training.
 
 The project asks a deliberately narrow question:
 
@@ -27,6 +27,13 @@ The initial campaign studies:
 - smaller component changes: xIELU, SiTU-GLU, and GLM-style MLA.
 
 The goal is not to declare a universal architecture winner. It is to produce small, inspectable implementations and paired evidence that other researchers can reproduce, challenge, and extend.
+
+## Two execution backends, one experiment contract
+
+- **`speedrun`** preserves the compact Muon, compilation, data-order, and kernel optimizations inherited from [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) and the campaign's nanochat fork. It remains the comparison-grade backend for the published 100M–1B results.
+- **`megatron`** renders model/data/parallelism contracts for a pinned, read-only [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) Git submodule. It is the scaling backend; no Megatron file is copied into or patched by this project.
+
+The YAML contract is backend-neutral and uses layered `base + backend + scale + experiment` configuration. Paths are `env:NAME` references or CLI overrides, and sampling prompts are versioned package assets. A variant is rejected if it has not received a backend-specific adapter; the project does not claim numerical equivalence merely because two commands share an architecture name. See [docs/RUNTIMES.md](docs/RUNTIMES.md).
 
 ## Headline results
 
@@ -93,10 +100,11 @@ The 100M study was repeated independently. Variant-minus-baseline deltas correla
 The project uses [uv](https://docs.astral.sh/uv/) and Python 3.10 or newer.
 
 ```bash
-git clone https://github.com/CATL-21CLab-SCIAGI/next-gen-arch.git
+git clone --recurse-submodules https://github.com/CATL-21CLab-SCIAGI/next-gen-arch.git
 cd next-gen-arch
 uv sync --extra cpu --group dev
 uv run next-gen-arch verify
+uv run next-gen-arch doctor --backend megatron
 ```
 
 For a CUDA 12.8 environment, replace `--extra cpu` with `--extra gpu`.
@@ -109,12 +117,32 @@ uv run next-gen-arch show --size 300m --variant engram --seed 42
 uv run next-gen-arch command --size 300m --variant engram --seed 42 --run-name my-run
 ```
 
-`command` prints a portable `python -m scripts.base_train ...` invocation. Set up the data and tokenizer before executing it:
+`command` preserves the historical frozen-command interface. The maintained module path is `next_gen_arch.training.base_train`. Set up the data and tokenizer before executing it:
 
 ```bash
 export NANOCHAT_BASE_DIR=/path/to/next-gen-arch-data
-uv run python -m nanochat.dataset -n 170
-uv run python -m scripts.tok_train --vocab-size 32768
+uv run python -m next_gen_arch.training.dataset -n 170
+uv run python -m next_gen_arch.training.tok_train --vocab-size 32768
+```
+
+Render the same frozen Qwen-GDN arm through the portable speedrun spec:
+
+```bash
+export NGA_DATA_ROOT=/path/to/next-gen-arch-data
+uv run next-gen-arch render \
+  --config configs/experiments/speedrun_qwen_gdn_100m_seed42.yaml
+```
+
+Render an eight-rank Megatron baseline without embedding cluster paths in Git:
+
+```bash
+export NGA_TRAIN_DATA=/data/train_text_document
+export NGA_VALID_DATA=/data/valid_text_document
+export NGA_DATA_CACHE=/data/cache
+export NGA_TOKENIZER=/models/tokenizer
+export NGA_OUTPUT_DIR=/runs/megatron-baseline-1b-seed42
+uv run next-gen-arch render \
+  --config configs/experiments/megatron_baseline_1b_seed42.yaml --json
 ```
 
 For comparison-grade reproduction, verify the dataset and tokenizer fingerprints in [docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md). A freshly trained tokenizer is useful for new experiments but is not automatically bit-identical to the frozen campaign artifact.
@@ -122,8 +150,8 @@ For comparison-grade reproduction, verify the dataset and tokenizer fingerprints
 Run the local quality gate:
 
 ```bash
-uv run ruff check next_gen_arch tests/test_registry.py
-uv run python -m compileall -q nanochat next_gen_arch scripts
+uv run ruff check src/next_gen_arch tests/test_registry.py tests/test_portable_runtime.py
+uv run python -m compileall -q src/next_gen_arch
 uv run pytest -m "not slow" -q
 uv build
 ```
@@ -137,13 +165,16 @@ Gradient scans run every step by default. They can be made less frequent with `-
 ## Repository layout
 
 ```text
-nanochat/                 model, architecture, optimizer, and data primitives
-scripts/base_train.py     unified training entry point
-next_gen_arch/            manifest and result integrity tooling
-results/                  frozen contract and machine-readable evidence
-docs/                     architecture, result, and reproduction notes
-tests/                    CPU-safe unit and integrity tests
-.github/workflows/        CI and tag-based release automation
+src/next_gen_arch/arch/       architecture definitions only, consolidated by family
+src/next_gen_arch/training/   training, data, optimizer, kernels, evaluation, and runtime
+src/next_gen_arch/backends/   speedrun and Megatron launch adapters
+src/next_gen_arch/prompts/    versioned backend-neutral prompt sets
+configs/                      layered portable experiment contracts
+third_party/Megatron-LM/      pinned read-only Git submodule
+results/                      frozen contract and machine-readable evidence
+docs/                         architecture, result, and reproduction notes
+tests/                        CPU-safe unit and integrity tests
+.github/workflows/            CI and tag-based release automation
 ```
 
 Engram and mHC used separate experimental forks during the live campaign. They are integrated here behind the same `GPTConfig` and model factory, so the public codebase has one training entry point and one checkpoint schema.
@@ -169,6 +200,7 @@ Engram and mHC used separate experimental forks during the live campaign. They a
 ## Scope and limitations
 
 - The architecture modules are research adaptations, not official implementations from the cited authors.
+- Only the baseline currently has a validated Megatron adapter. Other variants remain on the speedrun backend until explicitly ported and tested.
 - BPB comparisons are valid only inside a matched training regime. Hardware throughput is also environment-specific.
 - Three seeds reduce noise but do not eliminate it.
 - The 2,048-token context can understate the value of long-context or sparse mechanisms.

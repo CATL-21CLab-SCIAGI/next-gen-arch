@@ -1,8 +1,8 @@
 # Next-Gen Architecture Lab
 
-[English](README.md) · [完整结果](docs/RESULTS.md) · [复现指南](docs/REPRODUCIBILITY.md) · [架构说明](docs/ARCHITECTURES.md)
+[English](README.md) · [完整结果](docs/RESULTS.md) · [复现指南](docs/REPRODUCIBILITY.md) · [运行后端](docs/RUNTIMES.md) · [架构说明](docs/ARCHITECTURES.md)
 
-这是一个基于 [nanochat](https://github.com/karpathy/nanochat) 的受控语言模型架构实验仓库。它把 16 种新架构机制放进同一训练框架，在相同数据、tokenizer、seed、数据顺序、训练预算和评测方法下，回答一个具体问题：
+这是一个兼顾快速受控实验与 Megatron 扩缩的语言模型架构实验仓库。它把 16 种架构机制放进同一实验合同，在相同数据、tokenizer、seed、数据顺序、训练预算和评测方法下，回答一个具体问题：
 
 > 当其他变量都被固定后，某个架构改动是否真的降低了验证集 BPB？
 
@@ -19,6 +19,13 @@
 - 同时报告质量、吞吐和参数开销，不用单一 BPB 掩盖工程代价；
 - 公开失败与负结果，特别是 NaN、harness bug 和不适用的实现；
 - 为后续组合实验建立可做因果归因的 baseline 与单组件对照。
+
+## 双后端边界
+
+- `speedrun` 保留继承自 [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) 和 campaign nanochat fork 的 Muon、编译、数据顺序及 kernel 优化，是已发布 100M–1B 结果的对照后端。
+- `megatron` 使用固定 commit、只读的 Megatron-LM Git submodule，负责更大模型和并行拓扑；项目不复制或修改 Megatron 源码。
+
+配置按 `base + backend + scale + experiment` 分层合并。路径使用 `env:NAME` 或 CLI override，sampling prompt 是带版本的包内资产。未完成 Megatron adapter 的变体会明确拒绝运行，不会把同名架构当作数值等价实现。
 
 ## 核心结果
 
@@ -83,10 +90,11 @@
 需要 Python 3.10+ 和 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
-git clone https://github.com/CATL-21CLab-SCIAGI/next-gen-arch.git
+git clone --recurse-submodules https://github.com/CATL-21CLab-SCIAGI/next-gen-arch.git
 cd next-gen-arch
 uv sync --extra cpu --group dev
 uv run next-gen-arch verify
+uv run next-gen-arch doctor --backend megatron
 ```
 
 CUDA 12.8 环境可将 `--extra cpu` 换成 `--extra gpu`。查看实验轴与重建冻结命令：
@@ -101,17 +109,27 @@ uv run next-gen-arch command --size 300m --variant engram --seed 42 --run-name m
 
 ```bash
 export NANOCHAT_BASE_DIR=/path/to/next-gen-arch-data
-uv run python -m nanochat.dataset -n 170
-uv run python -m scripts.tok_train --vocab-size 32768
+uv run python -m next_gen_arch.training.dataset -n 170
+uv run python -m next_gen_arch.training.tok_train --vocab-size 32768
 ```
+
+渲染可移植 speedrun 合同：
+
+```bash
+export NGA_DATA_ROOT=/path/to/next-gen-arch-data
+uv run next-gen-arch render \
+  --config configs/experiments/speedrun_qwen_gdn_100m_seed42.yaml
+```
+
+Megatron 示例使用 `NGA_TRAIN_DATA`、`NGA_VALID_DATA`、`NGA_DATA_CACHE`、`NGA_TOKENIZER` 和 `NGA_OUTPUT_DIR` 注入机器路径，再渲染 `configs/experiments/megatron_baseline_1b_seed42.yaml`。
 
 新训练的 tokenizer 适合新实验，但不保证与冻结 campaign 二进制完全一致。严格对照前请核对 [复现指南](docs/REPRODUCIBILITY.md) 中的数据与 tokenizer 指纹。
 
 本地质量门禁：
 
 ```bash
-uv run ruff check next_gen_arch tests/test_registry.py
-uv run python -m compileall -q nanochat next_gen_arch scripts
+uv run ruff check src/next_gen_arch tests/test_registry.py tests/test_portable_runtime.py
+uv run python -m compileall -q src/next_gen_arch
 uv run pytest -m "not slow" -q
 uv build
 ```
@@ -138,4 +156,4 @@ uv build
 - 所有组合实验保留 baseline 与各单组件对照；
 - 发布更完整的训练曲线和硬件归一化效率数据。
 
-本项目基于 nanochat，以 [MIT License](LICENSE) 发布。各架构名称和论文归原作者所有；本仓库实现是研究性适配，不代表原作者官方实现。详见 [NOTICE.md](NOTICE.md)。
+所有 Python 代码集中在 `src/next_gen_arch`：`arch/` 只保留按架构族合并的模型定义，`training/` 统一承载训练、数据、优化器、kernel、评测和运行时，`backends/` 是执行适配，`prompts/` 是可移植 prompt。项目以 [MIT License](LICENSE) 发布；各架构名称和论文归原作者所有，详见 [NOTICE.md](NOTICE.md)。
