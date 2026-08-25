@@ -169,6 +169,7 @@ def _megatron_arguments(variant: TenMVariant) -> list[str]:
         "--no-gradient-accumulation-fusion",
         "--no-masked-softmax-fusion",
         "--no-bias-gelu-fusion",
+        "--no-bias-swiglu-fusion",
         "--no-bias-dropout-fusion",
         "--no-rope-fusion",
     ]
@@ -352,11 +353,17 @@ def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
     sys.path.insert(0, str(MEGATRON_ROOT))
     sys.argv = _megatron_arguments(variant) + ["--seed", str(seed)]
 
+    from megatron.core.datasets import utils as dataset_utils
     from megatron.core.enums import ModelType
     from megatron.core.process_groups_config import ProcessGroupCollection
     from megatron.core.transformer.module import MegatronModule
     from megatron.training import get_args, pretrain, print_rank_0
     from megatron.training.arguments import core_transformer_config_from_args
+
+    def skip_unused_dataset_helper_build() -> None:
+        print_rank_0("> external ClimbMix loader: skipping unused dataset-index helper build")
+
+    dataset_utils.compile_helpers = skip_unused_dataset_helper_build
 
     model_kwargs = ten_m_model_config_kwargs(variant)
 
