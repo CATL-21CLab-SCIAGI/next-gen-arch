@@ -16,6 +16,7 @@ from next_gen_arch.arch.kimi import (
     kda_recurrent_reference,
 )
 from next_gen_arch.training.models import build_model_from_config_kwargs
+from next_gen_arch.training.optim import setup_model_optimizer
 
 
 def tiny_config(**overrides):
@@ -85,11 +86,14 @@ def test_frontier_kda_variants_use_nope_gated_globals_and_full_rank_gate(variant
     config = tiny_config(kda_variant=variant, kda_rope_policy="none")
     model = KimiKDA(config)
     globals_ = [
-        block for index, block in enumerate(model.transformer.h)
+        block
+        for index, block in enumerate(model.transformer.h)
         if index + 1 in kda_layer_map(config.n_layer, config.kda_pattern)["global"]
     ]
     assert globals_ and all(isinstance(block, NoPEGatedBlock) for block in globals_)
-    kda = next(block.attn for block in model.transformer.h if isinstance(block.attn, KimiDeltaAttention))
+    kda = next(
+        block.attn for block in model.transformer.h if isinstance(block.attn, KimiDeltaAttention)
+    )
     assert kda.g_proj.weight.shape == (config.n_embd, config.n_embd)
     state = model.get_architecture_state()
     assert state["rope_policy"] == "none"
@@ -98,9 +102,7 @@ def test_frontier_kda_variants_use_nope_gated_globals_and_full_rank_gate(variant
 
 
 def test_kimi_k3_decay_is_lower_bounded_and_solar_beta_allows_over_relaxation():
-    k3 = KimiDeltaAttention(
-        tiny_config(kda_variant="kimi_k3", kda_rope_policy="none"), layer_idx=0
-    )
+    k3 = KimiDeltaAttention(tiny_config(kda_variant="kimi_k3", kda_rope_policy="none"), layer_idx=0)
     k3.a_log.data.fill_(math.log(2.0))
     k3.dt_bias.data.zero_()
     raw = torch.linspace(-20, 20, 128).view(1, 1, 128)
@@ -166,9 +168,10 @@ def test_value_embedding_changes_kda_output_on_cpu():
 def test_optimizer_groups_kda_vectors_at_fixed_adamw_lr():
     model = KimiKDA(tiny_config())
     model.init_weights()
-    optimizer = model.setup_optimizer(scalar_lr=0.5)
+    optimizer = setup_model_optimizer(model, scalar_lr=0.5)
     vector_groups = [
-        group for group in optimizer.param_groups
+        group
+        for group in optimizer.param_groups
         if group["kind"] == "adamw" and math.isclose(group["lr"], 0.005)
     ]
     assert vector_groups
@@ -186,11 +189,13 @@ def test_optimizer_groups_kda_vectors_at_fixed_adamw_lr():
 
 def test_kda_shared_initialization_is_bit_identical_to_paired_baseline():
     config = tiny_config()
-    baseline_config = GPTConfig(**{
-        key: value
-        for key, value in config.__dict__.items()
-        if not key.startswith("kda_") and key != "arch_family"
-    })
+    baseline_config = GPTConfig(
+        **{
+            key: value
+            for key, value in config.__dict__.items()
+            if not key.startswith("kda_") and key != "arch_family"
+        }
+    )
     torch.manual_seed(42)
     with torch.device("meta"):
         baseline = GPT(baseline_config)
@@ -216,10 +221,18 @@ def test_kda_shared_initialization_is_bit_identical_to_paired_baseline():
             baseline.state_dict()[name], treatment.state_dict()[name], rtol=0, atol=0
         )
     for name, tensor in baseline.value_embeds.state_dict().items():
-        torch.testing.assert_close(tensor, treatment.value_embeds.state_dict()[name], rtol=0, atol=0)
-    for base_block, treatment_block in zip(baseline.transformer.h, treatment.transformer.h):
-        torch.testing.assert_close(base_block.mlp.c_fc.weight, treatment_block.mlp.c_fc.weight, rtol=0, atol=0)
-        torch.testing.assert_close(base_block.mlp.c_proj.weight, treatment_block.mlp.c_proj.weight, rtol=0, atol=0)
+        torch.testing.assert_close(
+            tensor, treatment.value_embeds.state_dict()[name], rtol=0, atol=0
+        )
+    for base_block, treatment_block in zip(
+        baseline.transformer.h, treatment.transformer.h, strict=True
+    ):
+        torch.testing.assert_close(
+            base_block.mlp.c_fc.weight, treatment_block.mlp.c_fc.weight, rtol=0, atol=0
+        )
+        torch.testing.assert_close(
+            base_block.mlp.c_proj.weight, treatment_block.mlp.c_proj.weight, rtol=0, atol=0
+        )
         if isinstance(treatment_block.attn, KimiDeltaAttention):
             pairs = (
                 (base_block.attn.c_q.weight, treatment_block.attn.q_proj.weight),

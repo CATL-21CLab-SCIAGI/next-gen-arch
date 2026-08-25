@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass
 import math
+from collections import defaultdict
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from next_gen_arch.training.runtime import COMPUTE_DTYPE, get_dist_info, print0
-from next_gen_arch.training.attention import flash_attn
-from next_gen_arch.arch.base import apply_rotary_emb
-from next_gen_arch.training.optim import DistMuonAdamW, MuonAdamW
+from next_gen_arch.arch.base import ArchitectureRuntime, apply_rotary_emb
 
 
 @dataclass
@@ -27,13 +24,22 @@ class FOGConfig:
     window_pattern: str = "L"
     arch_family: str = "fog"
     fog_variant: str = "flash"
+    runtime: ArchitectureRuntime = field(
+        default_factory=ArchitectureRuntime,
+        repr=False,
+        compare=False,
+    )
 
 
 class NativeLinear(nn.Linear):
     """Mirror nanochat's explicit mixed-precision linear."""
 
     def forward(self, x):
-        return F.linear(x, self.weight.to(dtype=x.dtype), None if self.bias is None else self.bias.to(dtype=x.dtype))
+        return F.linear(
+            x,
+            self.weight.to(dtype=x.dtype),
+            None if self.bias is None else self.bias.to(dtype=x.dtype),
+        )
 
 
 class GainRMSNorm(nn.Module):
@@ -71,7 +77,9 @@ class QuantMonitor:
         x_float = x.float()
         self.records[f"{name}/kurtosis"].append(float(kurtosis_metric(x_float).item()))
         self.records[f"{name}/amax"].append(float(x_float.abs().max().item()))
-        self.records[f"{name}/nonfinite_frac"].append(float((~torch.isfinite(x_float)).float().mean().item()))
+        self.records[f"{name}/nonfinite_frac"].append(
+            float((~torch.isfinite(x_float)).float().mean().item())
+        )
 
     def consume(self) -> dict[str, float]:
         out = {key: sum(values) / len(values) for key, values in self.records.items() if values}
@@ -84,6 +92,7 @@ def _build_linear(in_features: int, out_features: int, *, runtime_backend: str):
         return NativeLinear(in_features, out_features, bias=False)
     if runtime_backend.startswith("te_"):
         import transformer_engine.pytorch as te
+
         return te.Linear(in_features, out_features, bias=False, params_dtype=torch.float32)
     raise ValueError(f"Unsupported runtime backend: {runtime_backend}")
 
@@ -98,15 +107,23 @@ class FogSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.head_dim = self.n_embd // self.n_head
         self.sequence_len = config.sequence_len
+        self.runtime = config.runtime
         self.runtime_backend = runtime_backend
         assert self.n_head == self.n_kv_head, "FOG runtime currently assumes n_head == n_kv_head"
-        self.c_q = _build_linear(self.n_embd, self.n_head * self.head_dim, runtime_backend=runtime_backend)
-        self.c_k = _build_linear(self.n_embd, self.n_kv_head * self.head_dim, runtime_backend=runtime_backend)
-        self.c_v = _build_linear(self.n_embd, self.n_kv_head * self.head_dim, runtime_backend=runtime_backend)
+        self.c_q = _build_linear(
+            self.n_embd, self.n_head * self.head_dim, runtime_backend=runtime_backend
+        )
+        self.c_k = _build_linear(
+            self.n_embd, self.n_kv_head * self.head_dim, runtime_backend=runtime_backend
+        )
+        self.c_v = _build_linear(
+            self.n_embd, self.n_kv_head * self.head_dim, runtime_backend=runtime_backend
+        )
         self.c_proj = _build_linear(self.n_embd, self.n_embd, runtime_backend=runtime_backend)
         self.te_attention = None
         if runtime_backend.startswith("te_"):
             import transformer_engine.pytorch as te
+
             self.te_attention = te.DotProductAttention(
                 num_attention_heads=self.n_head,
                 kv_channels=self.head_dim,
@@ -138,9 +155,20 @@ class FogSelfAttention(nn.Module):
         k = apply_rotary_emb(k, cos, sin)
         q, k = self._regularize_qk(q, k)
         if quant_monitor is not None:
-            qkv = torch.cat([q.reshape(bsz, seq_len, -1), k.reshape(bsz, seq_len, -1), v.reshape(bsz, seq_len, -1)], dim=-1)
+            qkv = torch.cat(
+                [
+                    q.reshape(bsz, seq_len, -1),
+                    k.reshape(bsz, seq_len, -1),
+                    v.reshape(bsz, seq_len, -1),
+                ],
+                dim=-1,
+            )
             quant_monitor.record("quant/qkv", qkv)
-        if self.te_attention is not None and kv_cache is None and not self._use_te_attention(kv_cache, window_size):
+        if (
+            self.te_attention is not None
+            and kv_cache is None
+            and not self._use_te_attention(kv_cache, window_size)
+        ):
             raise RuntimeError(
                 "FOG Transformer Engine training path requires full-context attention (window_pattern=L). "
                 f"Layer {self.layer_idx} received window_size={window_size}."
@@ -149,10 +177,12 @@ class FogSelfAttention(nn.Module):
         if self._use_te_attention(kv_cache, window_size):
             y = self.te_attention(q, k, v)
         elif kv_cache is None:
-            y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+            y = self.runtime.attention.flash_attn_func(
+                q, k, v, causal=True, window_size=window_size
+            )
         else:
             k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
-            y = flash_attn.flash_attn_with_kvcache(
+            y = self.runtime.attention.flash_attn_with_kvcache(
                 q,
                 k_cache,
                 v_cache,
@@ -172,7 +202,9 @@ class FogMLP(nn.Module):
     def __init__(self, config: FOGConfig, *, runtime_backend: str):
         super().__init__()
         self.c_fc = _build_linear(config.n_embd, 4 * config.n_embd, runtime_backend=runtime_backend)
-        self.c_proj = _build_linear(4 * config.n_embd, config.n_embd, runtime_backend=runtime_backend)
+        self.c_proj = _build_linear(
+            4 * config.n_embd, config.n_embd, runtime_backend=runtime_backend
+        )
 
     def forward(self, x, quant_monitor: QuantMonitor | None = None):
         x = self.c_fc(x)
@@ -193,7 +225,9 @@ class FogBlock(nn.Module):
         self.mlp_postnorm = GainRMSNorm(config.n_embd, init_gain=init_gain)
 
     def forward(self, x, cos_sin, window_size, kv_cache, quant_monitor: QuantMonitor | None = None):
-        x = x + self.attn_postnorm(self.attn(x, cos_sin, window_size, kv_cache, quant_monitor=quant_monitor))
+        x = x + self.attn_postnorm(
+            self.attn(x, cos_sin, window_size, kv_cache, quant_monitor=quant_monitor)
+        )
         x = x + self.mlp_postnorm(self.mlp(x, quant_monitor=quant_monitor))
         if quant_monitor is not None:
             quant_monitor.record("quant/block_output", x)
@@ -201,24 +235,41 @@ class FogBlock(nn.Module):
 
 
 class FOG(nn.Module):
-    def __init__(self, config: FOGConfig, runtime_backend: str = "native", pad_vocab_size_to: int = 64):
+    def __init__(
+        self, config: FOGConfig, runtime_backend: str = "native", pad_vocab_size_to: int = 64
+    ):
         super().__init__()
         self.config = config
         self.runtime_backend = runtime_backend
         self.window_sizes = self._compute_window_sizes(config)
-        padded_vocab_size = ((config.vocab_size + pad_vocab_size_to - 1) // pad_vocab_size_to) * pad_vocab_size_to
+        padded_vocab_size = (
+            (config.vocab_size + pad_vocab_size_to - 1) // pad_vocab_size_to
+        ) * pad_vocab_size_to
         if padded_vocab_size != config.vocab_size:
-            print0(f"Padding vocab_size from {config.vocab_size} to {padded_vocab_size} for efficiency")
-        self.transformer = nn.ModuleDict({
-            "wte": nn.Embedding(padded_vocab_size, config.n_embd),
-            "h": nn.ModuleList([FogBlock(config, layer_idx, runtime_backend=runtime_backend) for layer_idx in range(config.n_layer)]),
-        })
-        self.lm_head = _build_linear(config.n_embd, padded_vocab_size, runtime_backend=runtime_backend)
-        self.init_std = config.n_embd ** -0.5
+            config.runtime.log(
+                f"Padding vocab_size from {config.vocab_size} to {padded_vocab_size} for efficiency"
+            )
+        self.transformer = nn.ModuleDict(
+            {
+                "wte": nn.Embedding(padded_vocab_size, config.n_embd),
+                "h": nn.ModuleList(
+                    [
+                        FogBlock(config, layer_idx, runtime_backend=runtime_backend)
+                        for layer_idx in range(config.n_layer)
+                    ]
+                ),
+            }
+        )
+        self.lm_head = _build_linear(
+            config.n_embd, padded_vocab_size, runtime_backend=runtime_backend
+        )
+        self.init_std = config.n_embd**-0.5
         self.input_scale = 1.0 / self.init_std
         self.quant_monitor = QuantMonitor()
         self.rotary_seq_len = config.sequence_len * 10
-        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, config.n_embd // config.n_head)
+        cos, sin = self._precompute_rotary_embeddings(
+            self.rotary_seq_len, config.n_embd // config.n_head
+        )
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
@@ -228,15 +279,24 @@ class FOG(nn.Module):
         torch.nn.init.normal_(self.transformer.wte.weight, mean=0.0, std=sigma)
         torch.nn.init.normal_(self.lm_head.weight, mean=0.0, std=sigma)
         for block in self.transformer.h:
-            for module in (block.attn.c_q, block.attn.c_k, block.attn.c_v, block.attn.c_proj, block.mlp.c_fc, block.mlp.c_proj):
+            for module in (
+                block.attn.c_q,
+                block.attn.c_k,
+                block.attn.c_v,
+                block.attn.c_proj,
+                block.mlp.c_fc,
+                block.mlp.c_proj,
+            ):
                 torch.nn.init.normal_(module.weight, mean=0.0, std=sigma)
-            torch.nn.init.constant_(block.attn_postnorm.weight, 1.0 / math.sqrt(self.config.n_layer))
+            torch.nn.init.constant_(
+                block.attn_postnorm.weight, 1.0 / math.sqrt(self.config.n_layer)
+            )
             torch.nn.init.constant_(block.mlp_postnorm.weight, 1.0 / math.sqrt(self.config.n_layer))
         head_dim = self.config.n_embd // self.config.n_head
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.cos, self.sin = cos, sin
-        if COMPUTE_DTYPE != torch.float16:
-            self.transformer.wte.to(dtype=COMPUTE_DTYPE)
+        if self.config.runtime.compute_dtype != torch.float16:
+            self.transformer.wte.to(dtype=self.config.runtime.compute_dtype)
 
     def set_quant_monitor_enabled(self, enabled: bool):
         self.quant_monitor.set_enabled(enabled)
@@ -252,16 +312,21 @@ class FOG(nn.Module):
         t = torch.arange(seq_len, dtype=torch.float32, device=device)
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
-        cos, sin = cos.to(COMPUTE_DTYPE), sin.to(COMPUTE_DTYPE)
+        compute_dtype = self.config.runtime.compute_dtype
+        cos, sin = cos.to(compute_dtype), sin.to(compute_dtype)
         return cos[None, :, None, :], sin[None, :, None, :]
 
     def _compute_window_sizes(self, config):
         pattern = config.window_pattern.upper()
-        assert all(c in "SL" for c in pattern), f"Invalid window_pattern: {pattern}. Use only S and L."
+        assert all(c in "SL" for c in pattern), (
+            f"Invalid window_pattern: {pattern}. Use only S and L."
+        )
         long_window = config.sequence_len
         short_window = -(-long_window // 4 // 128) * 128
         char_to_window = {"L": (long_window, 0), "S": (short_window, 0)}
-        window_sizes = [char_to_window[pattern[layer_idx % len(pattern)]] for layer_idx in range(config.n_layer)]
+        window_sizes = [
+            char_to_window[pattern[layer_idx % len(pattern)]] for layer_idx in range(config.n_layer)
+        ]
         window_sizes[-1] = (long_window, 0)
         return window_sizes
 
@@ -304,57 +369,33 @@ class FOG(nn.Module):
             "total": total,
         }
 
-    def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, scalar_lr=0.5):
-        model_dim = self.config.n_embd
-        ddp, rank, local_rank, world_size = get_dist_info()
-        matrix_params = []
-        norm_params = []
-        for block in self.transformer.h:
-            matrix_params.extend(list(block.attn.parameters()))
-            matrix_params.extend(list(block.mlp.parameters()))
-            norm_params.extend([block.attn_postnorm.weight, block.mlp_postnorm.weight])
-        embedding_params = list(self.transformer.wte.parameters())
-        lm_head_params = list(self.lm_head.parameters())
-        assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params) + len(norm_params)
-        dmodel_lr_scale = (model_dim / 768) ** -0.5
-        print0(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {dmodel_lr_scale:.6f}")
-        param_groups = [
-            dict(kind="adamw", params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=(0.8, 0.96), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.001),
-            dict(kind="adamw", params=norm_params, lr=scalar_lr * 0.01, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0),
-        ]
-        for shape in sorted({tuple(p.shape) for p in matrix_params}):
-            group_params = [p for p in matrix_params if tuple(p.shape) == shape]
-            param_groups.append(dict(
-                kind="muon",
-                params=group_params,
-                lr=matrix_lr,
-                momentum=0.95,
-                ns_steps=5,
-                beta2=0.9,
-                weight_decay=weight_decay,
-            ))
-        factory = DistMuonAdamW if ddp else MuonAdamW
-        optimizer = factory(param_groups)
-        for group in optimizer.param_groups:
-            group["initial_lr"] = group["lr"]
-        return optimizer
-
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction="mean"):
         bsz, seq_len = idx.size()
-        assert seq_len <= self.cos.size(1), f"Sequence length grew beyond the rotary embeddings cache: {seq_len} > {self.cos.size(1)}"
-        assert idx.device == self.cos.device, f"Rotary embeddings and idx are on different devices: {idx.device} != {self.cos.device}"
-        assert self.cos.dtype == COMPUTE_DTYPE, f"Rotary embeddings must be in {COMPUTE_DTYPE}, got {self.cos.dtype}"
+        assert seq_len <= self.cos.size(1), (
+            f"Sequence length grew beyond the rotary embeddings cache: {seq_len} > {self.cos.size(1)}"
+        )
+        assert idx.device == self.cos.device, (
+            f"Rotary embeddings and idx are on different devices: {idx.device} != {self.cos.device}"
+        )
+        compute_dtype = self.config.runtime.compute_dtype
+        assert self.cos.dtype == compute_dtype, (
+            f"Rotary embeddings must be in {compute_dtype}, got {self.cos.dtype}"
+        )
         start = 0 if kv_cache is None else kv_cache.get_pos()
-        cos_sin = self.cos[:, start:start+seq_len], self.sin[:, start:start+seq_len]
-        x = self.transformer.wte(idx).to(COMPUTE_DTYPE)
+        cos_sin = self.cos[:, start : start + seq_len], self.sin[:, start : start + seq_len]
+        x = self.transformer.wte(idx).to(compute_dtype)
         x = x * self.input_scale
         for i, block in enumerate(self.transformer.h):
             x = block(x, cos_sin, self.window_sizes[i], kv_cache, quant_monitor=self.quant_monitor)
-        logits = self.lm_head(x)[..., :self.config.vocab_size]
+        logits = self.lm_head(x)[..., : self.config.vocab_size]
         logits = logits.float()
         if targets is not None:
-            return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction=loss_reduction)
+            return F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=-1,
+                reduction=loss_reduction,
+            )
         return logits
 
     @torch.inference_mode()

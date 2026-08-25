@@ -5,18 +5,19 @@ import torch
 
 from next_gen_arch.arch.frontier import (
     FRONTIER_VARIANTS,
+    DeepSeekCompressedAttention,
     FrontierPoolConfig,
     FrontierPoolGPT,
-    DeepSeekCompressedAttention,
     GLMMultiLatentAttention,
+    HeadSplitLinear,
+    InklingShortConvolution,
     MotifGroupedDifferentialLatentAttention,
     MotifMHCConnection,
-    InklingShortConvolution,
-    HeadSplitLinear,
     QwenGatedDeltaAttention,
     ZeroCenteredRMSNorm,
 )
 from next_gen_arch.training.models import build_model_from_config_kwargs
+from next_gen_arch.training.optim import setup_model_optimizer
 
 
 def config(variant: str, *, n_layer: int = 2) -> FrontierPoolConfig:
@@ -79,9 +80,20 @@ def test_sconv_is_fp32_residual_and_causal():
 def test_hybrid_pattern_is_exact_and_final_global():
     model = FrontierPoolGPT(config("hybrid_swa_5_1_w512", n_layer=14))
     assert model.window_sizes == [
-        (512, 0), (512, 0), (512, 0), (512, 0), (512, 0), (16, 0),
-        (512, 0), (512, 0), (512, 0), (512, 0), (512, 0), (16, 0),
-        (512, 0), (16, 0),
+        (512, 0),
+        (512, 0),
+        (512, 0),
+        (512, 0),
+        (512, 0),
+        (16, 0),
+        (512, 0),
+        (512, 0),
+        (512, 0),
+        (512, 0),
+        (512, 0),
+        (16, 0),
+        (512, 0),
+        (16, 0),
     ]
 
 
@@ -119,21 +131,33 @@ def test_per_head_muon_uses_independent_2d_qkv_matrices():
             assert isinstance(projection, HeadSplitLinear)
             assert len(projection.weights) == 2
             assert all(weight.shape == (16, 32) for weight in projection.weights)
-    optimizer = model.setup_optimizer()
+    optimizer = setup_model_optimizer(model)
     qkv_ids = {
         id(weight)
         for block in model.transformer.h
         for projection in (block.attn.c_q, block.attn.c_k, block.attn.c_v)
         for weight in projection.weights
     }
-    muon_ids = {id(p) for group in optimizer.param_groups if group["kind"] == "muon" for p in group["params"]}
+    muon_ids = {
+        id(p)
+        for group in optimizer.param_groups
+        if group["kind"] == "muon"
+        for p in group["params"]
+    }
     assert qkv_ids <= muon_ids
 
 
 def test_qwen_gdn_and_glm_simple_gdn_layer_patterns():
     qwen = FrontierPoolGPT(config("qwen_gdn", n_layer=8))
     assert [isinstance(block.attn, QwenGatedDeltaAttention) for block in qwen.transformer.h] == [
-        True, True, True, False, True, True, True, False
+        True,
+        True,
+        True,
+        False,
+        True,
+        True,
+        True,
+        False,
     ]
     assert all(
         not block.attn.simple
@@ -143,7 +167,14 @@ def test_qwen_gdn_and_glm_simple_gdn_layer_patterns():
 
     simple = FrontierPoolGPT(config("glm_simple_gdn", n_layer=8))
     assert [isinstance(block.attn, QwenGatedDeltaAttention) for block in simple.transformer.h] == [
-        True, False, True, False, True, False, True, False
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        False,
     ]
     assert all(
         block.attn.simple
@@ -193,7 +224,7 @@ def test_glm_mla_caps_latent_at_width_and_uses_head_split_muon_updates():
             isinstance(projection, HeadSplitLinear)
             for projection in (block.attn.q_up, block.attn.k_up, block.attn.v_up)
         )
-    optimizer = model.setup_optimizer()
+    optimizer = setup_model_optimizer(model)
     split_ids = {
         id(weight)
         for block in model.transformer.h
@@ -213,8 +244,14 @@ def test_motif_gdla_grouped_head_adaptation_and_attention_schedule():
     model = FrontierPoolGPT(config("motif_gdla", n_layer=8))
     model.init_weights()
     assert model.window_sizes == [
-        (16, 0), (128, 0), (128, 0), (128, 0),
-        (16, 0), (128, 0), (128, 0), (128, 0),
+        (16, 0),
+        (128, 0),
+        (128, 0),
+        (128, 0),
+        (16, 0),
+        (128, 0),
+        (128, 0),
+        (128, 0),
     ]
     assert all(
         isinstance(block.attn, MotifGroupedDifferentialLatentAttention)
@@ -236,7 +273,9 @@ def test_motif_mhc_post_scale_anneals_two_to_one_and_stays_doubly_stochastic():
     assert all(isinstance(connection, MotifMHCConnection) for connection in model.mhc_connections)
     scale_buffers = [connection.post_scale for connection in model.mhc_connections]
     assert all(torch.is_tensor(scale) and scale.ndim == 0 for scale in scale_buffers)
-    assert all("post_scale" in dict(connection.named_buffers()) for connection in model.mhc_connections)
+    assert all(
+        "post_scale" in dict(connection.named_buffers()) for connection in model.mhc_connections
+    )
     scale_pointers = [scale.data_ptr() for scale in scale_buffers]
     model.set_training_step(50)
     assert all(connection.post_scale == 1.5 for connection in model.mhc_connections)
@@ -244,8 +283,12 @@ def test_motif_mhc_post_scale_anneals_two_to_one_and_stays_doubly_stochastic():
     streams = torch.randn(2, 3, cfg.mhc_num_streams, cfg.n_embd)
     _, post, residual = model.mhc_connections[0].mappings(streams)
     assert post.min() >= 0 and post.max() <= 1.5
-    torch.testing.assert_close(residual.sum(-1), torch.ones_like(residual.sum(-1)), atol=1e-4, rtol=1e-4)
-    torch.testing.assert_close(residual.sum(-2), torch.ones_like(residual.sum(-2)), atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(
+        residual.sum(-1), torch.ones_like(residual.sum(-1)), atol=1e-4, rtol=1e-4
+    )
+    torch.testing.assert_close(
+        residual.sum(-2), torch.ones_like(residual.sum(-2)), atol=1e-4, rtol=1e-4
+    )
     model.set_training_step(100)
     assert all(connection.post_scale == 1.0 for connection in model.mhc_connections)
 

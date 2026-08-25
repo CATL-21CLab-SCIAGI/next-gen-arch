@@ -43,6 +43,7 @@ def _load_flash_attention_3():
     try:
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         from kernels import get_kernel
+
         return get_kernel("varunneal/flash-attention-3").flash_attn_interface
     except Exception:
         return None
@@ -54,6 +55,7 @@ def _load_flash_attention_4():
         return None
     try:
         from flash_attn.cute import flash_attn_func as fa4_flash_attn_func
+
         return fa4_flash_attn_func
     except Exception:
         return None
@@ -81,6 +83,7 @@ def _resolve_attention_backend():
         return "sdpa"
 
     from next_gen_arch.training.runtime import COMPUTE_DTYPE
+
     if COMPUTE_DTYPE != torch.bfloat16:
         return "sdpa"
     if HAS_FA4:
@@ -198,8 +201,9 @@ def flash_attn_func(q, k, v, causal=False, window_size=(-1, -1)):
     return y.transpose(1, 2)
 
 
-def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=None,
-                            causal=False, window_size=(-1, -1)):
+def flash_attn_with_kvcache(
+    q, k_cache, v_cache, k=None, v=None, cache_seqlens=None, causal=False, window_size=(-1, -1)
+):
     """
     Flash attention with KV cache for inference.
 
@@ -209,16 +213,22 @@ def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=N
     backend = _resolve_attention_backend()
     if backend == "fa3":
         return _fa3.flash_attn_with_kvcache(
-            q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
-            causal=causal, window_size=window_size
+            q,
+            k_cache,
+            v_cache,
+            k=k,
+            v=v,
+            cache_seqlens=cache_seqlens,
+            causal=causal,
+            window_size=window_size,
         )
 
     B, T_new, H, D = q.shape
     pos = cache_seqlens[0].item()
 
     if k is not None and v is not None:
-        k_cache[:, pos:pos+T_new, :, :] = k
-        v_cache[:, pos:pos+T_new, :, :] = v
+        k_cache[:, pos : pos + T_new, :, :] = k
+        v_cache[:, pos : pos + T_new, :, :] = v
 
     end_pos = pos + T_new
     k_full = k_cache[:, :end_pos, :, :]

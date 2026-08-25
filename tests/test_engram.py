@@ -22,15 +22,17 @@ def test_engram_shared_initialization_is_bit_identical_to_baseline():
 
     torch.manual_seed(42)
     with torch.device("meta"):
-        treatment = GPT(GPTConfig(
-            **common,
-            arch_family="engram",
-            engram_layers=(0, 1),
-            engram_ngram_orders=(2, 3),
-            engram_num_heads=4,
-            engram_dim=64,
-            engram_vocab_multiplier=1,
-        ))
+        treatment = GPT(
+            GPTConfig(
+                **common,
+                arch_family="engram",
+                engram_layers=(0, 1),
+                engram_ngram_orders=(2, 3),
+                engram_num_heads=4,
+                engram_dim=64,
+                engram_vocab_multiplier=1,
+            )
+        )
     treatment.to_empty(device="cpu")
     treatment.init_weights()
 

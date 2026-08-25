@@ -2,19 +2,57 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import re
+import unicodedata
+from dataclasses import fields
 
 import torch
 
+from next_gen_arch.arch.base import GPT, ArchitectureRuntime, GPTConfig
+from next_gen_arch.arch.combinations import (
+    ComboSearchConfig,
+    ComboSearchGPT,
+    ParetoComboConfig,
+    ParetoComboGPT,
+)
 from next_gen_arch.arch.dsa import DeepSeekDSA, DeepSeekDSAConfig
-from next_gen_arch.arch.combinations import ComboSearchConfig, ComboSearchGPT
 from next_gen_arch.arch.fog import FOG, FOGConfig
 from next_gen_arch.arch.frontier import FrontierPoolConfig, FrontierPoolGPT
-from next_gen_arch.arch.base import GPT, GPTConfig
-from next_gen_arch.arch.kimi import KimiAttnRes, KimiAttnResConfig
-from next_gen_arch.arch.kimi import KimiKDA, KimiKDAConfig
-from next_gen_arch.arch.combinations import ParetoComboConfig, ParetoComboGPT
+from next_gen_arch.arch.kimi import KimiAttnRes, KimiAttnResConfig, KimiKDA, KimiKDAConfig
 from next_gen_arch.arch.sota import SotaPoolConfig, SotaPoolGPT
+
+
+def training_architecture_runtime() -> ArchitectureRuntime:
+    """Bind pure architecture definitions to this trainer's execution ops."""
+    from next_gen_arch.training.attention import flash_attn
+    from next_gen_arch.training.runtime import COMPUTE_DTYPE, print0
+
+    return ArchitectureRuntime(
+        compute_dtype=COMPUTE_DTYPE,
+        attention=flash_attn,
+        log=print0,
+    )
+
+
+def build_engram_token_map(tokenizer, vocab_size: int) -> tuple[torch.Tensor, int]:
+    """Build the fixed tokenizer-normalization map used by Engram arms."""
+    mapping: list[int] = []
+    key_to_id: dict[str, int] = {}
+    whitespace = re.compile(r"[ \t\r\n]+")
+    for token_id in range(vocab_size):
+        text = tokenizer.id_to_token(token_id)
+        if "�" in text:
+            key = f"<raw-token-{token_id}>"
+        else:
+            key = unicodedata.normalize("NFKC", text)
+            key = unicodedata.normalize("NFD", key)
+            key = "".join(ch for ch in key if unicodedata.category(ch) != "Mn")
+            key = whitespace.sub(" ", key.lower())
+            key = " " if key == " " else key.strip()
+            if not key:
+                key = text
+        mapping.append(key_to_id.setdefault(key, len(key_to_id)))
+    return torch.tensor(mapping, dtype=torch.long), len(key_to_id)
 
 
 def infer_model_dims(depth: int, aspect_ratio: int, head_dim: int) -> tuple[int, int]:
@@ -29,6 +67,7 @@ def patch_model_config_kwargs(model_config_kwargs: dict) -> dict:
     """Patch missing config keys from older checkpoints and normalize families."""
     arch_family = model_config_kwargs.get("arch_family", "nanochat")
     patched = dict(model_config_kwargs)
+    patched.setdefault("runtime", training_architecture_runtime())
     patched["arch_family"] = arch_family
     patched.setdefault("per_head_muon", False)
     if "window_pattern" not in patched:
@@ -173,6 +212,7 @@ def build_model_config(
         n_embd=model_dim,
         window_pattern=window_pattern,
         per_head_muon=per_head_muon,
+        runtime=training_architecture_runtime(),
     )
     if arch_family == "nanochat":
         return GPTConfig(**common_kwargs, arch_family="nanochat")
@@ -344,16 +384,16 @@ def build_model_from_config_kwargs(model_config_kwargs: dict, *, runtime_backend
 
 
 def model_config_to_dict(model_config) -> dict:
-    return asdict(model_config)
+    return {
+        config_field.name: getattr(model_config, config_field.name)
+        for config_field in fields(model_config)
+        if config_field.name != "runtime"
+    }
 
 
 def strip_backend_extra_state(model_state_dict: dict) -> dict:
     """Drop backend-only state that native eval models do not need."""
-    return {
-        k: v
-        for k, v in model_state_dict.items()
-        if not k.endswith("._extra_state")
-    }
+    return {k: v for k, v in model_state_dict.items() if not k.endswith("._extra_state")}
 
 
 def patch_missing_model_state(model_data: dict, model_config) -> dict:

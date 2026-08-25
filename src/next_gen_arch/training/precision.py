@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 from contextlib import nullcontext
 from dataclasses import dataclass
-import importlib
 from typing import Any
 
 import torch
@@ -89,7 +89,7 @@ class PrecisionBackend:
                 except Exception:
                     extra_state = None
             if extra_state is None and hasattr(module, "_extra_state"):
-                extra_state = getattr(module, "_extra_state")
+                extra_state = module._extra_state
             if extra_state is None:
                 continue
             _collect_debug_scalars(stats, extra_state, prefix=name)

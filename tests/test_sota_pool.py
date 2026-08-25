@@ -4,15 +4,15 @@ import pytest
 import torch
 
 from next_gen_arch.arch.base import GPT, GPTConfig, norm
-from next_gen_arch.training.models import build_model_from_config_kwargs, model_config_to_dict
 from next_gen_arch.arch.sota import (
+    SOTA_VARIANTS,
+    XIELU,
     CausalDepthwiseConv,
     DynamicTanh,
-    SOTA_VARIANTS,
     SotaPoolConfig,
     SotaPoolGPT,
-    XIELU,
 )
+from next_gen_arch.training.models import build_model_from_config_kwargs, model_config_to_dict
 
 
 def tiny_config(variant="baseline", **kwargs):

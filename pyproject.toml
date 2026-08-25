@@ -62,6 +62,7 @@ packages = ["src/next_gen_arch"]
 [tool.hatch.build.targets.wheel.force-include]
 "results/parameter-scale-100m-1b-v1-manifest.json" = "src/next_gen_arch/data/parameter-scale-100m-1b-v1-manifest.json"
 "results/key-metrics.csv" = "src/next_gen_arch/data/key-metrics.csv"
+"results/speedrun-10m-reference.csv" = "src/next_gen_arch/data/speedrun-10m-reference.csv"
 
 [tool.hatch.build.targets.sdist]
 exclude = [
@@ -81,10 +82,15 @@ markers = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-extend-exclude = ["src/next_gen_arch/arch", "src/next_gen_arch/training"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/next_gen_arch/training/base_train.py" = ["E402"]
+"src/next_gen_arch/training/tok_train.py" = ["E402"]
+"src/next_gen_arch/training/tokenizer.py" = ["B019", "E402"]
 
 [tool.uv]
 default-groups = []

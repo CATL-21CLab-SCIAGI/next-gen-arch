@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -75,9 +76,7 @@ def test_prompt_set_is_versioned_and_stable():
 
 
 def test_python_sources_use_one_src_package_layout():
-    architecture_files = {
-        path.name for path in (ROOT / "src/next_gen_arch/arch").glob("*.py")
-    }
+    architecture_files = {path.name for path in (ROOT / "src/next_gen_arch/arch").glob("*.py")}
     assert architecture_files == {
         "__init__.py",
         "base.py",
@@ -93,3 +92,22 @@ def test_python_sources_use_one_src_package_layout():
     assert (ROOT / "src/next_gen_arch/training/dataset.py").is_file()
     assert not (ROOT / "nanochat/gpt.py").exists()
     assert not (ROOT / "scripts/base_train.py").exists()
+
+
+def test_architecture_modules_do_not_import_execution_layers():
+    forbidden = ("next_gen_arch.training", "next_gen_arch.backends")
+    for source in (ROOT / "src/next_gen_arch/arch").glob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+        imports.extend(
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        )
+        assert not any(name.startswith(forbidden) for name in imports), source
+        assert not any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "setup_optimizer"
+            for node in ast.walk(tree)
+        ), source

@@ -8,15 +8,13 @@ instead of being silently approximated here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from next_gen_arch.training.runtime import COMPUTE_DTYPE, get_dist_info, print0
-from next_gen_arch.training.attention import flash_attn
 from next_gen_arch.arch.base import (
     GPT,
     GPTConfig,
@@ -27,8 +25,6 @@ from next_gen_arch.arch.base import (
     init_projection_uniform_,
     norm,
 )
-from next_gen_arch.training.optim import DistMuonAdamW, MuonAdamW
-
 
 FRONTIER_VARIANTS = frozenset(
     {
@@ -53,6 +49,7 @@ FRONTIER_VARIANTS = frozenset(
     }
 )
 
+
 @dataclass
 class FrontierPoolConfig(GPTConfig):
     arch_family: str = "frontier_pool"
@@ -76,7 +73,11 @@ class FrontierPoolConfig(GPTConfig):
             raise ValueError("sconv_kernel_size must be positive")
         if self.mtp_depth <= 0 or self.mtp_loss_weight < 0:
             raise ValueError("invalid MTP configuration")
-        if self.mhc_num_streams <= 1 or self.mhc_sinkhorn_iterations <= 0 or self.mhc_anneal_steps <= 0:
+        if (
+            self.mhc_num_streams <= 1
+            or self.mhc_sinkhorn_iterations <= 0
+            or self.mhc_anneal_steps <= 0
+        ):
             raise ValueError("invalid modified mHC configuration")
         if self.frontier_variant == "partial_rope_25":
             rotary_dim = (self.n_embd // self.n_head) // 4
@@ -131,11 +132,13 @@ class MotifMHCConnection(nn.Module):
         flat = streams.flatten(-2).float()
         inv_rms = torch.rsqrt(flat.square().mean(dim=-1, keepdim=True) + 1e-6)
         raw = F.linear(flat, self.mapping_proj.weight)
-        scales = torch.cat((
-            self.alpha[0].expand(n),
-            self.alpha[1].expand(n),
-            self.alpha[2].expand(n * n),
-        ))
+        scales = torch.cat(
+            (
+                self.alpha[0].expand(n),
+                self.alpha[1].expand(n),
+                self.alpha[2].expand(n * n),
+            )
+        )
         raw = raw * inv_rms * scales + self.bias
         pre = raw[..., :n].sigmoid()
         post = self.post_scale.to(raw.dtype) * raw[..., n : 2 * n].sigmoid()
@@ -191,7 +194,9 @@ class CausalDepthwiseConv1d(nn.Module):
                 from fla.modules.convolution import causal_conv1d
             except ImportError as exc:  # pragma: no cover - remote preflight
                 raise RuntimeError("Qwen GDN requires the pinned fla-core CUDA kernel") from exc
-            y, _ = causal_conv1d(x=x, weight=self.weight.to(x.dtype), activation="silu", backend="triton")
+            y, _ = causal_conv1d(
+                x=x, weight=self.weight.to(x.dtype), activation="silu", backend="triton"
+            )
             return y
         y = F.conv1d(
             x.transpose(1, 2),
@@ -214,9 +219,7 @@ def gated_delta_reference(q, k, v, g, beta):
         prediction = torch.einsum("bhk,bhkv->bhv", k[:, token], state)
         update = beta[:, token].unsqueeze(-1) * (v[:, token] - prediction)
         state = state + k[:, token].unsqueeze(-1) * update.unsqueeze(-2)
-        outputs.append(
-            torch.einsum("bhkv,bhk->bhv", state, q[:, token]) * q.size(-1) ** -0.5
-        )
+        outputs.append(torch.einsum("bhkv,bhk->bhv", state, q[:, token]) * q.size(-1) ** -0.5)
     return torch.stack(outputs, dim=1).to(q.dtype)
 
 
@@ -429,7 +432,9 @@ class DeepSeekCompressedAttention(nn.Module):
 
     def forward(self, x, ve, cos_sin, window_size, kv_cache):
         if kv_cache is not None:
-            raise NotImplementedError("compressed-attention cache inference is outside this campaign")
+            raise NotImplementedError(
+                "compressed-attention cache inference is outside this campaign"
+            )
         batch, time, _ = x.shape
         cos, sin = cos_sin
         q = self.q_up(self.q_down(x)).view(batch, time, self.n_head, self.head_dim)
@@ -483,6 +488,7 @@ class GLMMultiLatentAttention(nn.Module):
     def __init__(self, config: FrontierPoolConfig, layer_idx: int):
         super().__init__()
         self.layer_idx = layer_idx
+        self.runtime = config.runtime
         self.n_head = config.n_head
         self.head_dim = config.n_embd // config.n_head
         self.latent_dim = min(256, config.n_embd)
@@ -515,7 +521,9 @@ class GLMMultiLatentAttention(nn.Module):
         cos, sin = cos_sin
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q) * 1.2, norm(k) * 1.2
-        output = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        output = self.runtime.attention.flash_attn_func(
+            q, k, v, causal=True, window_size=window_size
+        )
         return self.out_proj(output.reshape(batch, time, -1))
 
 
@@ -525,6 +533,7 @@ class MotifGroupedDifferentialLatentAttention(nn.Module):
     def __init__(self, config: FrontierPoolConfig, layer_idx: int):
         super().__init__()
         self.layer_idx = layer_idx
+        self.runtime = config.runtime
         self.signal_heads = config.n_head - 1
         self.noise_heads = 1
         self.group_ratio = self.signal_heads
@@ -535,13 +544,9 @@ class MotifGroupedDifferentialLatentAttention(nn.Module):
         self.q_down = Linear(config.n_embd, self.latent_dim, bias=False)
         self.q_up = HeadSplitLinear(self.latent_dim, config.n_head, self.head_dim)
         self.kv_down = Linear(config.n_embd, self.latent_dim + self.rotary_dim, bias=False)
-        self.kv_up = Linear(
-            self.latent_dim, self.content_dim + self.head_dim, bias=False
-        )
+        self.kv_up = Linear(self.latent_dim, self.content_dim + self.head_dim, bias=False)
         self.lambda_proj = Linear(config.n_embd, self.signal_heads, bias=False)
-        self.output_gate = Linear(
-            self.latent_dim, self.signal_heads * self.head_dim, bias=False
-        )
+        self.output_gate = Linear(self.latent_dim, self.signal_heads * self.head_dim, bias=False)
         self.out_proj = Linear(self.signal_heads * self.head_dim, config.n_embd, bias=False)
         self.ve_gate = None
 
@@ -554,9 +559,7 @@ class MotifGroupedDifferentialLatentAttention(nn.Module):
             batch, time, self.signal_heads + self.noise_heads, self.head_dim
         )
         kv_and_rope = self.kv_down(x)
-        kv_latent, rotary_key = torch.split(
-            kv_and_rope, [self.latent_dim, self.rotary_dim], dim=-1
-        )
+        kv_latent, rotary_key = torch.split(kv_and_rope, [self.latent_dim, self.rotary_dim], dim=-1)
         content_key, value = torch.split(
             self.kv_up(norm(kv_latent)), [self.content_dim, self.head_dim], dim=-1
         )
@@ -570,29 +573,28 @@ class MotifGroupedDifferentialLatentAttention(nn.Module):
             cos[..., : self.rotary_dim // 2],
             sin[..., : self.rotary_dim // 2],
         )
-        key = torch.cat(
-            [content_key.view(batch, time, 1, self.content_dim), rotary_key], dim=-1
-        )
+        key = torch.cat([content_key.view(batch, time, 1, self.content_dim), rotary_key], dim=-1)
         value = value.view(batch, time, 1, self.head_dim)
         if ve is not None:
             value = value + ve.view(batch, time, -1, self.head_dim).mean(dim=2, keepdim=True)
         q = norm(torch.cat([q_content, q_rope], dim=-1)) * 1.2
         key = norm(key) * 1.2
         signal_q, noise_q = q[:, :, : self.signal_heads], q[:, :, self.signal_heads :]
-        signal = flash_attn.flash_attn_func(
+        signal = self.runtime.attention.flash_attn_func(
             signal_q,
             key.expand(-1, -1, self.signal_heads, -1),
             value.expand(-1, -1, self.signal_heads, -1),
             causal=True,
             window_size=window_size,
         )
-        noise = flash_attn.flash_attn_func(
+        noise = self.runtime.attention.flash_attn_func(
             noise_q, key, value, causal=True, window_size=window_size
         ).expand(-1, -1, self.signal_heads, -1)
         coefficient = torch.sigmoid(self.lambda_proj(x)).unsqueeze(-1)
         differential = signal - coefficient * noise
         gate = torch.sigmoid(self.output_gate(query_latent)).view_as(differential)
         return self.out_proj((gate * differential).reshape(batch, time, -1))
+
 
 class SiTUGLU(nn.Module):
     """Kimi K3 Sigmoid Tanh Unit GLU with beta1=4 and beta2=25."""
@@ -635,6 +637,7 @@ class FrontierAttention(nn.Module):
     def __init__(self, config: FrontierPoolConfig, layer_idx: int):
         super().__init__()
         self.config = config
+        self.runtime = config.runtime
         self.variant = config.frontier_variant
         self.layer_idx = layer_idx
         self.n_head = config.n_head
@@ -643,7 +646,9 @@ class FrontierAttention(nn.Module):
         self.head_dim = config.n_embd // config.n_head
         if self.n_kv_head != self.n_head:
             raise ValueError("frontier pool controls require the baseline MHA head layout")
-        projection_cls = HeadSplitLinear if config.per_head_muon or self.variant == "per_head_muon" else Linear
+        projection_cls = (
+            HeadSplitLinear if config.per_head_muon or self.variant == "per_head_muon" else Linear
+        )
         if projection_cls is HeadSplitLinear:
             self.c_q = projection_cls(self.n_embd, self.n_head, self.head_dim)
             self.c_k = projection_cls(self.n_embd, self.n_head, self.head_dim)
@@ -664,7 +669,9 @@ class FrontierAttention(nn.Module):
             self.v_sconv = InklingShortConvolution(self.n_embd, config.sconv_kernel_size)
         if self.variant == "inkling_relative_attention":
             self.r_proj = Linear(self.n_embd, self.n_head * config.relative_dim, bias=False)
-            self.relative_bank = nn.Parameter(torch.empty(config.relative_dim, config.relative_extent))
+            self.relative_bank = nn.Parameter(
+                torch.empty(config.relative_dim, config.relative_extent)
+            )
         if self.variant == "attention_sink":
             self.sink_logit = nn.Parameter(torch.empty(self.n_head))
 
@@ -729,8 +736,13 @@ class FrontierAttention(nn.Module):
         return output.transpose(1, 2)
 
     def forward(self, x, ve, cos_sin, window_size, kv_cache):
-        if kv_cache is not None and self.variant in {"inkling_relative_attention", "attention_sink"}:
-            raise NotImplementedError(f"{self.variant} cache inference is outside this training campaign")
+        if kv_cache is not None and self.variant in {
+            "inkling_relative_attention",
+            "attention_sink",
+        }:
+            raise NotImplementedError(
+                f"{self.variant} cache inference is outside this training campaign"
+            )
         batch, time, _ = x.shape
         q, k, v = self._project(x, ve)
         if self.variant == "inkling_relative_attention":
@@ -740,11 +752,25 @@ class FrontierAttention(nn.Module):
             if self.variant == "partial_rope_25":
                 rotary_dim = self.head_dim // 4
                 q = torch.cat(
-                    [apply_rotary_emb(q[..., :rotary_dim], cos[..., : rotary_dim // 2], sin[..., : rotary_dim // 2]), q[..., rotary_dim:]],
+                    [
+                        apply_rotary_emb(
+                            q[..., :rotary_dim],
+                            cos[..., : rotary_dim // 2],
+                            sin[..., : rotary_dim // 2],
+                        ),
+                        q[..., rotary_dim:],
+                    ],
                     dim=-1,
                 )
                 k = torch.cat(
-                    [apply_rotary_emb(k[..., :rotary_dim], cos[..., : rotary_dim // 2], sin[..., : rotary_dim // 2]), k[..., rotary_dim:]],
+                    [
+                        apply_rotary_emb(
+                            k[..., :rotary_dim],
+                            cos[..., : rotary_dim // 2],
+                            sin[..., : rotary_dim // 2],
+                        ),
+                        k[..., rotary_dim:],
+                    ],
                     dim=-1,
                 )
             else:
@@ -754,10 +780,12 @@ class FrontierAttention(nn.Module):
             else:
                 q, k = norm(q) * 1.2, norm(k) * 1.2
                 if kv_cache is None:
-                    y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+                    y = self.runtime.attention.flash_attn_func(
+                        q, k, v, causal=True, window_size=window_size
+                    )
                 else:
                     k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
-                    y = flash_attn.flash_attn_with_kvcache(
+                    y = self.runtime.attention.flash_attn_with_kvcache(
                         q,
                         k_cache,
                         v_cache,
@@ -821,7 +849,9 @@ class SharedMTP(nn.Module):
         self.depth = config.mtp_depth
         self.mix = Linear(2 * config.n_embd, config.n_embd, bias=False)
         # This shared block is intentionally baseline-shaped.
-        control = FrontierPoolConfig(**{**config.__dict__, "frontier_variant": "inkling_lr2_weight_decay"})
+        control = FrontierPoolConfig(
+            **{**config.__dict__, "frontier_variant": "inkling_lr2_weight_decay"}
+        )
         self.block = FrontierBlock(control, config.n_layer)
 
     def forward(self, hidden, idx, embed, cos_sin, lm_head, vocab_size):
@@ -833,22 +863,30 @@ class SharedMTP(nn.Module):
                 break
             teacher = norm(embed(idx[:, offset:]).to(state.dtype))
             state = self.mix(torch.cat([state[:, :valid], teacher], dim=-1))
-            state = self.block(state, None, (cos_sin[0][:, :valid], cos_sin[1][:, :valid]), (valid, 0), None)
+            state = self.block(
+                state, None, (cos_sin[0][:, :valid], cos_sin[1][:, :valid]), (valid, 0), None
+            )
             logits = lm_head(norm(state))[..., :vocab_size].float()
             logits = 15 * torch.tanh(logits / 15)
             target = idx[:, offset + 1 :] if offset + 1 < idx.size(1) else idx[:, :0]
             if target.numel() == 0:
                 break
-            losses.append(F.cross_entropy(logits[:, :-1].reshape(-1, vocab_size), target.reshape(-1)))
+            losses.append(
+                F.cross_entropy(logits[:, :-1].reshape(-1, vocab_size), target.reshape(-1))
+            )
         return torch.stack(losses).mean() if losses else hidden.new_zeros((), dtype=torch.float32)
 
 
 class FrontierPoolGPT(GPT):
     def __init__(self, config: FrontierPoolConfig, pad_vocab_size_to: int = 64):
         super().__init__(config, pad_vocab_size_to=pad_vocab_size_to)
-        self.transformer.h = nn.ModuleList([FrontierBlock(config, i) for i in range(config.n_layer)])
+        self.transformer.h = nn.ModuleList(
+            [FrontierBlock(config, i) for i in range(config.n_layer)]
+        )
         if config.frontier_variant == "hybrid_swa_5_1_w512":
-            self.window_sizes = [((512, 0) if i % 6 < 5 else (config.sequence_len, 0)) for i in range(config.n_layer)]
+            self.window_sizes = [
+                ((512, 0) if i % 6 < 5 else (config.sequence_len, 0)) for i in range(config.n_layer)
+            ]
             self.window_sizes[-1] = (config.sequence_len, 0)
         if config.frontier_variant == "motif_gdla":
             self.window_sizes = [
@@ -975,10 +1013,12 @@ class FrontierPoolGPT(GPT):
                 connection.bias.zero_()
         head_dim = self.config.n_embd // self.config.n_head
         self.cos, self.sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
-        if COMPUTE_DTYPE != torch.float16:
-            self.transformer.wte.to(dtype=COMPUTE_DTYPE)
+        compute_dtype = self.config.runtime.compute_dtype
+        if compute_dtype != torch.float16:
+            self.transformer.wte.to(dtype=compute_dtype)
             for value_embed in self.value_embeds.values():
-                value_embed.to(dtype=COMPUTE_DTYPE)
+                value_embed.to(dtype=compute_dtype)
+
     def _residual_norm(self, x: torch.Tensor, *, final: bool = False) -> torch.Tensor:
         if self.config.frontier_variant != "zero_centered_rmsnorm":
             return norm(x)
@@ -990,7 +1030,7 @@ class FrontierPoolGPT(GPT):
             raise ValueError("sequence exceeds rotary cache")
         offset = 0 if kv_cache is None else kv_cache.get_pos()
         cos_sin = self.cos[:, offset : offset + time], self.sin[:, offset : offset + time]
-        x = self._residual_norm(self.transformer.wte(idx).to(COMPUTE_DTYPE))
+        x = self._residual_norm(self.transformer.wte(idx).to(self.config.runtime.compute_dtype))
         if kv_cache is None:
             if time <= 1:
                 raise ValueError("training forward requires more than one token")
@@ -1081,50 +1121,6 @@ class FrontierPoolGPT(GPT):
         metrics, self._training_metrics = self._training_metrics, {}
         return metrics
 
-    def _optimizer_partitions(self):
-        value_ids = {id(p) for p in self.value_embeds.parameters()}
-        excluded = value_ids | {
-            id(self.transformer.wte.weight),
-            id(self.lm_head.weight),
-            id(self.resid_lambdas),
-            id(self.x0_lambdas),
-            id(self.smear_gate.weight),
-            id(self.smear_lambda),
-            id(self.backout_lambda),
-        }
-        matrices, architecture = [], []
-        for parameter in self.parameters():
-            if id(parameter) in excluded:
-                continue
-            (matrices if parameter.ndim == 2 else architecture).append(parameter)
-        return matrices, architecture
-
-    def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, scalar_lr=0.5):
-        ddp, _, _, _ = get_dist_info()
-        scale = (self.config.n_embd / 768) ** -0.5
-        print0(f"Scaling the LR for AdamW parameters by {scale:.6f}")
-        matrices, architecture = self._optimizer_partitions()
-        controls = [self.resid_lambdas, self.x0_lambdas, self.smear_gate.weight, self.smear_lambda, self.backout_lambda]
-        groups = [
-            dict(kind="adamw", params=[self.lm_head.weight], lr=unembedding_lr * scale, betas=(0.8, 0.96), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=[self.transformer.wte.weight], lr=embedding_lr * scale, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.001),
-            dict(kind="adamw", params=list(self.value_embeds.parameters()), lr=embedding_lr * scale * 0.5, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=[self.resid_lambdas], lr=scalar_lr * 0.01, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.05),
-            dict(kind="adamw", params=[self.x0_lambdas], lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),
-            dict(kind="adamw", params=controls[2:], lr=0.2, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0),
-        ]
-        if architecture:
-            groups.append(dict(kind="adamw", params=architecture, lr=self.config.frontier_extra_lr, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0))
-        for shape in sorted({p.shape for p in matrices}):
-            groups.append(dict(kind="muon", params=[p for p in matrices if p.shape == shape], lr=matrix_lr, momentum=0.95, ns_steps=5, beta2=0.9, weight_decay=weight_decay))
-        grouped_ids = [id(p) for group in groups for p in group["params"]]
-        if len(grouped_ids) != len(set(grouped_ids)) or set(grouped_ids) != {id(p) for p in self.parameters()}:
-            raise RuntimeError("frontier optimizer grouping mismatch")
-        optimizer = (DistMuonAdamW if ddp else MuonAdamW)(groups)
-        for group in optimizer.param_groups:
-            group["initial_lr"] = group["lr"]
-        return optimizer
-
     def num_scaling_params(self):
         wte = self.transformer.wte.weight.numel()
         value_embeds = sum(p.numel() for p in self.value_embeds.parameters())
@@ -1166,8 +1162,7 @@ class FrontierPoolGPT(GPT):
             # Linear recurrent state update/read FLOPs. Projection and causal
             # convolution FLOPs are already represented by matrix parameters.
             recurrent_internal = sum(
-                6 * attn.num_v_heads * attn.head_k_dim * attn.head_v_dim
-                for attn in recurrent
+                6 * attn.num_v_heads * attn.head_k_dim * attn.head_v_dim for attn in recurrent
             )
             return base - len(recurrent) * dense_layer + recurrent_internal
 
@@ -1187,12 +1182,12 @@ class FrontierPoolGPT(GPT):
 
         if self.config.frontier_variant == "shared_mtp3":
             depth = self.config.mtp_depth
-            shared_matrices = sum(
-                p.numel() for p in self.mtp.block.parameters() if p.ndim >= 2
-            ) + self.mtp.mix.weight.numel()
+            shared_matrices = (
+                sum(p.numel() for p in self.mtp.block.parameters() if p.ndim >= 2)
+                + self.mtp.mix.weight.numel()
+            )
             repeated_weight_flops = 6 * (
-                (depth - 1) * shared_matrices
-                + depth * self.lm_head.weight.numel()
+                (depth - 1) * shared_matrices + depth * self.lm_head.weight.numel()
             )
             repeated_attention = depth * dense_layer
             return base + repeated_weight_flops + repeated_attention
@@ -1205,7 +1200,6 @@ class FrontierPoolGPT(GPT):
             return algorithmic
         head_dim = self.config.n_embd // self.config.n_head
         seq_len = self.config.sequence_len
-        dense_layer = 12 * self.config.n_head * head_dim * seq_len
         compression = 128 if self.config.frontier_variant == "deepseek_hca" else 4
         groups = math.ceil(seq_len / compression)
         algorithmic_attention = (
@@ -1218,11 +1212,7 @@ class FrontierPoolGPT(GPT):
         # The controlled PyTorch SDPA fallback materializes the masked local
         # token axis, so label this separately from the report's sparse cost.
         fallback_attention = (
-            12
-            * self.config.n_head
-            * head_dim
-            * (seq_len + groups)
-            * self.config.n_layer
+            12 * self.config.n_head * head_dim * (seq_len + groups) * self.config.n_layer
         )
         return algorithmic - algorithmic_attention + fallback_attention
 
@@ -1234,19 +1224,31 @@ class FrontierPoolGPT(GPT):
             "component_registry": "frontier_report_campaign/component_registry.json",
         }
         if self.config.frontier_variant == "inkling_relative_attention":
-            state.update(position="content_dependent_relative_no_rope", d_rel=self.config.relative_dim, extent=self.config.relative_extent)
+            state.update(
+                position="content_dependent_relative_no_rope",
+                d_rel=self.config.relative_dim,
+                extent=self.config.relative_extent,
+            )
         elif self.config.frontier_variant in {"inkling_sconv_kv", "inkling_sconv_residual"}:
             state.update(kernel=self.config.sconv_kernel_size, compute="fp32", residual=True)
         elif self.config.frontier_variant == "hybrid_swa_5_1_w512":
-            state.update(local_global_ratio="5:1", sliding_window=512, layer_windows=self.window_sizes)
+            state.update(
+                local_global_ratio="5:1", sliding_window=512, layer_windows=self.window_sizes
+            )
         elif self.config.frontier_variant == "partial_rope_25":
             state.update(rotary_fraction=0.25)
         elif self.config.frontier_variant == "zero_centered_rmsnorm":
             state.update(norm="rms_norm_times_one_plus_zero_initialized_weight")
         elif self.config.frontier_variant == "kimi_situ_glu":
-            state.update(beta1=4.0, beta2=25.0, intermediate_size=self.transformer.h[0].mlp.situ.intermediate_size)
+            state.update(
+                beta1=4.0,
+                beta2=25.0,
+                intermediate_size=self.transformer.h[0].mlp.situ.intermediate_size,
+            )
         elif self.config.frontier_variant == "shared_mtp3":
-            state.update(shared_mtp_depth=self.config.mtp_depth, loss_weight=self.config.mtp_loss_weight)
+            state.update(
+                shared_mtp_depth=self.config.mtp_depth, loss_weight=self.config.mtp_loss_weight
+            )
         elif self.config.frontier_variant == "attention_sink":
             state.update(sink="learned_per_head_softmax_denominator_with_zero_value")
         elif self.config.frontier_variant == "inkling_lr2_weight_decay":

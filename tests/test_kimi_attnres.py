@@ -12,6 +12,7 @@ from next_gen_arch.training.models import (
     model_config_to_dict,
     patch_model_config_kwargs,
 )
+from next_gen_arch.training.optim import setup_model_optimizer
 
 
 def tiny_config(**overrides):
@@ -74,10 +75,12 @@ def test_attn_res_read_forward_backward_matches_fp32_k3_reference():
     gradient = torch.randn_like(output)
     output.backward(gradient)
     expected.backward(gradient)
-    for lhs, rhs in zip(actual_sources, reference_sources):
+    for lhs, rhs in zip(actual_sources, reference_sources, strict=True):
         torch.testing.assert_close(lhs.grad, rhs.grad, rtol=2e-5, atol=2e-6)
     torch.testing.assert_close(actual.query.grad, reference.query.grad, rtol=2e-5, atol=2e-6)
-    torch.testing.assert_close(actual.norm_weight.grad, reference.norm_weight.grad, rtol=2e-5, atol=2e-6)
+    torch.testing.assert_close(
+        actual.norm_weight.grad, reference.norm_weight.grad, rtol=2e-5, atol=2e-6
+    )
 
 
 def test_zero_query_is_uniform_and_bf16_gradients_are_finite():
@@ -139,11 +142,13 @@ def test_mhar_configuration_uses_eight_zero_parameter_routing_heads():
 
 
 def test_shared_initialization_is_bit_identical_to_paired_baseline():
-    baseline_config = GPTConfig(**{
-        key: value
-        for key, value in tiny_config().__dict__.items()
-        if not key.startswith("attn_res_") and key != "arch_family"
-    })
+    baseline_config = GPTConfig(
+        **{
+            key: value
+            for key, value in tiny_config().__dict__.items()
+            if not key.startswith("attn_res_") and key != "arch_family"
+        }
+    )
     torch.manual_seed(42)
     with torch.device("meta"):
         baseline = GPT(baseline_config)
@@ -162,7 +167,10 @@ def test_shared_initialization_is_bit_identical_to_paired_baseline():
             continue
         torch.testing.assert_close(tensor, treatment_state[name], rtol=0, atol=0)
     assert all(torch.count_nonzero(read.query) == 0 for read in treatment._attn_res_reads())
-    assert all(torch.equal(read.norm_weight, torch.ones_like(read.norm_weight)) for read in treatment._attn_res_reads())
+    assert all(
+        torch.equal(read.norm_weight, torch.ones_like(read.norm_weight))
+        for read in treatment._attn_res_reads()
+    )
 
 
 def test_value_embeddings_remain_connected_to_the_attention_layers():
@@ -204,7 +212,7 @@ def test_optimizer_group_parameter_and_flop_contracts():
 
     model = KimiAttnRes(tiny_config())
     model.init_weights()
-    optimizer = model.setup_optimizer(scalar_lr=0.5)
+    optimizer = setup_model_optimizer(model, scalar_lr=0.5)
     attn_res_group = next(group for group in optimizer.param_groups if group.get("attn_res"))
     assert attn_res_group["lr"] == pytest.approx(0.005)
     assert attn_res_group["weight_decay"] == 0.0
@@ -225,14 +233,16 @@ def test_checkpoint_config_round_trip_and_legacy_baseline_loading():
     assert rebuilt_config.arch_family == "kimi_attnres"
     assert rebuilt_config.attn_res_block_size == 2
 
-    legacy = patch_model_config_kwargs({
-        "sequence_len": 8,
-        "vocab_size": 256,
-        "n_layer": 2,
-        "n_head": 1,
-        "n_kv_head": 1,
-        "n_embd": 128,
-    })
+    legacy = patch_model_config_kwargs(
+        {
+            "sequence_len": 8,
+            "vocab_size": 256,
+            "n_layer": 2,
+            "n_head": 1,
+            "n_kv_head": 1,
+            "n_embd": 128,
+        }
+    )
     assert legacy["arch_family"] == "nanochat"
     baseline, baseline_config = build_model_from_config_kwargs(legacy)
     assert isinstance(baseline, GPT)

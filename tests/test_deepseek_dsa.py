@@ -1,19 +1,20 @@
-import math
 import inspect
+import math
 
 import pytest
 import torch
 
+from next_gen_arch.arch.base import GPT, GPTConfig
 from next_gen_arch.arch.dsa import (
     DSA_BACKEND,
-    DSACausalSelfAttention,
     DeepSeekDSA,
     DeepSeekDSAConfig,
+    DSACausalSelfAttention,
     LightningIndexer,
     _apply_partial_noninterleaved_rope,
 )
-from next_gen_arch.arch.base import GPT, GPTConfig
 from next_gen_arch.training.models import build_model_from_config_kwargs
+from next_gen_arch.training.optim import setup_model_optimizer
 
 
 def tiny_config(**overrides):
@@ -37,11 +38,7 @@ def tiny_config(**overrides):
 
 
 def shared_state(model):
-    return {
-        key: value
-        for key, value in model.state_dict().items()
-        if ".indexer." not in key
-    }
+    return {key: value for key, value in model.state_dict().items() if ".indexer." not in key}
 
 
 def test_d14_parameter_contract_and_all_layer_placement_on_meta():
@@ -122,10 +119,15 @@ def test_shared_initialization_is_bit_identical_to_baseline():
 
 def test_dense_warmup_logits_match_baseline():
     torch.manual_seed(11)
-    baseline = GPT(GPTConfig(**{
-        key: value for key, value in tiny_config().__dict__.items()
-        if not key.startswith("dsa_") and key != "arch_family"
-    }))
+    baseline = GPT(
+        GPTConfig(
+            **{
+                key: value
+                for key, value in tiny_config().__dict__.items()
+                if not key.startswith("dsa_") and key != "arch_family"
+            }
+        )
+    )
     baseline.init_weights()
     dsa = DeepSeekDSA(tiny_config())
     dsa.init_weights()
@@ -159,7 +161,10 @@ def test_sparse_attention_matches_explicit_selected_reference_and_is_causal():
     actual = attn(x, None, (cos, sin), (6, 0), None)
     indices = captured["indices"]
     query_positions = torch.arange(6)[None, :, None]
-    assert torch.all(indices[indices <= query_positions] <= query_positions.expand_as(indices)[indices <= query_positions])
+    assert torch.all(
+        indices[indices <= query_positions]
+        <= query_positions.expand_as(indices)[indices <= query_positions]
+    )
 
     q = attn.c_q(x).view(2, 6, 1, 128)
     k = attn.c_k(x).view(2, 6, 1, 128)
@@ -205,7 +210,7 @@ def test_indexer_kl_is_detached_from_backbone_but_trains_indexer():
 def test_optimizer_group_and_phase_lrs():
     model = DeepSeekDSA(tiny_config())
     model.init_weights()
-    optimizer = model.setup_optimizer()
+    optimizer = setup_model_optimizer(model)
     groups = [group for group in optimizer.param_groups if group.get("dsa_indexer")]
     assert len(groups) == 1
     group = groups[0]

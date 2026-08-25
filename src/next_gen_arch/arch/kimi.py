@@ -16,21 +16,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from next_gen_arch.training.runtime import COMPUTE_DTYPE, get_dist_info, print0
-from next_gen_arch.training.attention import flash_attn
 from next_gen_arch.arch.base import (
-    Block,
     GPT,
+    MLP,
+    Block,
     GPTConfig,
     HeadSplitLinear,
     Linear,
-    MLP,
     has_ve,
     init_projection_uniform_,
     norm,
 )
-from next_gen_arch.training.optim import DistMuonAdamW, MuonAdamW
-
 
 KDA_PATTERN = "KKKG"
 KDA_CHUNK_SIZE = 64
@@ -75,13 +71,9 @@ def kda_layer_map(
     n_layer: int, pattern: str = KDA_PATTERN, force_final_global: bool = True
 ) -> dict[str, list[int]]:
     """Return one-based KDA/global layer lists for manifests and tests."""
-    kda = [
-        i + 1 for i in range(n_layer)
-        if is_kda_layer(i, n_layer, pattern, force_final_global)
-    ]
+    kda = [i + 1 for i in range(n_layer) if is_kda_layer(i, n_layer, pattern, force_final_global)]
     global_attn = [
-        i + 1 for i in range(n_layer)
-        if not is_kda_layer(i, n_layer, pattern, force_final_global)
+        i + 1 for i in range(n_layer) if not is_kda_layer(i, n_layer, pattern, force_final_global)
     ]
     return {"kda": kda, "global": global_attn}
 
@@ -124,7 +116,9 @@ class ShortConvolution(nn.Module):
         return F.silu(y.transpose(1, 2))
 
 
-def kda_gate_reference(raw: torch.Tensor, a_log: torch.Tensor, dt_bias: torch.Tensor, head_dim: int):
+def kda_gate_reference(
+    raw: torch.Tensor, a_log: torch.Tensor, dt_bias: torch.Tensor, head_dim: int
+):
     """Reference for fla.ops.kda.gate.kda_gate_ref."""
     raw = raw + dt_bias.to(raw.dtype)
     raw = raw.view(*raw.shape[:-1], -1, head_dim)
@@ -165,6 +159,7 @@ class KimiDeltaAttention(nn.Module):
         self.n_head = config.n_head
         self.n_kv_head = config.n_kv_head
         self.n_embd = config.n_embd
+        self.runtime = config.runtime
         self.head_dim = self.n_embd // self.n_head
         self.chunk_size = config.kda_chunk_size
         self.conv_size = config.kda_conv_size
@@ -340,7 +335,7 @@ class NoPEGatedAttention(nn.Module):
             gate = 3 * torch.sigmoid(self.ve_gate(x[..., : self.ve_gate_channels]))
             v = v + gate.unsqueeze(-1) * ve
         q, k = norm(q) * 1.2, norm(k) * 1.2
-        y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        y = self.runtime.attention.flash_attn_func(q, k, v, causal=True, window_size=window_size)
         y = y.contiguous().view(batch, time, self.n_embd)
         y = (y.float() * torch.sigmoid(self.output_gate(x).float())).to(x.dtype)
         return self.c_proj(y)
@@ -366,9 +361,13 @@ class KimiKDA(GPT):
         if config.kda_variant != "kimi_linear" and config.kda_rope_policy != "none":
             raise ValueError("K3/Solar variants require NoPE global attention")
         self.window_sizes = self._compute_window_sizes(config)
-        padded_vocab_size = ((config.vocab_size + pad_vocab_size_to - 1) // pad_vocab_size_to) * pad_vocab_size_to
+        padded_vocab_size = (
+            (config.vocab_size + pad_vocab_size_to - 1) // pad_vocab_size_to
+        ) * pad_vocab_size_to
         if padded_vocab_size != config.vocab_size:
-            print0(f"Padding vocab_size from {config.vocab_size} to {padded_vocab_size} for efficiency")
+            config.runtime.log(
+                f"Padding vocab_size from {config.vocab_size} to {padded_vocab_size} for efficiency"
+            )
         blocks = []
         for layer_idx in range(config.n_layer):
             if is_kda_layer(
@@ -378,10 +377,12 @@ class KimiKDA(GPT):
             else:
                 block_cls = NoPEGatedBlock if config.kda_rope_policy == "none" else Block
             blocks.append(block_cls(config, layer_idx))
-        self.transformer = nn.ModuleDict({
-            "wte": nn.Embedding(padded_vocab_size, config.n_embd),
-            "h": nn.ModuleList(blocks),
-        })
+        self.transformer = nn.ModuleDict(
+            {
+                "wte": nn.Embedding(padded_vocab_size, config.n_embd),
+                "h": nn.ModuleList(blocks),
+            }
+        )
         self.lm_head = Linear(config.n_embd, padded_vocab_size, bias=False)
         self.resid_lambdas = nn.Parameter(torch.ones(config.n_layer))
         self.x0_lambdas = nn.Parameter(torch.zeros(config.n_layer))
@@ -390,13 +391,17 @@ class KimiKDA(GPT):
         self.smear_lambda = nn.Parameter(torch.zeros(1))
         self.backout_lambda = nn.Parameter(0.2 * torch.ones(1))
         kv_dim = config.n_kv_head * (config.n_embd // config.n_head)
-        self.value_embeds = nn.ModuleDict({
-            str(i): nn.Embedding(padded_vocab_size, kv_dim)
-            for i in range(config.n_layer)
-            if has_ve(i, config.n_layer)
-        })
+        self.value_embeds = nn.ModuleDict(
+            {
+                str(i): nn.Embedding(padded_vocab_size, kv_dim)
+                for i in range(config.n_layer)
+                if has_ve(i, config.n_layer)
+            }
+        )
         self.rotary_seq_len = config.sequence_len * 10
-        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, self.config.n_embd // self.config.n_head)
+        cos, sin = self._precompute_rotary_embeddings(
+            self.rotary_seq_len, self.config.n_embd // self.config.n_head
+        )
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
@@ -438,7 +443,11 @@ class KimiKDA(GPT):
         # mirrors GPT.init_weights layer-for-layer so all shape-compatible
         # shared tensors match the paired nanochat baseline exactly.
         device = self.transformer.wte.weight.device
-        devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
+        devices = (
+            [device.index if device.index is not None else torch.cuda.current_device()]
+            if device.type == "cuda"
+            else []
+        )
         kda_seed = torch.initial_seed() ^ 0x4BDA
         with torch.random.fork_rng(devices=devices):
             torch.manual_seed(kda_seed)
@@ -448,12 +457,14 @@ class KimiKDA(GPT):
                     conv_bound = self.config.kda_conv_size**-0.5
                     for conv in (attn.q_conv, attn.k_conv, attn.v_conv):
                         torch.nn.init.uniform_(conv.weight, -conv_bound, conv_bound)
-                    gate_projections = (attn.g_proj,) if hasattr(attn, "g_proj") else (attn.g_down, attn.g_up)
+                    gate_projections = (
+                        (attn.g_proj,) if hasattr(attn, "g_proj") else (attn.g_down, attn.g_up)
+                    )
                     for projection in (attn.f_down, attn.f_up, attn.beta_proj, *gate_projections):
                         torch.nn.init.kaiming_uniform_(projection.weight, a=math.sqrt(5))
                     gate_with_bias = attn.g_proj if hasattr(attn, "g_proj") else attn.g_up
                     fan_in = gate_with_bias.weight.size(1)
-                    torch.nn.init.uniform_(gate_with_bias.bias, -fan_in**-0.5, fan_in**-0.5)
+                    torch.nn.init.uniform_(gate_with_bias.bias, -(fan_in**-0.5), fan_in**-0.5)
                     if attn.variant == "kimi_k3":
                         attn.a_log.zero_()
                     else:
@@ -462,12 +473,15 @@ class KimiKDA(GPT):
                     attn.output_norm_weight.fill_(1.0)
                 elif hasattr(attn, "output_gate"):
                     torch.nn.init.uniform_(attn.output_gate.weight, -s, s)
-        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, self.config.n_embd // self.config.n_head)
+        cos, sin = self._precompute_rotary_embeddings(
+            self.rotary_seq_len, self.config.n_embd // self.config.n_head
+        )
         self.cos, self.sin = cos, sin
-        if COMPUTE_DTYPE != torch.float16:
-            self.transformer.wte.to(dtype=COMPUTE_DTYPE)
+        compute_dtype = self.config.runtime.compute_dtype
+        if compute_dtype != torch.float16:
+            self.transformer.wte.to(dtype=compute_dtype)
             for ve in self.value_embeds.values():
-                ve.to(dtype=COMPUTE_DTYPE)
+                ve.to(dtype=compute_dtype)
 
     def estimate_flops(self):
         nparams = sum(p.numel() for p in self.parameters())
@@ -482,10 +496,7 @@ class KimiKDA(GPT):
             + self.backout_lambda.numel()
         )
         excluded += sum(
-            p.numel()
-            for block in self.transformer.h
-            for p in block.attn.parameters()
-            if p.ndim < 2
+            p.numel() for block in self.transformer.h for p in block.attn.parameters() if p.ndim < 2
         )
         matmul_and_conv = 6 * (nparams - excluded)
         head_dim = self.config.n_embd // self.config.n_head
@@ -530,50 +541,6 @@ class KimiKDA(GPT):
             "total": total,
         }
 
-    def setup_optimizer(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, scalar_lr=0.5):
-        model_dim = self.config.n_embd
-        ddp, _, _, _ = get_dist_info()
-        transformer_params = list(self.transformer.h.parameters())
-        matrix_params = [p for p in transformer_params if p.ndim >= 2]
-        kda_vector_params = [p for p in transformer_params if p.ndim < 2]
-        value_embeds_params = list(self.value_embeds.parameters())
-        embedding_params = list(self.transformer.wte.parameters())
-        lm_head_params = list(self.lm_head.parameters())
-        resid_params = [self.resid_lambdas]
-        x0_params = [self.x0_lambdas]
-        smear_params = [self.smear_gate.weight, self.smear_lambda, self.backout_lambda]
-        grouped = (
-            matrix_params + kda_vector_params + value_embeds_params + embedding_params
-            + lm_head_params + resid_params + x0_params + smear_params
-        )
-        assert len(list(self.parameters())) == len(grouped)
-
-        scale = (model_dim / 768) ** -0.5
-        print0(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {scale:.6f}")
-        param_groups = [
-            dict(kind="adamw", params=lm_head_params, lr=unembedding_lr * scale, betas=(0.8, 0.96), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=embedding_params, lr=embedding_lr * scale, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.001),
-            dict(kind="adamw", params=value_embeds_params, lr=embedding_lr * scale * 0.5, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=resid_params, lr=scalar_lr * 0.01, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.05),
-            dict(kind="adamw", params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),
-            dict(kind="adamw", params=smear_params, lr=0.2, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0),
-            dict(kind="adamw", params=kda_vector_params, lr=scalar_lr * 0.01, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0),
-        ]
-        for shape in sorted({p.shape for p in matrix_params}):
-            param_groups.append(dict(
-                kind="muon",
-                params=[p for p in matrix_params if p.shape == shape],
-                lr=matrix_lr,
-                momentum=0.95,
-                ns_steps=5,
-                beta2=0.9,
-                weight_decay=weight_decay,
-            ))
-        optimizer = (DistMuonAdamW if ddp else MuonAdamW)(param_groups)
-        for group in optimizer.param_groups:
-            group["initial_lr"] = group["lr"]
-        return optimizer
-
     def get_architecture_state(self) -> dict:
         return {
             "family": "kimi_kda",
@@ -586,7 +553,9 @@ class KimiKDA(GPT):
             ),
             "force_final_global": self.config.kda_force_final_global,
             "rope_policy": self.config.kda_rope_policy,
-            "decay": "lower_bounded_gmin_-5" if self.config.kda_variant == "kimi_k3" else "softplus",
+            "decay": "lower_bounded_gmin_-5"
+            if self.config.kda_variant == "kimi_k3"
+            else "softplus",
             "negative_eigenvalues": self.config.kda_variant == "solar_negative",
             "output_gate": "full_rank" if self.config.kda_variant != "kimi_linear" else "low_rank",
         }
@@ -737,7 +706,9 @@ class KimiAttnRes(GPT):
             "routing_heads": self.config.attn_res_heads,
             "routing_head_dim": self.config.n_embd // self.config.attn_res_heads,
             "block_size_transformer_layers": self.config.attn_res_block_size,
-            "completed_transformer_blocks": (self.config.n_layer + self.config.attn_res_block_size - 1)
+            "completed_transformer_blocks": (
+                self.config.n_layer + self.config.attn_res_block_size - 1
+            )
             // self.config.attn_res_block_size,
             "final_source_count_including_embedding": counts["final"],
             "pre_attention_source_counts": counts["pre_attention"],
@@ -795,69 +766,19 @@ class KimiAttnRes(GPT):
     def estimate_executed_flops(self):
         return self.estimate_flops()
 
-    def setup_optimizer(
-        self,
-        unembedding_lr=0.004,
-        embedding_lr=0.2,
-        matrix_lr=0.02,
-        weight_decay=0.0,
-        scalar_lr=0.5,
-    ):
-        model_dim = self.config.n_embd
-        ddp, _, _, _ = get_dist_info()
-        matrix_params = list(self.transformer.h.parameters())
-        value_embeds_params = list(self.value_embeds.parameters())
-        embedding_params = list(self.transformer.wte.parameters())
-        lm_head_params = list(self.lm_head.parameters())
-        smear_params = [self.smear_gate.weight, self.smear_lambda]
-        attn_res_params = [p for read in self._attn_res_reads() for p in read.parameters()]
-        grouped = matrix_params + value_embeds_params + embedding_params + lm_head_params + smear_params + attn_res_params
-        assert len(grouped) == len(list(self.parameters()))
-
-        scale = (model_dim / 768) ** -0.5
-        print0(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {scale:.6f}")
-        param_groups = [
-            dict(kind="adamw", params=lm_head_params, lr=unembedding_lr * scale, betas=(0.8, 0.96), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=embedding_params, lr=embedding_lr * scale, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.001),
-            dict(kind="adamw", params=value_embeds_params, lr=embedding_lr * scale * 0.5, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=smear_params, lr=0.2, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0),
-            dict(
-                kind="adamw",
-                params=attn_res_params,
-                lr=scalar_lr * 0.01,
-                betas=(0.8, 0.95),
-                eps=1e-10,
-                weight_decay=0.0,
-                attn_res=True,
-            ),
-        ]
-        for shape in sorted({p.shape for p in matrix_params}):
-            param_groups.append(dict(
-                kind="muon",
-                params=[p for p in matrix_params if p.shape == shape],
-                lr=matrix_lr,
-                momentum=0.95,
-                ns_steps=5,
-                beta2=0.9,
-                weight_decay=weight_decay,
-            ))
-        optimizer = (DistMuonAdamW if ddp else MuonAdamW)(param_groups)
-        for group in optimizer.param_groups:
-            group.setdefault("initial_lr", group["lr"])
-        return optimizer
-
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction="mean"):
         _, time = idx.size()
         if time > self.cos.size(1):
             raise ValueError(f"sequence length {time} exceeds rotary cache {self.cos.size(1)}")
         if idx.device != self.cos.device:
             raise ValueError("rotary embeddings and tokens are on different devices")
-        if self.cos.dtype != COMPUTE_DTYPE:
-            raise ValueError(f"rotary embeddings must use {COMPUTE_DTYPE}, got {self.cos.dtype}")
+        compute_dtype = self.config.runtime.compute_dtype
+        if self.cos.dtype != compute_dtype:
+            raise ValueError(f"rotary embeddings must use {compute_dtype}, got {self.cos.dtype}")
         offset = 0 if kv_cache is None else kv_cache.get_pos()
         cos_sin = self.cos[:, offset : offset + time], self.sin[:, offset : offset + time]
 
-        hidden = norm(self.transformer.wte(idx).to(COMPUTE_DTYPE))
+        hidden = norm(self.transformer.wte(idx).to(compute_dtype))
         if kv_cache is None:
             if time <= 1:
                 raise ValueError("training forward requires more than one token")
@@ -898,7 +819,9 @@ class KimiAttnRes(GPT):
             attention_output = block.attn(
                 norm(layer_input), value_embedding, cos_sin, self.window_sizes[layer_idx], kv_cache
             )
-            partial_block = attention_output if partial_block is None else partial_block + attention_output
+            partial_block = (
+                attention_output if partial_block is None else partial_block + attention_output
+            )
 
             mlp_input = self._apply_read(
                 self.mlp_residual_reads[layer_idx],

@@ -15,10 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from next_gen_arch.training.runtime import get_dist_info, print0
-from next_gen_arch.arch.base import CausalSelfAttention, GPT, GPTConfig, Linear, apply_rotary_emb
-from next_gen_arch.training.optim import DistMuonAdamW, MuonAdamW
-
+from next_gen_arch.arch.base import GPT, CausalSelfAttention, GPTConfig, Linear, apply_rotary_emb
 
 DSA_TOP_K = 32
 DSA_INDEX_HEADS = 4
@@ -69,11 +66,15 @@ def _apply_partial_noninterleaved_rope(
     if rope_dim % 2 or rope_dim > x.size(-1):
         raise ValueError(f"Invalid indexer RoPE dimension {rope_dim} for width {x.size(-1)}")
     cos, sin = cos_sin
-    rotated = apply_rotary_emb(x[..., :rope_dim], cos[..., : rope_dim // 2], sin[..., : rope_dim // 2])
+    rotated = apply_rotary_emb(
+        x[..., :rope_dim], cos[..., : rope_dim // 2], sin[..., : rope_dim // 2]
+    )
     return torch.cat((rotated, x[..., rope_dim:]), dim=-1)
 
 
-def _safe_kl(target: torch.Tensor, log_prediction: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+def _safe_kl(
+    target: torch.Tensor, log_prediction: torch.Tensor, valid: torch.Tensor
+) -> torch.Tensor:
     """Mean KL(target || prediction), avoiding 0 * -inf at masked positions."""
     target = target.masked_fill(~valid, 0.0)
     log_prediction = log_prediction.masked_fill(~valid, 0.0)
@@ -140,11 +141,14 @@ class LightningIndexer(nn.Module):
         valid: torch.Tensor,
     ) -> torch.Tensor:
         head_dim = main_q.size(-1)
-        logits = torch.einsum(
-            "bqhd,bkhd->bhqk",
-            main_q[:, start:end].detach(),
-            main_k.detach(),
-        ).float() * head_dim**-0.5
+        logits = (
+            torch.einsum(
+                "bqhd,bkhd->bhqk",
+                main_q[:, start:end].detach(),
+                main_k.detach(),
+            ).float()
+            * head_dim**-0.5
+        )
         logits = logits.masked_fill(~valid[:, None], float("-inf"))
         return logits.softmax(dim=-1).mean(dim=1)
 
@@ -161,8 +165,12 @@ class LightningIndexer(nn.Module):
         query_len, selected = indices.shape[1:]
         offsets = torch.arange(batch, device=indices.device)[:, None, None] * main_k.size(1)
         flat_indices = (indices.long() + offsets).reshape(-1)
-        selected_k = main_k.detach().reshape(batch * main_k.size(1), n_heads, head_dim)[flat_indices]
-        selected_k = selected_k.view(batch, query_len, selected, n_heads, head_dim).permute(0, 3, 1, 2, 4)
+        selected_k = main_k.detach().reshape(batch * main_k.size(1), n_heads, head_dim)[
+            flat_indices
+        ]
+        selected_k = selected_k.view(batch, query_len, selected, n_heads, head_dim).permute(
+            0, 3, 1, 2, 4
+        )
         query = main_q[:, start:end].detach().permute(0, 2, 1, 3).unsqueeze(3)
         logits = (query * selected_k).sum(dim=-1).float() * head_dim**-0.5
         logits = logits.masked_fill(~valid[:, None], float("-inf"))
@@ -192,9 +200,9 @@ class LightningIndexer(nn.Module):
             causal = causal.unsqueeze(0).expand(batch, -1, -1)
 
             per_head = torch.einsum("bqhd,bkd->bqhk", q[:, start:end], k)
-            index_scores = (
-                F.relu(per_head.float()) * weights[:, start:end, :, None]
-            ).sum(dim=2) * self.softmax_scale
+            index_scores = (F.relu(per_head.float()) * weights[:, start:end, :, None]).sum(
+                dim=2
+            ) * self.softmax_scale
             index_scores = index_scores.masked_fill(~causal, float("-inf"))
             selected_values, indices = index_scores.topk(min(self.top_k, seq_len), dim=-1)
             selected_valid = indices <= query_positions[None, :, None]
@@ -207,10 +215,14 @@ class LightningIndexer(nn.Module):
                 target = self._main_dense_target(main_q, main_k, start, end, causal)
                 log_prediction = index_scores.log_softmax(dim=-1)
                 kl_terms.append(_safe_kl(target, log_prediction, causal))
-                selected_mass = target.gather(-1, indices).masked_fill(~selected_valid, 0.0).sum(dim=-1).mean()
+                selected_mass = (
+                    target.gather(-1, indices).masked_fill(~selected_valid, 0.0).sum(dim=-1).mean()
+                )
                 selected_mass_terms.append(selected_mass)
             else:
-                target = self._main_sparse_target(main_q, main_k, indices, selected_valid, start, end)
+                target = self._main_sparse_target(
+                    main_q, main_k, indices, selected_valid, start, end
+                )
                 log_prediction = selected_values.log_softmax(dim=-1)
                 kl_terms.append(_safe_kl(target, log_prediction, selected_valid))
 
@@ -234,7 +246,9 @@ class DSACausalSelfAttention(CausalSelfAttention):
 
     def forward(self, x, ve, cos_sin, window_size, kv_cache):
         if kv_cache is not None:
-            raise NotImplementedError("DSA KV-cache inference is outside this controlled training ablation")
+            raise NotImplementedError(
+                "DSA KV-cache inference is outside this controlled training ablation"
+            )
         if window_size[0] < x.size(1):
             raise ValueError("Controlled DSA requires full-context attention")
         batch, seq_len, _ = x.shape
@@ -275,7 +289,9 @@ class DSACausalSelfAttention(CausalSelfAttention):
             allowed.scatter_(2, indices.detach().long(), True)
             causal = torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device).tril_()
             allowed = allowed & causal.unsqueeze(0)
-            y = F.scaled_dot_product_attention(q_t, k_t, v_t, attn_mask=allowed[:, None], dropout_p=0.0)
+            y = F.scaled_dot_product_attention(
+                q_t, k_t, v_t, attn_mask=allowed[:, None], dropout_p=0.0
+            )
         else:
             y = F.scaled_dot_product_attention(q_t, k_t, v_t, dropout_p=0.0, is_causal=True)
         y = y.transpose(1, 2).contiguous().view(batch, seq_len, self.n_embd)
@@ -299,7 +315,11 @@ class DeepSeekDSA(GPT):
         # This consumes exactly the baseline RNG stream for every shared tensor.
         GPT.init_weights(self)
         device = self.transformer.wte.weight.device
-        devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
+        devices = (
+            [device.index if device.index is not None else torch.cuda.current_device()]
+            if device.type == "cuda"
+            else []
+        )
         indexer_seed = torch.initial_seed() ^ 0xD5A
         with torch.random.fork_rng(devices=devices):
             torch.manual_seed(indexer_seed)
@@ -321,7 +341,9 @@ class DeepSeekDSA(GPT):
     def get_architecture_state(self) -> dict:
         return {
             "training_step": self.training_step,
-            "phase": "sparse" if self.training_step >= self.config.dsa_dense_warmup_steps else "dense_warmup",
+            "phase": "sparse"
+            if self.training_step >= self.config.dsa_dense_warmup_steps
+            else "dense_warmup",
             "backend": self.config.dsa_backend,
             "top_k": self.config.dsa_top_k,
         }
@@ -335,7 +357,9 @@ class DeepSeekDSA(GPT):
         if targets is None or not self.training:
             return lm_loss_or_logits
         indexer_kls = torch.stack([block.attn.last_indexer_kl for block in self.transformer.h])
-        selected_masses = torch.stack([block.attn.last_selected_mass for block in self.transformer.h])
+        selected_masses = torch.stack(
+            [block.attn.last_selected_mass for block in self.transformer.h]
+        )
         indexer_kl = indexer_kls.mean()
         self._last_training_metrics = {
             "train/lm_loss": lm_loss_or_logits.detach(),
@@ -350,7 +374,9 @@ class DeepSeekDSA(GPT):
         return lm_loss_or_logits + indexer_kl
 
     def _indexer_parameter_count(self) -> int:
-        return sum(p.numel() for block in self.transformer.h for p in block.attn.indexer.parameters())
+        return sum(
+            p.numel() for block in self.transformer.h for p in block.attn.indexer.parameters()
+        )
 
     def num_scaling_params(self):
         counts = super().num_scaling_params()
@@ -364,15 +390,25 @@ class DeepSeekDSA(GPT):
         indexer_all_params = self._indexer_parameter_count()
         baseline_dense = GPT.estimate_flops(self) - 6 * indexer_all_params
         seq_len = self.config.sequence_len
-        main_dense_attention = 12 * self.config.n_head * self.head_dim * seq_len * self.config.n_layer
-        main_sparse_attention = 12 * self.config.n_head * self.head_dim * self.config.dsa_top_k * self.config.n_layer
+        main_dense_attention = (
+            12 * self.config.n_head * self.head_dim * seq_len * self.config.n_layer
+        )
+        main_sparse_attention = (
+            12 * self.config.n_head * self.head_dim * self.config.dsa_top_k * self.config.n_layer
+        )
         indexer_projection = 6 * sum(
             p.numel()
             for block in self.transformer.h
             for p in block.attn.indexer.parameters()
             if p.ndim == 2
         )
-        indexer_scores = 6 * self.config.dsa_index_heads * self.config.dsa_index_head_dim * seq_len * self.config.n_layer
+        indexer_scores = (
+            6
+            * self.config.dsa_index_heads
+            * self.config.dsa_index_head_dim
+            * seq_len
+            * self.config.n_layer
+        )
         indexer = indexer_projection + indexer_scores
         non_attention = baseline_dense - main_dense_attention
         return non_attention, main_sparse_attention, indexer
@@ -387,67 +423,7 @@ class DeepSeekDSA(GPT):
 
     def estimate_executed_flops(self):
         non_attention, _, indexer = self._flop_components()
-        dense_attention = 12 * self.config.n_head * self.head_dim * self.config.sequence_len * self.config.n_layer
-        return non_attention + dense_attention + indexer
-
-    def setup_optimizer(
-        self,
-        unembedding_lr=0.004,
-        embedding_lr=0.2,
-        matrix_lr=0.02,
-        weight_decay=0.0,
-        scalar_lr=0.5,
-    ):
-        model_dim = self.config.n_embd
-        ddp, _, _, _ = get_dist_info()
-        indexer_params = [p for block in self.transformer.h for p in block.attn.indexer.parameters()]
-        indexer_ids = {id(p) for p in indexer_params}
-        shared_transformer_params = [p for p in self.transformer.h.parameters() if id(p) not in indexer_ids]
-        value_embeds_params = list(self.value_embeds.parameters())
-        embedding_params = list(self.transformer.wte.parameters())
-        lm_head_params = list(self.lm_head.parameters())
-        resid_params = [self.resid_lambdas]
-        x0_params = [self.x0_lambdas]
-        smear_params = [self.smear_gate.weight, self.smear_lambda, self.backout_lambda]
-        grouped = (
-            shared_transformer_params + indexer_params + value_embeds_params + embedding_params
-            + lm_head_params + resid_params + x0_params + smear_params
+        dense_attention = (
+            12 * self.config.n_head * self.head_dim * self.config.sequence_len * self.config.n_layer
         )
-        assert len(grouped) == len(list(self.parameters()))
-
-        scale = (model_dim / 768) ** -0.5
-        print0(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {scale:.6f}")
-        param_groups = [
-            dict(kind="adamw", params=lm_head_params, lr=unembedding_lr * scale, betas=(0.8, 0.96), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=embedding_params, lr=embedding_lr * scale, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.001),
-            dict(kind="adamw", params=value_embeds_params, lr=embedding_lr * scale * 0.5, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=resid_params, lr=scalar_lr * 0.01, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.05),
-            dict(kind="adamw", params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),
-            dict(kind="adamw", params=smear_params, lr=0.2, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0),
-            dict(
-                kind="adamw",
-                params=indexer_params,
-                lr=self.config.dsa_warmup_indexer_lr,
-                initial_lr=self.config.dsa_warmup_indexer_lr,
-                dsa_indexer=True,
-                dsa_warmup_lr=self.config.dsa_warmup_indexer_lr,
-                dsa_sparse_lr=self.config.dsa_sparse_indexer_lr,
-                betas=(0.8, 0.95),
-                eps=1e-10,
-                weight_decay=0.0,
-            ),
-        ]
-        for shape in sorted({p.shape for p in shared_transformer_params}):
-            param_groups.append(dict(
-                kind="muon",
-                params=[p for p in shared_transformer_params if p.shape == shape],
-                lr=matrix_lr,
-                momentum=0.95,
-                ns_steps=5,
-                beta2=0.9,
-                weight_decay=weight_decay,
-            ))
-        optimizer = (DistMuonAdamW if ddp else MuonAdamW)(param_groups)
-        for group in optimizer.param_groups:
-            group.setdefault("initial_lr", group["lr"])
-        return optimizer
+        return non_attention + dense_attention + indexer

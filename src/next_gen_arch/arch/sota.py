@@ -9,27 +9,23 @@ projections and Differential Attention's two attention maps).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from next_gen_arch.training.runtime import COMPUTE_DTYPE, get_dist_info, print0
-from next_gen_arch.training.attention import flash_attn
 from next_gen_arch.arch.base import (
+    GPT,
+    MLP,
     Block,
     CausalSelfAttention,
-    GPT,
     GPTConfig,
     Linear,
-    MLP,
     apply_rotary_emb,
     norm,
 )
-from next_gen_arch.training.optim import DistMuonAdamW, MuonAdamW
-
 
 SOTA_VARIANTS = frozenset(
     {
@@ -158,8 +154,8 @@ class SotaAttention(CausalSelfAttention):
         super().__init__(config, layer_idx)
         self.config = config
         self.variant = config.sota_variant
-        self.is_bov_target = (
-            self.variant == "bank_of_values" and layer_idx >= _bov_start_layer(config)
+        self.is_bov_target = self.variant == "bank_of_values" and layer_idx >= _bov_start_layer(
+            config
         )
         if self.variant == "gated_attention":
             self.output_gate = Linear(config.n_embd, config.n_head, bias=False)
@@ -201,9 +197,7 @@ class SotaAttention(CausalSelfAttention):
         if self.is_bov_target:
             if ve is None:
                 raise ValueError("BoV target layer requires a value-table lookup")
-            v = self.gamma_v.to(x.dtype) * ve.view(
-                batch, time, self.n_kv_head, self.head_dim
-            )
+            v = self.gamma_v.to(x.dtype) * ve.view(batch, time, self.n_kv_head, self.head_dim)
         else:
             v = self.c_v(x).view(batch, time, self.n_kv_head, self.head_dim)
             if ve is not None:
@@ -221,9 +215,11 @@ class SotaAttention(CausalSelfAttention):
         kv_cache,
     ) -> torch.Tensor:
         if kv_cache is None:
-            return flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+            return self.runtime.attention.flash_attn_func(
+                q, k, v, causal=True, window_size=window_size
+            )
         k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
-        y = flash_attn.flash_attn_with_kvcache(
+        y = self.runtime.attention.flash_attn_with_kvcache(
             q,
             k_cache,
             v_cache,
@@ -239,7 +235,9 @@ class SotaAttention(CausalSelfAttention):
 
     def _differential_attention(self, q, k, v, cos_sin, kv_cache):
         if kv_cache is not None:
-            raise NotImplementedError("Differential Attention KV-cache inference is not used in this campaign")
+            raise NotImplementedError(
+                "Differential Attention KV-cache inference is not used in this campaign"
+            )
         half = self.head_dim // 2
         batch, time = q.shape[:2]
         q = q.view(batch, time, self.n_head, 2, half)
@@ -406,11 +404,12 @@ class SotaPoolGPT(GPT):
                 continue
             target_layers.append(layer_idx)
             table = block.attn.value_table
-            table.to(dtype=COMPUTE_DTYPE)
+            compute_dtype = self.config.runtime.compute_dtype
+            table.to(dtype=compute_dtype)
             chunk = 2048
             for start in range(0, token_embedding.size(0), chunk):
                 end = min(start + chunk, token_embedding.size(0))
-                source = norm(token_embedding[start:end].to(COMPUTE_DTYPE))
+                source = norm(token_embedding[start:end].to(compute_dtype))
                 table.weight[start:end].copy_(block.attn.c_v(source))
             # BoV replaces W_V.  Initializing and then deleting it preserves the
             # baseline RNG stream for every shared parameter while removing the
@@ -434,12 +433,13 @@ class SotaPoolGPT(GPT):
             raise ValueError(f"sequence length {time} exceeds rotary cache {self.cos.size(1)}")
         if idx.device != self.cos.device:
             raise ValueError("rotary embeddings and tokens are on different devices")
-        if self.cos.dtype != COMPUTE_DTYPE:
-            raise ValueError(f"rotary embeddings must use {COMPUTE_DTYPE}, got {self.cos.dtype}")
+        compute_dtype = self.config.runtime.compute_dtype
+        if self.cos.dtype != compute_dtype:
+            raise ValueError(f"rotary embeddings must use {compute_dtype}, got {self.cos.dtype}")
         offset = 0 if kv_cache is None else kv_cache.get_pos()
         cos_sin = self.cos[:, offset : offset + time], self.sin[:, offset : offset + time]
 
-        x = self._residual_norm(self.transformer.wte(idx).to(COMPUTE_DTYPE))
+        x = self._residual_norm(self.transformer.wte(idx).to(compute_dtype))
         if kv_cache is None:
             if time <= 1:
                 raise ValueError("training forward requires more than one token")
@@ -494,9 +494,7 @@ class SotaPoolGPT(GPT):
 
     def _parameter_groups_for_accounting(self):
         value_table_ids = {
-            id(module.weight)
-            for module in self.modules()
-            if isinstance(module, nn.Embedding)
+            id(module.weight) for module in self.modules() if isinstance(module, nn.Embedding)
         }
         dead_bov_ids = set()
         if not self._bov_finalized:
@@ -548,7 +546,15 @@ class SotaPoolGPT(GPT):
         )
         # smear_gate is a dense matrix outside the trunk but is intentionally
         # retained in nanochat's scalar/control accounting.
-        total = wte + value_embeds + bov_tables + lm_head + transformer_matrices + architecture + scalars
+        total = (
+            wte
+            + value_embeds
+            + bov_tables
+            + lm_head
+            + transformer_matrices
+            + architecture
+            + scalars
+        )
         if self._bov_finalized:
             assert total == sum(p.numel() for p in self.parameters()), "parameter count mismatch"
         return {
@@ -569,7 +575,9 @@ class SotaPoolGPT(GPT):
         attention = 0
         for window_size in self.window_sizes:
             effective = min(window_size[0], seq_len) if window_size[0] >= 0 else seq_len
-            attention += 12 * self.config.n_head * (self.config.n_embd // self.config.n_head) * effective
+            attention += (
+                12 * self.config.n_head * (self.config.n_embd // self.config.n_head) * effective
+            )
         if self.config.sota_variant == "differential_attention":
             # QK work is unchanged (two half-width maps); AV is doubled.
             attention = int(attention * 1.5)
@@ -583,70 +591,6 @@ class SotaPoolGPT(GPT):
     def estimate_executed_flops(self):
         return self.estimate_flops()
 
-    def setup_optimizer(
-        self,
-        unembedding_lr=0.004,
-        embedding_lr=0.2,
-        matrix_lr=0.02,
-        weight_decay=0.0,
-        scalar_lr=0.5,
-    ):
-        ddp, _, _, _ = get_dist_info()
-        scale = (self.config.n_embd / 768) ** -0.5
-        print0(f"Scaling the LR for the AdamW parameters ∝1/√({self.config.n_embd}/768) = {scale:.6f}")
-
-        matrix_params, architecture_params = self._parameter_groups_for_accounting()
-        base_value_params = list(self.value_embeds.parameters())
-        bov_table_params = [
-            block.attn.value_table.weight
-            for block in self.transformer.h
-            if block.attn.is_bov_target
-        ]
-        gamma_ids = {
-            id(block.attn.gamma_v)
-            for block in self.transformer.h
-            if block.attn.is_bov_target
-        }
-        gamma_params = [p for p in architecture_params if id(p) in gamma_ids]
-        architecture_params = [p for p in architecture_params if id(p) not in gamma_ids]
-        control_params = [
-            self.resid_lambdas,
-            self.x0_lambdas,
-            self.smear_gate.weight,
-            self.smear_lambda,
-            self.backout_lambda,
-        ]
-        grouped = (
-            matrix_params
-            + architecture_params
-            + base_value_params
-            + bov_table_params
-            + gamma_params
-            + list(self.transformer.wte.parameters())
-            + list(self.lm_head.parameters())
-            + control_params
-        )
-        assert len(grouped) == len(list(self.parameters())), "optimizer parameter grouping mismatch"
-
-        param_groups = [
-            dict(kind="adamw", params=list(self.lm_head.parameters()), lr=unembedding_lr * scale, betas=(0.8, 0.96), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=list(self.transformer.wte.parameters()), lr=embedding_lr * scale, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.001),
-            dict(kind="adamw", params=base_value_params + bov_table_params, lr=embedding_lr * scale * 0.5, betas=(0.8, 0.995), eps=1e-10, weight_decay=0.01),
-            dict(kind="adamw", params=[self.resid_lambdas], lr=scalar_lr * 0.01, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.05),
-            dict(kind="adamw", params=[self.x0_lambdas], lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),
-            dict(kind="adamw", params=[self.smear_gate.weight, self.smear_lambda, self.backout_lambda], lr=0.2, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0),
-        ]
-        if architecture_params:
-            param_groups.append(dict(kind="adamw", params=architecture_params, lr=self.config.sota_extra_lr, betas=(0.8, 0.95), eps=1e-10, weight_decay=0.0))
-        if gamma_params:
-            param_groups.append(dict(kind="adamw", params=gamma_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0))
-        for shape in sorted({p.shape for p in matrix_params}):
-            param_groups.append(dict(kind="muon", params=[p for p in matrix_params if p.shape == shape], lr=matrix_lr, momentum=0.95, ns_steps=5, beta2=0.9, weight_decay=weight_decay))
-        optimizer = (DistMuonAdamW if ddp else MuonAdamW)(param_groups)
-        for group in optimizer.param_groups:
-            group["initial_lr"] = group["lr"]
-        return optimizer
-
     def get_architecture_state(self) -> dict:
         state = {
             "family": "sota_pool",
@@ -656,11 +600,19 @@ class SotaPoolGPT(GPT):
             "sources_pinned_in_campaign_manifest": True,
         }
         if self.config.sota_variant == "gated_attention":
-            state.update(gate="query_dependent_headwise_sigmoid_after_sdpa", gate_layers=self.config.n_layer)
+            state.update(
+                gate="query_dependent_headwise_sigmoid_after_sdpa", gate_layers=self.config.n_layer
+            )
         elif self.config.sota_variant == "exclusive_attention":
-            state.update(projection="attention_output_orthogonal_to_self_value", target_layers="all")
+            state.update(
+                projection="attention_output_orthogonal_to_self_value", target_layers="all"
+            )
         elif self.config.sota_variant == "differential_attention":
-            state.update(attention_maps=2, qk_head_dim=self.config.n_embd // self.config.n_head // 2, target_layers="all")
+            state.update(
+                attention_maps=2,
+                qk_head_dim=self.config.n_embd // self.config.n_head // 2,
+                target_layers="all",
+            )
         elif self.config.sota_variant == "xielu":
             state.update(replaces="relu_squared", alpha_p_init=0.8, alpha_n_init=0.8, beta=0.5)
         elif self.config.sota_variant == "dynamic_tanh":
@@ -668,10 +620,17 @@ class SotaPoolGPT(GPT):
         elif self.config.sota_variant == "peri_ln":
             state.update(post_sublayer_rmsnorm=True, pre_sublayer_rmsnorm="retained")
         elif self.config.sota_variant == "canon_abcd":
-            state.update(canon_set="ABCD", kernel=self.config.canon_kernel_size, residual=True, activation=False)
+            state.update(
+                canon_set="ABCD",
+                kernel=self.config.canon_kernel_size,
+                residual=True,
+                activation=False,
+            )
         elif self.config.sota_variant == "bank_of_values":
             state.update(
-                target_layers=[i for i, block in enumerate(self.transformer.h) if block.attn.is_bov_target],
+                target_layers=[
+                    i for i, block in enumerate(self.transformer.h) if block.attn.is_bov_target
+                ],
                 standard_v="replaced",
                 additive_value_embedding_in_target_layers="disabled",
                 gamma_init=1.0,

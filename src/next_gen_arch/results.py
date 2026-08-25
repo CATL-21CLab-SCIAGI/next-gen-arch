@@ -78,7 +78,5 @@ def verify_metrics(path: Path = DEFAULT_METRICS) -> dict[str, int]:
         if baseline is not None and bpb_text and delta and status == "complete":
             expected_delta = float(bpb_text) - baseline
             if not math.isclose(float(delta), expected_delta, abs_tol=2e-9):
-                raise ValueError(
-                    f"Paired delta disagrees with the published baseline for {key}"
-                )
+                raise ValueError(f"Paired delta disagrees with the published baseline for {key}")
     return {"rows": len(rows), "campaigns": len({row["campaign"] for row in rows})}
