@@ -166,6 +166,8 @@ def _megatron_arguments(variant: TenMVariant) -> list[str]:
         "--log-interval",
         "10",
         "--log-throughput",
+        "--rerun-mode",
+        "disabled",
         "--no-gradient-accumulation-fusion",
         "--no-masked-softmax-fusion",
         "--no-bias-gelu-fusion",
@@ -385,6 +387,19 @@ def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
             torch.cuda.manual_seed_all(seed)
             model_config = build_model_config(**model_kwargs)
             self.architecture = instantiate_model(model_config)
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            self.architecture.init_weights()
+            nonfinite_parameters = [
+                name
+                for name, parameter in self.architecture.named_parameters()
+                if not torch.isfinite(parameter).all()
+            ]
+            if nonfinite_parameters:
+                raise RuntimeError(
+                    "non-finite parameters after initialization: "
+                    + ", ".join(nonfinite_parameters[:5])
+                )
             if variant.name == "engram":
                 token_map, compressed_vocab_size = build_engram_token_map(tokenizer, 32_768)
                 self.architecture.configure_engram_token_map(
@@ -523,6 +538,8 @@ def main() -> None:
         if _EVAL_BYTES <= 0:
             raise RuntimeError("Megatron completed without a validation BPB denominator")
         final_bpb = _EVAL_NATS / (math.log(2.0) * _EVAL_BYTES)
+        if not math.isfinite(final_bpb):
+            raise RuntimeError("validation produced a non-finite final BPB")
         result = {
             **environment,
             "status": "complete",
