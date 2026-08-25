@@ -400,8 +400,10 @@ def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
 
         def set_input_tensor(self, input_tensor) -> None:
             self.input_tensor = input_tensor
-            is_empty_list = isinstance(input_tensor, list) and not input_tensor
-            if input_tensor is not None and not is_empty_list:
+            is_empty_pipeline_input = isinstance(input_tensor, list) and all(
+                tensor is None for tensor in input_tensor
+            )
+            if input_tensor is not None and not is_empty_pipeline_input:
                 raise RuntimeError("the 10M adapter requires PP=1")
 
         def forward(
