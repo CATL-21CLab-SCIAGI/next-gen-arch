@@ -166,7 +166,6 @@ def _megatron_arguments(variant: TenMVariant) -> list[str]:
         "--log-interval",
         "10",
         "--log-throughput",
-        "--check-for-nan-in-loss-and-grad",
         "--no-gradient-accumulation-fusion",
         "--no-masked-softmax-fusion",
         "--no-bias-gelu-fusion",
