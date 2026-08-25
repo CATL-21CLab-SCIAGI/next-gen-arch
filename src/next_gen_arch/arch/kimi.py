@@ -301,6 +301,7 @@ class NoPEGatedAttention(nn.Module):
 
     def __init__(self, config: KimiKDAConfig, layer_idx: int):
         super().__init__()
+        self.runtime = config.runtime
         self.layer_idx = layer_idx
         self.n_head = config.n_head
         self.n_kv_head = config.n_kv_head

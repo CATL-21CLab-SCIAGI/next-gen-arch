@@ -187,8 +187,12 @@ def test_optimizer_groups_kda_vectors_at_fixed_adamw_lr():
     assert model.estimate_flops() > 0
 
 
-def test_kda_shared_forward_has_empty_engram_interface():
-    model = KimiKDA(tiny_config())
+@pytest.mark.parametrize(
+    ("variant", "rope_policy"),
+    [("kimi_linear", "global_only"), ("kimi_k3", "none")],
+)
+def test_kda_shared_forward_has_empty_engram_interface(variant, rope_policy):
+    model = KimiKDA(tiny_config(kda_variant=variant, kda_rope_policy=rope_policy))
     model.init_weights()
     tokens = torch.randint(0, model.config.vocab_size, (1, model.config.sequence_len))
 
