@@ -121,14 +121,62 @@ Training constructs a smaller d12 meta-reference model for optimizer hyperparame
 
 The consolidated trainer maps reference layers proportionally to the target depth while leaving the actual d32 model at `7,15,23`. This is a harness repair. A rerun should preserve every other manifest field and should be labeled as a new result rather than silently replacing the dated audit.
 
-## 9. Source and result provenance
+## 9. Reproduce the 10M Megatron comparison
+
+The frozen small-model contract is defined in
+`src/next_gen_arch/training/campaigns.py`: 16 variants, seeds `42/43/44`, depth 5,
+hidden size 56, seven heads, head dimension 8, sequence length 2,048, BF16, microbatch
+16, global batch 192, and approximately 12 training tokens per parameter.
+
+After verifying an explicit idle-GPU allowlist on each node, launch one durable queue per
+node. For a three-node campaign, replace `NODE_INDEX`, `GPU_LIST`, and the paths without
+editing the contract:
+
+```bash
+export NANOCHAT_BASE_DIR=/path/to/frozen-data
+python -m next_gen_arch.training.campaign_runner \
+  --node-index NODE_INDEX \
+  --num-nodes 3 \
+  --gpus GPU_LIST \
+  --output-root /durable/path/megatron-10m \
+  --mode full
+```
+
+The runner checks that every physical GPU ID in `GPU_LIST` exists and is idle at startup,
+then checks its UUID again immediately before every task. It never discovers or consumes
+other idle devices implicitly. Run `--mode probe --probe-steps 1` for all 16 architectures
+before allocating the full campaign.
+
+Aggregate the output against the frozen historical speedrun rows:
+
+```bash
+python -m next_gen_arch.training.campaign_compare \
+  --megatron-root /durable/path/megatron-10m \
+  --reference results/speedrun-10m-reference.csv \
+  --output-dir /durable/path/backend-comparison
+```
+
+For the exact published result, the original 48-row pass is overlaid with the three DSA
+correction rows by adding:
+
+```text
+--override-root /durable/path/dsa-correction
+```
+
+The overlay accepts only known backend/variant/seed keys and rejects duplicates. A new
+campaign from the current fixed source does not need that historical correction overlay.
+See [BACKEND_COMPARISON.md](BACKEND_COMPARISON.md) for the bug audit and interpretation.
+
+## 10. Source and result provenance
 
 - nanochat upstream commit recorded by the campaign: `b9f5025652d51470e2c31117100d9ff48717b911`
 - modded-nanogpt speedrun lineage commit: `f411b3d346aa52d3504324ca93c230fd84c6c07f`
 - Megatron-LM submodule commit: `55ac7082517c3878ae653c07c09c534b8aed49f6`
+- 10M Megatron primary-pass source commit (45 accepted rows): `e6d9b0b1153e74078dbb87d4c0e8b12c8d4df513`
+- 10M corrected DSA source commit (3 accepted rows): `ed8336e5403d8da75082502a96a115f06ee17334`
 - frozen core tree SHA-256: `fc6bf75d17121b3321877d4aede10205fac0b8d4c33ed2e99cb426ca78feec67`
 - frozen Engram fork tree SHA-256: `3ef8c02da5242dfcf3cebe69a24098d7693dcd480473202f691a22ab10ff4652`
 - frozen mHC fork tree SHA-256: `c79b52cc9fc577ef61bdd61858b5bb070c5a3e6a9381d0b04157055d76b9026b`
 - frozen orchestration tree SHA-256: `2ffc3950ea4679e66e1f1105a0d5fe7eab238dc712109a6fa5393bfffc5ecf00`
 
-The exact per-file hashes remain in [`results/parameter-scale-100m-1b-v1-manifest.json`](../results/parameter-scale-100m-1b-v1-manifest.json).
+The historical scaling per-file hashes remain in [`results/parameter-scale-100m-1b-v1-manifest.json`](../results/parameter-scale-100m-1b-v1-manifest.json). Every accepted 10M backend row and its source/Megatron commit is in [`results/backend-10m-runs.csv`](../results/backend-10m-runs.csv).

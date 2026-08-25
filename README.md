@@ -1,6 +1,6 @@
 # Next-Gen Architecture Lab
 
-[简体中文](README.zh-CN.md) · [Results](docs/RESULTS.md) · [Reproducibility](docs/REPRODUCIBILITY.md) · [Runtimes](docs/RUNTIMES.md) · [Architecture notes](docs/ARCHITECTURES.md)
+[简体中文](README.zh-CN.md) · [Results](docs/RESULTS.md) · [10M backend comparison](docs/BACKEND_COMPARISON.md) · [Reproducibility](docs/REPRODUCIBILITY.md) · [Runtimes](docs/RUNTIMES.md) · [Architecture notes](docs/ARCHITECTURES.md)
 
 [![CI](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml/badge.svg)](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -31,13 +31,24 @@ The goal is not to declare a universal architecture winner. It is to produce sma
 ## Two execution backends, one experiment contract
 
 - **`speedrun`** preserves the compact Muon, compilation, data-order, and kernel optimizations inherited from [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) and the campaign's nanochat fork. It remains the comparison-grade backend for the published 100M–1B results.
-- **`megatron`** renders model/data/parallelism contracts for a pinned, read-only [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) Git submodule. It is the scaling backend; no Megatron file is copied into or patched by this project.
+- **`megatron`** uses the MCore training lifecycle from a pinned, read-only [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) Git submodule. All 16 mechanisms have now passed the matched 10M three-seed comparison through the repository's model wrapper. Megatron is the scaling substrate; no upstream file is copied into or patched by this project.
 
-The YAML contract is backend-neutral and uses layered `base + backend + scale + experiment` configuration. Paths are `env:NAME` references or CLI overrides, and sampling prompts are versioned package assets. A variant is rejected if it has not received a backend-specific adapter; the project does not claim numerical equivalence merely because two commands share an architecture name. See [docs/RUNTIMES.md](docs/RUNTIMES.md).
+The YAML contract is backend-neutral and uses layered `base + backend + scale + experiment` configuration. Paths are `env:NAME` references or CLI overrides, and sampling prompts are versioned package assets. A variant is rejected if it has not received a backend-specific adapter; the project does not claim numerical equivalence merely because two commands share an architecture name. The 10M validation used `TP=PP=CP=1`, so it validates the MCore wrapper and architecture signal, not yet native tensor/pipeline/context parallelism for every mechanism. See [docs/RUNTIMES.md](docs/RUNTIMES.md).
 
 ## Headline results
 
 Validation **BPB (bits per byte; lower is better)** is the primary quality metric. Deltas are paired against the same-scale baseline; a negative delta is an improvement. Throughput is normalized to that baseline on the campaign hardware.
+
+### Megatron versus speedrun at approximately 10M parameters
+
+The completed comparison contains `16 variants × 3 seeds × 2 backends = 96` accepted runs. Across the 15 non-baseline variants, paired ΔBPB has a Pearson correlation of `0.975948`; improvement/degradation direction agrees for `12/15` variants, and the mean absolute delta gap is `0.012369 BPB`.
+
+| Backend | Best variant | Mean BPB | Paired Δ BPB | Baseline tok/s |
+| --- | --- | ---: | ---: | ---: |
+| Megatron | KDA | **1.464074** | -0.069811 | 752,144 |
+| speedrun | Kimi K3 KDA | **1.461594** | -0.093387 | 1,360,228 |
+
+Megatron's small baseline reaches `0.553×` the absolute speedrun throughput, making speedrun about `1.81×` faster for rapid screening. Megatron remains the intended path to distributed scale. Absolute BPB also shifts by `-0.021095` on the Megatron baseline, so only within-backend paired deltas should be interpreted causally. See the [complete table and correction audit](docs/BACKEND_COMPARISON.md).
 
 ### Parameter-scaling campaign: about 12 training tokens per parameter
 
@@ -72,7 +83,7 @@ Known failures in that snapshot:
 - two Inkling relative-attention runs became non-finite;
 - three Engram runs hit a harness assertion because d32 injection layers were reused while constructing a d12 meta-reference model. This repository scales those reference layers proportionally and classifies the incident as a harness failure, not a model-quality result.
 
-The full dated tables and limitations are in [docs/RESULTS.md](docs/RESULTS.md). Machine-readable values live in [results/key-metrics.csv](results/key-metrics.csv), while [results/campaign-status-2026-08-24.json](results/campaign-status-2026-08-24.json) preserves the 1B audit snapshot.
+The full dated tables and limitations are in [docs/RESULTS.md](docs/RESULTS.md). Machine-readable values live in [results/key-metrics.csv](results/key-metrics.csv); the 10M comparison is in [results/backend-10m-comparison.json](results/backend-10m-comparison.json), and [results/campaign-status-2026-08-24.json](results/campaign-status-2026-08-24.json) preserves the 1B audit snapshot.
 
 ## Reproducibility contract
 
@@ -145,12 +156,21 @@ uv run next-gen-arch render \
   --config configs/experiments/megatron_baseline_1b_seed42.yaml --json
 ```
 
+Aggregate a matched 10M Megatron campaign against the frozen speedrun reference:
+
+```bash
+uv run python -m next_gen_arch.training.campaign_compare \
+  --megatron-root /path/to/megatron-results \
+  --reference results/speedrun-10m-reference.csv \
+  --output-dir /path/to/comparison
+```
+
 For comparison-grade reproduction, verify the dataset and tokenizer fingerprints in [docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md). A freshly trained tokenizer is useful for new experiments but is not automatically bit-identical to the frozen campaign artifact.
 
 Run the local quality gate:
 
 ```bash
-uv run ruff check src/next_gen_arch tests/test_registry.py tests/test_portable_runtime.py
+uv run ruff check src/next_gen_arch tests
 uv run python -m compileall -q src/next_gen_arch
 uv run pytest -m "not slow" -q
 uv build
@@ -187,6 +207,7 @@ Engram and mHC used separate experimental forks during the live campaign. They a
 4. **Short-convolution KV and gated attention are robust low-parameter changes.** The former gains more quality; the latter stays closer to baseline speed.
 5. **mHC is promising but not yet reliable.** Its fixed-token results are strong, while the newer scaling setup becomes non-finite.
 6. **The current DSA and relative-attention paths are poor fits for this 2K-context benchmark.** DSA uses masked dense SDPA, so this experiment does not test a true sparse-kernel speedup.
+7. **The 10M architecture signal transfers across backends, but backend choice still matters.** Delta correlation is high, while three small effects change sign and speedrun is substantially faster at this size.
 
 ## Roadmap
 
@@ -194,13 +215,14 @@ Engram and mHC used separate experimental forks during the live campaign. They a
 - rerun the repaired 1B Engram harness without changing the remaining contract;
 - isolate mHC instability before attempting larger runs;
 - add a real sparse DSA backend and longer-context evaluations;
+- make selected custom mechanisms native to Megatron tensor/context parallelism and validate them beyond one rank;
 - test combinations only alongside the baseline and every single-component control;
 - publish richer raw curves and hardware-normalized efficiency measurements.
 
 ## Scope and limitations
 
 - The architecture modules are research adaptations, not official implementations from the cited authors.
-- Only the baseline currently has a validated Megatron adapter. Other variants remain on the speedrun backend until explicitly ported and tested.
+- All 16 mechanisms have a validated single-rank MCore training wrapper at approximately 10M parameters. This is not evidence that every mechanism already supports Megatron tensor, pipeline, expert, or context parallelism.
 - BPB comparisons are valid only inside a matched training regime. Hardware throughput is also environment-specific.
 - Three seeds reduce noise but do not eliminate it.
 - The 2,048-token context can understate the value of long-context or sparse mechanisms.

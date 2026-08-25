@@ -1,6 +1,6 @@
 # Next-Gen Architecture Lab
 
-[English](README.md) · [完整结果](docs/RESULTS.md) · [复现指南](docs/REPRODUCIBILITY.md) · [运行后端](docs/RUNTIMES.md) · [架构说明](docs/ARCHITECTURES.md)
+[English](README.md) · [完整结果](docs/RESULTS.md) · [10M 后端对比](docs/BACKEND_COMPARISON.md) · [复现指南](docs/REPRODUCIBILITY.md) · [运行后端](docs/RUNTIMES.md) · [架构说明](docs/ARCHITECTURES.md)
 
 这是一个兼顾快速受控实验与 Megatron 扩缩的语言模型架构实验仓库。它把 16 种架构机制放进同一实验合同，在相同数据、tokenizer、seed、数据顺序、训练预算和评测方法下，回答一个具体问题：
 
@@ -23,13 +23,24 @@
 ## 双后端边界
 
 - `speedrun` 保留继承自 [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) 和 campaign nanochat fork 的 Muon、编译、数据顺序及 kernel 优化，是已发布 100M–1B 结果的对照后端。
-- `megatron` 使用固定 commit、只读的 Megatron-LM Git submodule，负责更大模型和并行拓扑；项目不复制或修改 Megatron 源码。
+- `megatron` 使用固定 commit、只读的 Megatron-LM Git submodule 与 MCore 训练生命周期。16 种机制均已通过约 10M、三 seed 的匹配对照；它负责后续扩缩，项目不复制或修改 Megatron 源码。
 
-配置按 `base + backend + scale + experiment` 分层合并。路径使用 `env:NAME` 或 CLI override，sampling prompt 是带版本的包内资产。未完成 Megatron adapter 的变体会明确拒绝运行，不会把同名架构当作数值等价实现。
+配置按 `base + backend + scale + experiment` 分层合并。路径使用 `env:NAME` 或 CLI override，sampling prompt 是带版本的包内资产。未完成 Megatron adapter 的变体会明确拒绝运行，不会把同名架构当作数值等价实现。10M 对比采用 `TP=PP=CP=1`，验证的是 MCore wrapper 与架构信号，并不代表每种机制已经原生支持 tensor/pipeline/context parallelism。
 
 ## 核心结果
 
 主指标是验证集 **BPB（bits per byte，越低越好）**。`Δ BPB` 是相对同规模、同 seed baseline 的成对差值，负数代表改善。
+
+### 约 10M 参数的 Megatron—speedrun 对比
+
+完整对比包含 `16 个变体 × 3 个 seed × 2 个后端 = 96` 个采纳 run。15 个非 baseline 变体的成对 ΔBPB 跨后端 Pearson 相关系数为 `0.975948`，改善/退化方向一致 `12/15`，平均绝对 delta 差为 `0.012369 BPB`。
+
+| 后端 | 最佳变体 | 平均 BPB | 成对 Δ BPB | baseline tok/s |
+| --- | --- | ---: | ---: | ---: |
+| Megatron | KDA | **1.464074** | -0.069811 | 752,144 |
+| speedrun | Kimi K3 KDA | **1.461594** | -0.093387 | 1,360,228 |
+
+Megatron 小模型 baseline 的绝对吞吐是 speedrun 的 `0.553×`，即 speedrun 快约 `1.81×`，更适合快速筛选；Megatron 仍是分布式扩缩后端。Megatron baseline 的绝对 BPB 也相对偏移 `-0.021095`，因此因果判断应使用各后端内部的成对 delta。完整表格、DSA 修正审计和逐 run provenance 见 [后端对比报告](docs/BACKEND_COMPARISON.md)。
 
 ### 参数缩放实验：约 12 个训练 token / 参数
 
@@ -66,7 +77,7 @@
 - Inkling relative attention 的两个 run 出现非有限值；
 - 三个 Engram run 因 d12 meta-reference 错用了 d32 的 `7,15,23` 注入层而触发断言。这是 harness bug，不是模型质量失败。仓库已按深度同比例映射 reference 层。
 
-完整数据见 [docs/RESULTS.md](docs/RESULTS.md) 与 [results/key-metrics.csv](results/key-metrics.csv)。
+完整数据见 [docs/RESULTS.md](docs/RESULTS.md)、[results/key-metrics.csv](results/key-metrics.csv) 与 [results/backend-10m-comparison.json](results/backend-10m-comparison.json)。
 
 ## 实验合同
 
@@ -123,12 +134,21 @@ uv run next-gen-arch render \
 
 Megatron 示例使用 `NGA_TRAIN_DATA`、`NGA_VALID_DATA`、`NGA_DATA_CACHE`、`NGA_TOKENIZER` 和 `NGA_OUTPUT_DIR` 注入机器路径，再渲染 `configs/experiments/megatron_baseline_1b_seed42.yaml`。
 
+汇总 Megatron 10M campaign 并与冻结 speedrun 参考比较：
+
+```bash
+uv run python -m next_gen_arch.training.campaign_compare \
+  --megatron-root /path/to/megatron-results \
+  --reference results/speedrun-10m-reference.csv \
+  --output-dir /path/to/comparison
+```
+
 新训练的 tokenizer 适合新实验，但不保证与冻结 campaign 二进制完全一致。严格对照前请核对 [复现指南](docs/REPRODUCIBILITY.md) 中的数据与 tokenizer 指纹。
 
 本地质量门禁：
 
 ```bash
-uv run ruff check src/next_gen_arch tests/test_registry.py tests/test_portable_runtime.py
+uv run ruff check src/next_gen_arch tests
 uv run python -m compileall -q src/next_gen_arch
 uv run pytest -m "not slow" -q
 uv build
@@ -146,6 +166,7 @@ uv build
 4. sconv-KV 和 gated attention 是稳健的低额外参数改造。
 5. mHC 的固定-token结果很好，但缩放设置数值不稳定，暂不应视为可靠方案。
 6. 当前 DSA 与 relative attention 不适合 2K-context 实现；DSA 仍是 masked dense SDPA，不能证明真实稀疏 kernel 的速度收益。
+7. 10M 架构信号总体可跨后端迁移，但后端并非无关变量：三个小效应改变方向，且 speedrun 在该规模显著更快。
 
 ## 路线图
 
@@ -153,7 +174,8 @@ uv build
 - 在不改变其余合同的前提下重跑已修复的 Engram；
 - 先完成 mHC 稳定性消融，再扩大规模；
 - 实现真实稀疏 DSA kernel，并补充长上下文评测；
+- 将优先机制改造成 Megatron tensor/context parallel 原生实现，并在多 rank 上验证；
 - 所有组合实验保留 baseline 与各单组件对照；
 - 发布更完整的训练曲线和硬件归一化效率数据。
 
-所有 Python 代码集中在 `src/next_gen_arch`：`arch/` 只保留按架构族合并的模型定义，`training/` 统一承载训练、数据、优化器、kernel、评测和运行时，`backends/` 是执行适配，`prompts/` 是可移植 prompt。项目以 [MIT License](LICENSE) 发布；各架构名称和论文归原作者所有，详见 [NOTICE.md](NOTICE.md)。
+所有 Python 代码集中在 `src/next_gen_arch`：`arch/` 只保留按架构族合并的模型定义，`training/` 统一承载训练、数据、优化器、kernel、评测和运行时，`backends/` 是执行适配，`prompts/` 是可移植 prompt。当前 16 种机制已验证单 rank MCore wrapper，但尚不能据此声称全部支持 Megatron tensor、pipeline、expert 或 context parallelism。项目以 [MIT License](LICENSE) 发布；各架构名称和论文归原作者所有，详见 [NOTICE.md](NOTICE.md)。

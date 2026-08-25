@@ -63,6 +63,9 @@ packages = ["src/next_gen_arch"]
 "results/parameter-scale-100m-1b-v1-manifest.json" = "src/next_gen_arch/data/parameter-scale-100m-1b-v1-manifest.json"
 "results/key-metrics.csv" = "src/next_gen_arch/data/key-metrics.csv"
 "results/speedrun-10m-reference.csv" = "src/next_gen_arch/data/speedrun-10m-reference.csv"
+"results/backend-10m-comparison.csv" = "src/next_gen_arch/data/backend-10m-comparison.csv"
+"results/backend-10m-runs.csv" = "src/next_gen_arch/data/backend-10m-runs.csv"
+"results/backend-10m-comparison.json" = "src/next_gen_arch/data/backend-10m-comparison.json"
 
 [tool.hatch.build.targets.sdist]
 exclude = [

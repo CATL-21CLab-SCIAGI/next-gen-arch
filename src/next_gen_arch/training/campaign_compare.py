@@ -36,6 +36,8 @@ class RunResult:
     final_bpb: float
     tokens_per_second: float
     wall_seconds: float
+    source_commit: str = ""
+    megatron_commit: str = ""
 
     @property
     def key(self) -> tuple[str, str, int]:
@@ -65,6 +67,8 @@ def _parse_row(row: dict[str, str]) -> RunResult:
         final_bpb=float(row["final_bpb"]),
         tokens_per_second=float(row["tokens_per_second"]),
         wall_seconds=float(row["wall_seconds"]),
+        source_commit=row.get("source_commit", ""),
+        megatron_commit=row.get("megatron_commit", ""),
     )
 
 
@@ -92,9 +96,30 @@ def load_megatron_results(root: Path) -> list[RunResult]:
                 final_bpb=float(payload["final_bpb"]),
                 tokens_per_second=float(payload["tokens_per_second"]),
                 wall_seconds=float(payload["wall_seconds"]),
+                source_commit=str(payload.get("source_commit", "")),
+                megatron_commit=str(payload.get("megatron_commit", "")),
             )
         )
     return results
+
+
+def overlay_results(
+    primary: Iterable[RunResult], overrides: Iterable[RunResult]
+) -> list[RunResult]:
+    """Replace explicitly rerun keys while rejecting accidental campaign expansion."""
+    primary = list(primary)
+    overrides = list(overrides)
+    indexed = {row.key: row for row in primary}
+    if len(indexed) != len(primary):
+        raise ValueError("primary campaign contains duplicate rows")
+    override_keys = [row.key for row in overrides]
+    if len(override_keys) != len(set(override_keys)):
+        raise ValueError("correction overlay contains duplicate rows")
+    unknown = sorted(set(override_keys) - set(indexed))
+    if unknown:
+        raise ValueError(f"correction overlay contains unknown rows: {unknown[:5]}")
+    indexed.update((row.key, row) for row in overrides)
+    return sorted(indexed.values(), key=lambda row: row.key)
 
 
 def validate_results(rows: Iterable[RunResult], *, allow_partial: bool) -> list[RunResult]:
@@ -193,13 +218,29 @@ def cross_backend_metrics(summaries: Iterable[VariantSummary]) -> dict[str, Any]
         megatron - speedrun
         for megatron, speedrun in zip(megatron_deltas, speedrun_deltas, strict=True)
     ]
-    return {
+    metrics = {
         "variants": variants,
         "variant_count": len(variants),
         "delta_pearson": _pearson(speedrun_deltas, megatron_deltas),
         "mean_absolute_delta_gap": statistics.fmean(abs(gap) for gap in gaps) if gaps else None,
         "mean_signed_delta_gap": statistics.fmean(gaps) if gaps else None,
+        "delta_sign_agreement_count": sum(
+            (speedrun < 0.0) == (megatron < 0.0)
+            for speedrun, megatron in zip(speedrun_deltas, megatron_deltas, strict=True)
+        ),
     }
+    metrics["delta_sign_agreement_rate"] = (
+        metrics["delta_sign_agreement_count"] / len(variants) if variants else None
+    )
+    speedrun_baseline = indexed.get(("speedrun", "baseline"))
+    megatron_baseline = indexed.get(("megatron", "baseline"))
+    if speedrun_baseline is not None and megatron_baseline is not None:
+        metrics["baseline_bpb_gap"] = megatron_baseline.mean_bpb - speedrun_baseline.mean_bpb
+        metrics["baseline_absolute_throughput_ratio"] = (
+            megatron_baseline.mean_tokens_per_second
+            / speedrun_baseline.mean_tokens_per_second
+        )
+    return metrics
 
 
 def _write_csv(path: Path, summaries: list[VariantSummary]) -> None:
@@ -210,11 +251,21 @@ def _write_csv(path: Path, summaries: list[VariantSummary]) -> None:
         writer.writerows(asdict(row) for row in summaries)
 
 
+def _write_runs_csv(path: Path, rows: list[RunResult]) -> None:
+    fieldnames = list(RunResult.__dataclass_fields__)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(asdict(row) for row in sorted(rows, key=lambda row: row.key))
+
+
 def _markdown(summaries: list[VariantSummary], cross_backend: dict[str, Any]) -> str:
     correlation = cross_backend["delta_pearson"]
     correlation_text = f"{correlation:.6f}" if math.isfinite(correlation) else "n/a"
     mean_gap = cross_backend["mean_absolute_delta_gap"]
     mean_gap_text = f"{mean_gap:.6f} BPB" if mean_gap is not None else "n/a"
+    sign_rate = cross_backend["delta_sign_agreement_rate"]
+    sign_rate_text = f"{sign_rate:.1%}" if sign_rate is not None else "n/a"
     lines = [
         "# 10M backend comparison",
         "",
@@ -237,6 +288,10 @@ def _markdown(summaries: list[VariantSummary], cross_backend: dict[str, Any]) ->
             f"- Compared variants: {cross_backend['variant_count']}",
             f"- Variant-delta Pearson correlation: {correlation_text}",
             f"- Mean absolute paired-delta gap: {mean_gap_text}",
+            f"- Improvement/degradation sign agreement: {sign_rate_text}",
+            f"- Megatron minus speedrun baseline BPB: {cross_backend['baseline_bpb_gap']:+.6f}",
+            "- Megatron/speedrun absolute baseline throughput: "
+            f"{cross_backend['baseline_absolute_throughput_ratio']:.2f}×",
             "",
         )
     )
@@ -251,6 +306,7 @@ def write_comparison(
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_csv(output_dir / "comparison.csv", summaries)
+    _write_runs_csv(output_dir / "runs.csv", rows)
     (output_dir / "comparison.json").write_text(
         json.dumps(
             {
@@ -272,14 +328,21 @@ def main() -> None:
     parser.add_argument("--megatron-root", required=True, type=Path)
     parser.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--override-root",
+        action="append",
+        default=[],
+        type=Path,
+        help="partial Megatron result root whose matching rows replace the primary campaign",
+    )
     parser.add_argument("--allow-partial", action="store_true")
     args = parser.parse_args()
 
+    megatron_rows = load_megatron_results(args.megatron_root)
+    for override_root in args.override_root:
+        megatron_rows = overlay_results(megatron_rows, load_megatron_results(override_root))
     rows = validate_results(
-        [
-            *load_speedrun_reference(args.reference),
-            *load_megatron_results(args.megatron_root),
-        ],
+        [*load_speedrun_reference(args.reference), *megatron_rows],
         allow_partial=args.allow_partial,
     )
     summaries = summarize(rows)

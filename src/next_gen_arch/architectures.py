@@ -40,7 +40,10 @@ CAPABILITIES = {
         note=(
             "upstream MCore baseline"
             if variant == "baseline"
-            else "requires an explicit MCore adapter before scaling"
+            else (
+                "single-rank MCore comparison wrapper validated; requires a native "
+                "parallel adapter before scaling"
+            )
         ),
     )
     for variant in _SPEEDRUN_VARIANTS
