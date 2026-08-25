@@ -161,6 +161,25 @@ def overlay_results(
     return sorted(indexed.values(), key=lambda row: row.key)
 
 
+def merge_recovery_results(
+    primary: Iterable[RunResult], recoveries: Iterable[RunResult]
+) -> list[RunResult]:
+    """Fill failed/missing campaign keys without permitting a silent replacement."""
+    primary = list(primary)
+    recoveries = list(recoveries)
+    indexed = {row.key: row for row in primary}
+    if len(indexed) != len(primary):
+        raise ValueError("primary campaign contains duplicate rows")
+    recovery_keys = [row.key for row in recoveries]
+    if len(recovery_keys) != len(set(recovery_keys)):
+        raise ValueError("recovery results contain duplicate rows")
+    overlapping = sorted(set(recovery_keys) & set(indexed))
+    if overlapping:
+        raise ValueError(f"recovery results would replace existing rows: {overlapping[:5]}")
+    indexed.update((row.key, row) for row in recoveries)
+    return sorted(indexed.values(), key=lambda row: row.key)
+
+
 def validate_results(rows: Iterable[RunResult], *, allow_partial: bool) -> list[RunResult]:
     rows = list(rows)
     keys = [row.key for row in rows]
@@ -463,12 +482,21 @@ def main() -> None:
         type=Path,
         help="partial Megatron result root whose matching rows replace the primary campaign",
     )
+    parser.add_argument(
+        "--recovery-root",
+        action="append",
+        default=[],
+        type=Path,
+        help="partial Megatron result root that fills keys missing after failed runs",
+    )
     parser.add_argument("--allow-partial", action="store_true")
     args = parser.parse_args()
 
     megatron_rows = load_megatron_results(args.megatron_root)
     for override_root in args.override_root:
         megatron_rows = overlay_results(megatron_rows, load_megatron_results(override_root))
+    for recovery_root in args.recovery_root:
+        megatron_rows = merge_recovery_results(megatron_rows, load_megatron_results(recovery_root))
     rows = validate_results(
         [*load_speedrun_reference(args.reference), *megatron_rows],
         allow_partial=args.allow_partial,

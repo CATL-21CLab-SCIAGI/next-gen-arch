@@ -2,6 +2,7 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
 import torch
 
 from next_gen_arch.training.campaign_compare import (
@@ -11,6 +12,7 @@ from next_gen_arch.training.campaign_compare import (
     cross_backend_metrics,
     load_megatron_results,
     load_speedrun_reference,
+    merge_recovery_results,
     overlay_results,
     summarize,
     validate_results,
@@ -52,6 +54,15 @@ def test_correction_overlay_replaces_only_matching_run():
     corrected = RunResult("megatron", "dsa", 42, 1, 2, 3, 1.7, 9.0, 3.0, "fixed", "upstream")
 
     assert overlay_results([primary], [corrected]) == [corrected]
+
+
+def test_recovery_results_fill_missing_keys_without_replacing_rows() -> None:
+    primary = RunResult("megatron", "baseline", 42, 1, 2, 3, 1.5, 10.0, 2.0)
+    recovery = RunResult("megatron", "kda", 42, 1, 2, 3, 1.4, 9.0, 2.0)
+
+    assert merge_recovery_results([primary], [recovery]) == [primary, recovery]
+    with pytest.raises(ValueError, match="replace existing rows"):
+        merge_recovery_results([primary], [primary])
 
 
 def test_summary_prefers_steady_state_step_throughput_when_available() -> None:
