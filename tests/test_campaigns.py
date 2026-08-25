@@ -54,6 +54,40 @@ def test_correction_overlay_replaces_only_matching_run():
     assert overlay_results([primary], [corrected]) == [corrected]
 
 
+def test_summary_prefers_steady_state_step_throughput_when_available() -> None:
+    baseline = RunResult(
+        "megatron",
+        "baseline",
+        42,
+        1,
+        2,
+        3,
+        1.5,
+        10.0,
+        2.0,
+        steady_state_tokens_per_second=20.0,
+    )
+    variant = RunResult(
+        "megatron",
+        "dsa",
+        42,
+        1,
+        2,
+        3,
+        1.4,
+        5.0,
+        2.0,
+        steady_state_tokens_per_second=20.0,
+    )
+
+    summaries = {row.variant: row for row in summarize([baseline, variant])}
+
+    assert summaries["dsa"].normalized_throughput == 1.0
+    assert summaries["dsa"].mean_tokens_per_second == 20.0
+    assert summaries["dsa"].mean_cold_inclusive_tokens_per_second == 5.0
+    assert summaries["dsa"].throughput_basis == "median steady-state step"
+
+
 def test_megatron_loader_keeps_optimization_provenance(tmp_path):
     run = tmp_path / "baseline-seed42"
     run.mkdir()

@@ -62,6 +62,8 @@ class VariantSummary:
     mean_tokens_per_second: float
     normalized_throughput: float
     mean_wall_seconds: float
+    throughput_basis: str
+    mean_cold_inclusive_tokens_per_second: float
 
 
 def _parse_row(row: dict[str, str]) -> RunResult:
@@ -207,6 +209,19 @@ def summarize(rows: Iterable[RunResult]) -> list[VariantSummary]:
         ]
         if not paired:
             continue
+        uses_steady_state = all(
+            row.steady_state_tokens_per_second is not None
+            and baseline.steady_state_tokens_per_second is not None
+            for row, baseline in paired
+        )
+
+        def effective_throughput(
+            row: RunResult, *, prefer_steady_state: bool = uses_steady_state
+        ) -> float:
+            if prefer_steady_state and row.steady_state_tokens_per_second is not None:
+                return row.steady_state_tokens_per_second
+            return row.tokens_per_second
+
         summaries.append(
             VariantSummary(
                 backend=backend,
@@ -217,12 +232,19 @@ def summarize(rows: Iterable[RunResult]) -> list[VariantSummary]:
                     row.final_bpb - baseline.final_bpb for row, baseline in paired
                 ),
                 mean_tokens_per_second=statistics.fmean(
-                    row.tokens_per_second for row, _baseline in paired
+                    effective_throughput(row) for row, _baseline in paired
                 ),
                 normalized_throughput=statistics.fmean(
-                    row.tokens_per_second / baseline.tokens_per_second for row, baseline in paired
+                    effective_throughput(row) / effective_throughput(baseline)
+                    for row, baseline in paired
                 ),
                 mean_wall_seconds=statistics.fmean(row.wall_seconds for row, _baseline in paired),
+                throughput_basis=(
+                    "median steady-state step" if uses_steady_state else "aggregate after warmup"
+                ),
+                mean_cold_inclusive_tokens_per_second=statistics.fmean(
+                    row.tokens_per_second for row, _baseline in paired
+                ),
             )
         )
     return summaries
@@ -359,15 +381,15 @@ def _markdown(
         )
     lines.extend(
         (
-            "| Backend | Variant | Seeds | Mean BPB | Paired Δ BPB | Throughput | tok/s |",
-            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Backend | Variant | Seeds | Mean BPB | Paired Δ BPB | Throughput | tok/s | Basis |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
         )
     )
     for row in sorted(summaries, key=lambda item: (item.backend, item.mean_bpb)):
         lines.append(
             f"| {row.backend} | {row.variant} | {row.seeds} | {row.mean_bpb:.6f} | "
             f"{row.paired_delta_bpb:+.6f} | {row.normalized_throughput:.2f}× | "
-            f"{row.mean_tokens_per_second:,.0f} |"
+            f"{row.mean_tokens_per_second:,.0f} | {row.throughput_basis} |"
         )
     lines.extend(
         (
