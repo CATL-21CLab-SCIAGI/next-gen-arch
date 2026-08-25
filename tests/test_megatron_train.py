@@ -2,8 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from next_gen_arch.training.campaigns import get_ten_m_variant
+from next_gen_arch.training.campaigns import TEN_M_BATCH_TOKENS, get_ten_m_variant
 from next_gen_arch.training.megatron_train import (
+    SpeedrunSchedule,
     _current_training_iteration,
     _global_rank,
     _megatron_arguments,
@@ -149,3 +150,16 @@ def test_source_provenance_records_dirty_patch_without_exposing_it(tmp_path):
         "source_untracked_sha256",
         "source_worktree_sha256",
     }
+
+
+def test_throughput_summary_separates_compile_pause_from_steady_steps() -> None:
+    optimizer = type("Optimizer", (), {"param_groups": []})()
+    schedule = SpeedrunSchedule(optimizer, get_ten_m_variant("baseline"))
+    schedule.step_timestamps = [*map(float, range(10)), 109.0, *map(float, range(110, 119))]
+
+    summary = schedule.throughput_summary()
+
+    assert summary["measured_training_seconds"] == 109.0
+    assert summary["tokens_per_second"] == 10 * TEN_M_BATCH_TOKENS / 109.0
+    assert summary["median_step_seconds"] == 1.0
+    assert summary["steady_state_tokens_per_second"] == TEN_M_BATCH_TOKENS

@@ -16,6 +16,7 @@ import math
 import os
 import platform
 import socket
+import statistics
 import subprocess
 import sys
 import time
@@ -410,12 +411,40 @@ class SpeedrunSchedule:
         self._apply(self.iteration)
 
     def measured_throughput(self) -> tuple[float, float]:
+        summary = self.throughput_summary()
+        return summary["measured_training_seconds"], summary["tokens_per_second"]
+
+    def throughput_summary(self) -> dict[str, float]:
+        """Report both cold-inclusive aggregate and robust steady-state throughput."""
         warm_steps = 10
         if len(self.step_timestamps) <= warm_steps:
-            return 0.0, 0.0
+            return {
+                "measured_training_seconds": 0.0,
+                "tokens_per_second": 0.0,
+                "median_step_seconds": 0.0,
+                "p90_step_seconds": 0.0,
+                "steady_state_tokens_per_second": 0.0,
+            }
         elapsed = self.step_timestamps[-1] - self.step_timestamps[warm_steps - 1]
         measured_steps = len(self.step_timestamps) - warm_steps
-        return elapsed, measured_steps * TEN_M_BATCH_TOKENS / elapsed
+        intervals = [
+            current - previous
+            for previous, current in zip(
+                self.step_timestamps[warm_steps - 1 : -1],
+                self.step_timestamps[warm_steps:],
+                strict=True,
+            )
+        ]
+        median_step = statistics.median(intervals)
+        ordered = sorted(intervals)
+        p90_step = ordered[max(0, math.ceil(0.9 * len(ordered)) - 1)]
+        return {
+            "measured_training_seconds": elapsed,
+            "tokens_per_second": measured_steps * TEN_M_BATCH_TOKENS / elapsed,
+            "median_step_seconds": median_step,
+            "p90_step_seconds": p90_step,
+            "steady_state_tokens_per_second": TEN_M_BATCH_TOKENS / median_step,
+        }
 
 
 def _install_optimizer_adapter(
@@ -772,7 +801,7 @@ def main() -> None:
         started = time.perf_counter()
         schedule, parameter_count = _run_megatron(variant, args.seed, tokenizer, profile, recipe)
         wall_seconds = time.perf_counter() - started
-        measured_seconds, tokens_per_second = schedule.measured_throughput()
+        throughput = schedule.throughput_summary()
         validation_nats, validation_bytes = _reduce_validation_totals()
         if validation_bytes <= 0:
             raise RuntimeError("Megatron completed without a validation BPB denominator")
@@ -790,8 +819,7 @@ def main() -> None:
             "validation_tokens": TEN_M_EVAL_TOKENS,
             "final_bpb": final_bpb,
             "wall_seconds": wall_seconds,
-            "measured_training_seconds": measured_seconds,
-            "tokens_per_second": tokens_per_second,
+            **throughput,
             "completed_at_unix": time.time(),
         }
         if primary:

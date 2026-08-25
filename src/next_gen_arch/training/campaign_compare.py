@@ -43,6 +43,9 @@ class RunResult:
     source_dirty: bool | None = None
     source_diff_sha256: str = ""
     source_worktree_sha256: str = ""
+    steady_state_tokens_per_second: float | None = None
+    median_step_seconds: float | None = None
+    p90_step_seconds: float | None = None
 
     @property
     def key(self) -> tuple[str, str, int]:
@@ -80,6 +83,15 @@ def _parse_row(row: dict[str, str]) -> RunResult:
         source_dirty={"true": True, "false": False}.get(dirty),
         source_diff_sha256=row.get("source_diff_sha256", ""),
         source_worktree_sha256=row.get("source_worktree_sha256", ""),
+        steady_state_tokens_per_second=(
+            float(row["steady_state_tokens_per_second"])
+            if row.get("steady_state_tokens_per_second")
+            else None
+        ),
+        median_step_seconds=(
+            float(row["median_step_seconds"]) if row.get("median_step_seconds") else None
+        ),
+        p90_step_seconds=(float(row["p90_step_seconds"]) if row.get("p90_step_seconds") else None),
     )
 
 
@@ -120,6 +132,9 @@ def load_megatron_results(root: Path) -> list[RunResult]:
                 source_dirty=payload.get("source_dirty"),
                 source_diff_sha256=str(payload.get("source_diff_sha256", "")),
                 source_worktree_sha256=str(payload.get("source_worktree_sha256", "")),
+                steady_state_tokens_per_second=payload.get("steady_state_tokens_per_second"),
+                median_step_seconds=payload.get("median_step_seconds"),
+                p90_step_seconds=payload.get("p90_step_seconds"),
             )
         )
     return results
