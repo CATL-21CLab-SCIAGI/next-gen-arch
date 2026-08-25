@@ -1,11 +1,15 @@
+import csv
 import json
+from pathlib import Path
 
 import torch
 
 from next_gen_arch.training.campaign_compare import (
     DEFAULT_REFERENCE,
     RunResult,
+    campaign_provenance,
     cross_backend_metrics,
+    load_megatron_results,
     load_speedrun_reference,
     overlay_results,
     summarize,
@@ -17,9 +21,13 @@ from next_gen_arch.training.campaigns import (
     verify_ten_m_contract,
 )
 from next_gen_arch.training.models import build_model_config, instantiate_model
+from next_gen_arch.training.optimization_recipes import OPTIMIZATION_RECIPES
 
 PUBLISHED_RUNS = DEFAULT_REFERENCE.with_name("backend-10m-runs.csv")
 PUBLISHED_COMPARISON = DEFAULT_REFERENCE.with_name("backend-10m-comparison.json")
+OPTIMIZATION_RUNS = (
+    Path(__file__).resolve().parents[1] / "results" / "megatron-10m-optimization-runs-b300.csv"
+)
 
 
 def test_ten_m_grid_is_complete_and_parameter_counts_are_frozen():
@@ -41,11 +49,55 @@ def test_speedrun_10m_reference_matches_frozen_contract():
 
 def test_correction_overlay_replaces_only_matching_run():
     primary = RunResult("megatron", "dsa", 42, 1, 2, 3, 1.5, 10.0, 2.0)
-    corrected = RunResult(
-        "megatron", "dsa", 42, 1, 2, 3, 1.7, 9.0, 3.0, "fixed", "upstream"
-    )
+    corrected = RunResult("megatron", "dsa", 42, 1, 2, 3, 1.7, 9.0, 3.0, "fixed", "upstream")
 
     assert overlay_results([primary], [corrected]) == [corrected]
+
+
+def test_megatron_loader_keeps_optimization_provenance(tmp_path):
+    run = tmp_path / "baseline-seed42"
+    run.mkdir()
+    (run / "result.json").write_text(
+        json.dumps(
+            {
+                "backend": "megatron",
+                "mode": "full",
+                "variant": {"name": "baseline"},
+                "seed": 42,
+                "parameter_count": 9_363_488,
+                "training_steps": 286,
+                "training_tokens": 112_459_776,
+                "final_bpb": 1.5,
+                "tokens_per_second": 1_000_000,
+                "wall_seconds": 120,
+                "source_commit": "source",
+                "megatron_commit": "upstream",
+                "backend_profile": {"name": "compile-max-autotune"},
+                "optimization_recipe": {"name": "z-loss-5e-6-clip01"},
+                "source_dirty": True,
+                "source_diff_sha256": "digest",
+                "source_worktree_sha256": "worktree-digest",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    [result] = load_megatron_results(tmp_path)
+
+    assert result.backend_profile == "compile-max-autotune"
+    assert result.optimization_recipe == "z-loss-5e-6-clip01"
+    assert result.source_dirty is True
+    assert result.source_diff_sha256 == "digest"
+    assert result.source_worktree_sha256 == "worktree-digest"
+    assert campaign_provenance([result])["megatron"] == {
+        "backend_profiles": ["compile-max-autotune"],
+        "optimization_recipes": ["z-loss-5e-6-clip01"],
+        "source_commits": ["source"],
+        "megatron_commits": ["upstream"],
+        "source_dirty_values": [True],
+        "source_diff_sha256": ["digest"],
+        "source_worktree_sha256": ["worktree-digest"],
+    }
 
 
 def test_published_backend_comparison_is_complete_and_provenanced():
@@ -54,12 +106,12 @@ def test_published_backend_comparison_is_complete_and_provenanced():
 
     megatron_rows = [row for row in rows if row.backend == "megatron"]
     assert len(megatron_rows) == 48
-    assert {
-        row.source_commit for row in megatron_rows if row.variant == "dsa"
-    } == {"ed8336e5403d8da75082502a96a115f06ee17334"}
-    assert {
-        row.source_commit for row in megatron_rows if row.variant != "dsa"
-    } == {"e6d9b0b1153e74078dbb87d4c0e8b12c8d4df513"}
+    assert {row.source_commit for row in megatron_rows if row.variant == "dsa"} == {
+        "ed8336e5403d8da75082502a96a115f06ee17334"
+    }
+    assert {row.source_commit for row in megatron_rows if row.variant != "dsa"} == {
+        "e6d9b0b1153e74078dbb87d4c0e8b12c8d4df513"
+    }
     assert {row.megatron_commit for row in megatron_rows} == {
         "55ac7082517c3878ae653c07c09c534b8aed49f6"
     }
@@ -73,3 +125,15 @@ def test_published_backend_comparison_is_complete_and_provenanced():
     assert len(payload["runs"]) == 96
     assert len(payload["summary"]) == 32
     assert payload["cross_backend"] == metrics
+
+
+def test_optimization_ledger_covers_every_executable_recipe() -> None:
+    with OPTIMIZATION_RUNS.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 93
+    assert {row["optimization_recipe"] for row in rows if row["optimization_recipe"]} == set(
+        OPTIMIZATION_RECIPES
+    )
+    assert {row["accelerator"] for row in rows} == {"NVIDIA B300"}
+    assert {row["compute_capability"] for row in rows} == {"10.3"}

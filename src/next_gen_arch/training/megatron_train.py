@@ -10,6 +10,7 @@ every mechanism has a tensor-parallel-native MCore layer implementation.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -19,7 +20,7 @@ import subprocess
 import sys
 import time
 import traceback
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -47,11 +48,94 @@ from next_gen_arch.training.models import (
     instantiate_model,
 )
 from next_gen_arch.training.optim import setup_model_optimizer
+from next_gen_arch.training.optimization_recipes import (
+    OPTIMIZATION_RECIPES,
+    OptimizationRecipe,
+    get_optimization_recipe,
+)
 from next_gen_arch.training.tokenizer import get_token_bytes, get_tokenizer
 
 _EVAL_NATS = 0.0
 _EVAL_BYTES = 0
 _TOKEN_BYTES: torch.Tensor | None = None
+
+
+@dataclass(frozen=True)
+class MegatronBackendProfile:
+    """One explicit, auditable set of Megatron wrapper optimizations."""
+
+    name: str
+    compile_architecture: bool
+    use_mcore_bf16_master: bool
+    finite_checks: bool = True
+    compile_mode: str | None = None
+    overlap_grad_reduce: bool = False
+    ddp_num_buckets: int | None = None
+    ddp_average_in_collective: bool = False
+
+
+MEGATRON_BACKEND_PROFILES = {
+    profile.name: profile
+    for profile in (
+        MegatronBackendProfile(
+            name="legacy",
+            compile_architecture=False,
+            use_mcore_bf16_master=True,
+        ),
+        MegatronBackendProfile(
+            name="compile",
+            compile_architecture=True,
+            use_mcore_bf16_master=True,
+        ),
+        MegatronBackendProfile(
+            name="compile-reduce-overhead",
+            compile_architecture=True,
+            use_mcore_bf16_master=True,
+            compile_mode="reduce-overhead",
+        ),
+        MegatronBackendProfile(
+            name="compile-max-autotune",
+            compile_architecture=True,
+            use_mcore_bf16_master=True,
+            compile_mode="max-autotune",
+        ),
+        MegatronBackendProfile(
+            name="compile-dp-overlap",
+            compile_architecture=True,
+            use_mcore_bf16_master=True,
+            overlap_grad_reduce=True,
+            ddp_num_buckets=4,
+        ),
+        MegatronBackendProfile(
+            name="compile-dp-overlap-average",
+            compile_architecture=True,
+            use_mcore_bf16_master=True,
+            overlap_grad_reduce=True,
+            ddp_num_buckets=4,
+            ddp_average_in_collective=True,
+        ),
+        MegatronBackendProfile(
+            name="native-master",
+            compile_architecture=False,
+            use_mcore_bf16_master=False,
+        ),
+        MegatronBackendProfile(
+            name="speedrun",
+            compile_architecture=True,
+            use_mcore_bf16_master=False,
+        ),
+    )
+}
+
+
+def get_megatron_backend_profile(name: str) -> MegatronBackendProfile:
+    try:
+        return MEGATRON_BACKEND_PROFILES[name]
+    except KeyError as error:
+        choices = ", ".join(MEGATRON_BACKEND_PROFILES)
+        raise ValueError(
+            f"unknown Megatron backend profile {name!r}; choose one of: {choices}"
+        ) from error
 
 
 def _current_training_iteration(args) -> int:
@@ -63,7 +147,7 @@ def _current_training_iteration(args) -> int:
 
 def _git_output(root: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *args],
+        ["git", "-c", f"safe.directory={root}", *args],
         cwd=root,
         check=True,
         text=True,
@@ -72,12 +156,80 @@ def _git_output(root: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def _source_provenance(repository: Path) -> dict[str, Any]:
+    status = _git_output(repository, "status", "--porcelain=v1", "--untracked-files=all")
+    diff = subprocess.run(
+        ["git", "-c", f"safe.directory={repository}", "diff", "--binary", "HEAD"],
+        cwd=repository,
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    untracked_output = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={repository}",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        cwd=repository,
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    untracked = sorted(Path(os.fsdecode(path)) for path in untracked_output.split(b"\0") if path)
+    untracked_digest = hashlib.sha256()
+    worktree_digest = hashlib.sha256(b"tracked-diff\0" + diff)
+    for relative in untracked:
+        path = repository / relative
+        if path.is_symlink():
+            content = b"symlink\0" + os.fsencode(os.readlink(path))
+        elif path.is_file():
+            content = b"file\0" + path.read_bytes()
+        else:
+            content = b"other\0"
+        framed = (
+            len(os.fsencode(relative)).to_bytes(8, "big")
+            + os.fsencode(relative)
+            + len(content).to_bytes(8, "big")
+            + content
+        )
+        untracked_digest.update(framed)
+        worktree_digest.update(framed)
+    return {
+        "source_commit": _git_output(repository, "rev-parse", "HEAD"),
+        "source_dirty": bool(status),
+        "source_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "source_untracked_files": [str(path) for path in untracked],
+        "source_untracked_sha256": untracked_digest.hexdigest(),
+        "source_worktree_sha256": worktree_digest.hexdigest(),
+    }
+
+
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _global_rank() -> int:
+    """Read torchrun's global rank before Megatron initializes process groups."""
+    return int(os.environ.get("RANK", "0"))
+
+
+def _reduce_validation_totals() -> tuple[float, int]:
+    """Aggregate sharded validation numerators across data-parallel ranks."""
+    totals = torch.tensor(
+        (_EVAL_NATS, float(_EVAL_BYTES)),
+        device=torch.cuda.current_device(),
+        dtype=torch.float64,
+    )
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.all_reduce(totals, op=torch.distributed.ReduceOp.SUM)
+    return float(totals[0].item()), int(totals[1].item())
 
 
 def _claim_run_directory(run_dir: Path, variant: TenMVariant, seed: int) -> Path:
@@ -102,9 +254,13 @@ def _claim_run_directory(run_dir: Path, variant: TenMVariant, seed: int) -> Path
     return marker
 
 
-def _megatron_arguments(variant: TenMVariant) -> list[str]:
+def _megatron_arguments(
+    variant: TenMVariant,
+    profile: MegatronBackendProfile,
+    recipe: OptimizationRecipe,
+) -> list[str]:
     eval_iters = TEN_M_EVAL_TOKENS // TEN_M_BATCH_TOKENS
-    return [
+    arguments = [
         "next-gen-arch-megatron",
         "--use-mcore-models",
         "--num-layers",
@@ -156,8 +312,7 @@ def _megatron_arguments(variant: TenMVariant) -> list[str]:
         "--weight-decay",
         "0.28",
         "--clip-grad",
-        "0.0",
-        "--bf16",
+        str(recipe.gradient_clip),
         "--tokenizer-type",
         "NullTokenizer",
         "--vocab-size",
@@ -182,6 +337,20 @@ def _megatron_arguments(variant: TenMVariant) -> list[str]:
         "--no-bias-dropout-fusion",
         "--no-rope-fusion",
     ]
+    if profile.use_mcore_bf16_master:
+        arguments.append("--bf16")
+    if profile.overlap_grad_reduce:
+        arguments.append("--overlap-grad-reduce")
+    if profile.ddp_num_buckets is not None:
+        arguments.extend(("--ddp-num-buckets", str(profile.ddp_num_buckets)))
+    if profile.ddp_average_in_collective:
+        arguments.append("--ddp-average-in-collective")
+    # This Megatron revision enables finite loss/gradient checks by default and
+    # exposes only the negative CLI form.  Spell out the opt-out when a future
+    # diagnostic profile needs it; never pass a nonexistent positive flag.
+    if not profile.finite_checks:
+        arguments.append("--no-check-for-nan-in-loss-and-grad")
+    return arguments
 
 
 class SpeedrunSchedule:
@@ -249,9 +418,13 @@ class SpeedrunSchedule:
         return elapsed, measured_steps * TEN_M_BATCH_TOKENS / elapsed
 
 
-def _install_optimizer_adapter(variant: TenMVariant) -> dict[str, SpeedrunSchedule]:
+def _install_optimizer_adapter(
+    variant: TenMVariant,
+    profile: MegatronBackendProfile,
+    recipe: OptimizationRecipe,
+) -> dict[str, SpeedrunSchedule]:
     import megatron.training.training as training_module
-    from megatron.core.optimizer.optimizer import Float16OptimizerWithFloat16Params
+    from megatron.core.optimizer.optimizer import Float16OptimizerWithFloat16Params, FP32Optimizer
 
     schedule_holder: dict[str, SpeedrunSchedule] = {}
 
@@ -264,29 +437,44 @@ def _install_optimizer_adapter(variant: TenMVariant) -> dict[str, SpeedrunSchedu
         if len(unwrapped) != 1 or not hasattr(unwrapped[0], "architecture"):
             raise RuntimeError("the 10M adapter requires one non-pipelined architecture model")
         architecture = unwrapped[0].architecture
+        optimizer_model = getattr(architecture, "_orig_mod", architecture)
         raw_optimizer = setup_model_optimizer(
-            architecture,
-            unembedding_lr=0.008,
-            embedding_lr=0.3,
-            matrix_lr=0.02,
-            scalar_lr=0.5,
+            optimizer_model,
+            unembedding_lr=recipe.unembedding_lr,
+            embedding_lr=recipe.embedding_lr,
+            matrix_lr=recipe.matrix_lr,
+            scalar_lr=recipe.scalar_lr,
             weight_decay=0.28,
             distributed=False,
+            matrix_optimizer=recipe.matrix_optimizer,
+            adam_update_every=recipe.adam_update_every,
+            cautious_adam_weight_decay=recipe.cautious_adam_weight_decay,
         )
         canonical_group_seen = False
         for group in raw_optimizer.param_groups:
-            is_canonical = group["kind"] == "muon" and not canonical_group_seen
+            is_canonical = group["kind"] in {"muon", "adamh"} and not canonical_group_seen
             group["default_config"] = is_canonical
             canonical_group_seen = canonical_group_seen or is_canonical
         optimizer_config, _ = training_module.get_megatron_optimizer_config(args)
         optimizer_config.timers = timers
-        optimizer_config.clip_grad = 0.0
-        optimizer = Float16OptimizerWithFloat16Params(
-            raw_optimizer,
-            optimizer_config,
-            grad_scaler=None,
-            init_state_fn=lambda *_args, **_kwargs: None,
-        )
+        optimizer_config.clip_grad = recipe.gradient_clip
+        if profile.use_mcore_bf16_master:
+            optimizer = Float16OptimizerWithFloat16Params(
+                raw_optimizer,
+                optimizer_config,
+                grad_scaler=None,
+                init_state_fn=lambda *_args, **_kwargs: None,
+            )
+        else:
+            # Preserve the speedrun's mixed storage policy: projection masters stay
+            # FP32 while embeddings may stay BF16, and Linear casts only for matmul.
+            # MCore still owns DDP main-grad buffers and the optimizer lifecycle, but
+            # there is no detached FP32 replica or per-step copy-back.
+            optimizer = FP32Optimizer(
+                raw_optimizer,
+                optimizer_config,
+                init_state_fn=lambda *_args, **_kwargs: None,
+            )
         schedule = SpeedrunSchedule(optimizer, variant)
         schedule_holder["schedule"] = schedule
         args.iteration = 0
@@ -360,9 +548,15 @@ def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
     return output_tensor, partial(_loss_func, labels, bool(model.training))
 
 
-def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
+def _run_megatron(
+    variant: TenMVariant,
+    seed: int,
+    tokenizer,
+    profile: MegatronBackendProfile,
+    recipe: OptimizationRecipe,
+):
     sys.path.insert(0, str(MEGATRON_ROOT))
-    sys.argv = _megatron_arguments(variant) + ["--seed", str(seed)]
+    sys.argv = _megatron_arguments(variant, profile, recipe) + ["--seed", str(seed)]
 
     from megatron.core.datasets import utils as dataset_utils
     from megatron.core.enums import ModelType
@@ -377,6 +571,7 @@ def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
     dataset_utils.compile_helpers = skip_unused_dataset_helper_build
 
     model_kwargs = ten_m_model_config_kwargs(variant)
+    model_kwargs.update(recipe.model_overrides)
 
     class ArchitectureMegatronModel(MegatronModule):
         def __init__(self, transformer_config, pg_collection):
@@ -393,13 +588,13 @@ def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
             model_config = build_model_config(**model_kwargs)
-            self.architecture = instantiate_model(model_config)
+            architecture = instantiate_model(model_config)
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
-            self.architecture.init_weights()
+            architecture.init_weights()
             nonfinite_parameters = [
                 name
-                for name, parameter in self.architecture.named_parameters()
+                for name, parameter in architecture.named_parameters()
                 if not torch.isfinite(parameter).all()
             ]
             if nonfinite_parameters:
@@ -409,16 +604,23 @@ def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
                 )
             if variant.name == "engram":
                 token_map, compressed_vocab_size = build_engram_token_map(tokenizer, 32_768)
-                self.architecture.configure_engram_token_map(
-                    token_map, tokenizer.get_bos_token_id()
-                )
+                architecture.configure_engram_token_map(token_map, tokenizer.get_bos_token_id())
                 print_rank_0(f"Engram compressed vocabulary: {compressed_vocab_size}")
-            actual_parameters = self.architecture.num_scaling_params()["total"]
-            if actual_parameters != variant.parameter_count:
+            actual_parameters = architecture.num_scaling_params()["total"]
+            if actual_parameters != variant.parameter_count and not recipe.model_overrides:
                 raise RuntimeError(
                     f"parameter count drift for {variant.name}: "
                     f"{actual_parameters} != {variant.parameter_count}"
                 )
+            schedule_holder["parameter_count"] = actual_parameters
+            compile_kwargs = {"dynamic": False}
+            if profile.compile_mode is not None:
+                compile_kwargs["mode"] = profile.compile_mode
+            self.architecture = (
+                torch.compile(architecture, **compile_kwargs)
+                if profile.compile_architecture
+                else architecture
+            )
 
         def set_input_tensor(self, input_tensor) -> None:
             self.input_tensor = input_tensor
@@ -480,7 +682,7 @@ def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
         )
 
     datasets_provider.is_distributed = True
-    schedule_holder = _install_optimizer_adapter(variant)
+    schedule_holder = _install_optimizer_adapter(variant, profile, recipe)
     pretrain(
         datasets_provider,
         model_provider,
@@ -488,10 +690,16 @@ def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
         _forward_step,
         args_defaults={"tokenizer_type": "NullTokenizer"},
     )
-    return schedule_holder["schedule"]
+    return schedule_holder["schedule"], int(schedule_holder["parameter_count"])
 
 
-def _environment(variant: TenMVariant, seed: int, mode: str) -> dict[str, Any]:
+def _environment(
+    variant: TenMVariant,
+    seed: int,
+    mode: str,
+    profile: MegatronBackendProfile,
+    recipe: OptimizationRecipe,
+) -> dict[str, Any]:
     repository = _repository_root()
     return {
         "backend": "megatron",
@@ -499,19 +707,24 @@ def _environment(variant: TenMVariant, seed: int, mode: str) -> dict[str, Any]:
         "variant": asdict(variant),
         "seed": seed,
         "mode": mode,
+        "backend_profile": asdict(profile),
+        "optimization_recipe": asdict(recipe),
         "host": socket.gethostname(),
         "platform": platform.platform(),
         "python": sys.version,
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
-        "source_commit": _git_output(repository, "rev-parse", "HEAD"),
+        **_source_provenance(repository),
         "megatron_commit": MEGATRON_COMMIT,
         "data_root": os.environ.get("NANOCHAT_BASE_DIR"),
         "triton_ptxas_path": os.environ.get("TRITON_PTXAS_PATH"),
         "semantic_equivalence": (
             "same architecture, ClimbMix packing, tokenizer, seed, batch budget, and "
-            "mixed Muon/Adam schedule; MCore owns initialization, DDP accumulation, "
-            "finite checks, and evaluation scheduling; bitwise equivalence is not claimed"
+            "mixed matrix/Adam schedule; the named optimization recipe is the only experimental "
+            "delta; compilation changes execution only; native-master "
+            "profiles preserve the speedrun mixed-storage policy without detached FP32 "
+            "replicas; MCore owns initialization, DDP accumulation, finite checks, and "
+            "evaluation scheduling; bitwise equivalence is not claimed"
         ),
     }
 
@@ -522,6 +735,18 @@ def main() -> None:
     parser.add_argument("--seed", required=True, type=int, choices=TEN_M_SEEDS)
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--probe-steps", type=int, default=0)
+    parser.add_argument(
+        "--backend-profile",
+        choices=tuple(MEGATRON_BACKEND_PROFILES),
+        default="legacy",
+        help="explicit Megatron wrapper optimization profile",
+    )
+    parser.add_argument(
+        "--optimization-recipe",
+        choices=tuple(OPTIMIZATION_RECIPES),
+        default="baseline",
+        help="isolated speedrun/Marin optimization recipe",
+    )
     args = parser.parse_args()
     if args.probe_steps < 0:
         parser.error("--probe-steps must be non-negative")
@@ -530,27 +755,34 @@ def main() -> None:
         replace(contract_variant, steps=args.probe_steps) if args.probe_steps else contract_variant
     )
     mode = "probe" if args.probe_steps else "full"
+    profile = get_megatron_backend_profile(args.backend_profile)
+    recipe = get_optimization_recipe(args.optimization_recipe)
     run_dir = args.run_dir.expanduser().resolve()
-    marker = _claim_run_directory(run_dir, variant, args.seed)
+    primary = _global_rank() == 0
+    marker = (
+        _claim_run_directory(run_dir, variant, args.seed) if primary else run_dir / "RUNNING.json"
+    )
     try:
         submodule = validate_submodule()
-        environment = _environment(variant, args.seed, mode)
+        environment = _environment(variant, args.seed, mode, profile, recipe)
         environment["submodule"] = submodule
-        _write_json(run_dir / "resolved_run.json", environment)
+        if primary:
+            _write_json(run_dir / "resolved_run.json", environment)
         tokenizer = get_tokenizer()
         started = time.perf_counter()
-        schedule = _run_megatron(variant, args.seed, tokenizer)
+        schedule, parameter_count = _run_megatron(variant, args.seed, tokenizer, profile, recipe)
         wall_seconds = time.perf_counter() - started
         measured_seconds, tokens_per_second = schedule.measured_throughput()
-        if _EVAL_BYTES <= 0:
+        validation_nats, validation_bytes = _reduce_validation_totals()
+        if validation_bytes <= 0:
             raise RuntimeError("Megatron completed without a validation BPB denominator")
-        final_bpb = _EVAL_NATS / (math.log(2.0) * _EVAL_BYTES)
+        final_bpb = validation_nats / (math.log(2.0) * validation_bytes)
         if not math.isfinite(final_bpb):
             raise RuntimeError("validation produced a non-finite final BPB")
         result = {
             **environment,
             "status": "complete",
-            "parameter_count": variant.parameter_count,
+            "parameter_count": parameter_count,
             "training_steps": variant.steps,
             "training_tokens": variant.training_tokens,
             "contract_training_steps": contract_variant.steps,
@@ -562,20 +794,25 @@ def main() -> None:
             "tokens_per_second": tokens_per_second,
             "completed_at_unix": time.time(),
         }
-        _write_json(run_dir / "result.json", result)
-        marker.replace(run_dir / "COMPLETE.json")
+        if primary:
+            _write_json(run_dir / "result.json", result)
+            marker.replace(run_dir / "COMPLETE.json")
     except BaseException as error:
-        _write_json(
-            run_dir / "FAILED.json",
-            {
-                "status": "failed",
-                "error_type": type(error).__name__,
-                "error": str(error),
-                "traceback": traceback.format_exc(),
-                "failed_at_unix": time.time(),
-            },
-        )
+        if primary:
+            _write_json(
+                run_dir / "FAILED.json",
+                {
+                    "status": "failed",
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                    "traceback": traceback.format_exc(),
+                    "failed_at_unix": time.time(),
+                },
+            )
         raise
+    finally:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":

@@ -70,6 +70,16 @@ def patch_model_config_kwargs(model_config_kwargs: dict) -> dict:
     patched.setdefault("runtime", training_architecture_runtime())
     patched["arch_family"] = arch_family
     patched.setdefault("per_head_muon", False)
+    patched.setdefault("rope_fraction", 1.0)
+    patched.setdefault("partial_key_offset", "none")
+    patched.setdefault("embedding_init_std", 0.8)
+    patched.setdefault("matrix_init_recipe", "speedrun-zero-proj")
+    patched.setdefault("learnable_qk_gain", False)
+    patched.setdefault("cached_attention_layers", 0)
+    patched.setdefault("reuse_midpoint_kv", False)
+    patched.setdefault("loss_fp32", True)
+    patched.setdefault("logit_transform", "symmetric-softcap")
+    patched.setdefault("z_loss_weight", 0.0)
     if "window_pattern" not in patched:
         patched["window_pattern"] = "L"
     if arch_family == "engram":
@@ -154,6 +164,16 @@ def build_model_config(
     window_pattern: str,
     fog_variant: str,
     per_head_muon: bool = False,
+    rope_fraction: float = 1.0,
+    partial_key_offset: str = "none",
+    embedding_init_std: float = 0.8,
+    matrix_init_recipe: str = "speedrun-zero-proj",
+    learnable_qk_gain: bool = False,
+    cached_attention_layers: int = 0,
+    reuse_midpoint_kv: bool = False,
+    loss_fp32: bool = True,
+    logit_transform: str = "symmetric-softcap",
+    z_loss_weight: float = 0.0,
     kda_pattern: str = "KKKG",
     kda_rope_policy: str = "global_only",
     kda_variant: str = "kimi_linear",
@@ -212,6 +232,16 @@ def build_model_config(
         n_embd=model_dim,
         window_pattern=window_pattern,
         per_head_muon=per_head_muon,
+        rope_fraction=rope_fraction,
+        partial_key_offset=partial_key_offset,
+        embedding_init_std=embedding_init_std,
+        matrix_init_recipe=matrix_init_recipe,
+        learnable_qk_gain=learnable_qk_gain,
+        cached_attention_layers=cached_attention_layers,
+        reuse_midpoint_kv=reuse_midpoint_kv,
+        loss_fp32=loss_fp32,
+        logit_transform=logit_transform,
+        z_loss_weight=z_loss_weight,
         runtime=training_architecture_runtime(),
     )
     if arch_family == "nanochat":

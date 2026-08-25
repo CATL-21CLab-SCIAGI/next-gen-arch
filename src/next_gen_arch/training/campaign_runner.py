@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from next_gen_arch.training.campaigns import TEN_M_SEEDS, TEN_M_VARIANTS
+from next_gen_arch.training.optimization_recipes import OPTIMIZATION_RECIPES
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,76 @@ def _campaign_tasks(mode: str) -> list[Task]:
     return [Task(variant.name, seed) for variant in TEN_M_VARIANTS for seed in seeds]
 
 
+def _task_queues(
+    mode: str,
+    node_index: int,
+    num_nodes: int,
+    queue_count: int,
+    partition_strategy: str,
+) -> list[list[Task]]:
+    """Partition tasks without ever assigning work outside explicit GPU queues."""
+    if partition_strategy == "seed":
+        node_tasks = [
+            task
+            for index, task in enumerate(_campaign_tasks(mode))
+            if index % num_nodes == node_index
+        ]
+        return [node_tasks[index::queue_count] for index in range(queue_count)]
+
+    seeds = (TEN_M_SEEDS[0],) if mode == "probe" else TEN_M_SEEDS
+    node_variants = [
+        variant for index, variant in enumerate(TEN_M_VARIANTS) if index % num_nodes == node_index
+    ]
+    queues: list[list[Task]] = [[] for _index in range(queue_count)]
+    for index, variant in enumerate(node_variants):
+        queues[index % queue_count].extend(Task(variant.name, seed) for seed in seeds)
+    return queues
+
+
+def _is_matching_complete_run(
+    run_dir: Path,
+    task: Task,
+    mode: str,
+    backend_profile: str,
+    optimization_recipe: str,
+) -> bool:
+    """Reuse only a fully materialized result with the exact requested controls."""
+    marker = run_dir / "COMPLETE.json"
+    result_path = run_dir / "result.json"
+    if not marker.is_file() and not result_path.is_file():
+        return False
+    if not marker.is_file() or not result_path.is_file():
+        raise RuntimeError(f"incomplete existing run directory: {run_dir}")
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    variant = payload.get("variant", "")
+    variant_name = variant.get("name", "") if isinstance(variant, dict) else variant
+    profile = payload.get("backend_profile", "")
+    profile_name = profile.get("name", "") if isinstance(profile, dict) else profile
+    recipe = payload.get("optimization_recipe", "")
+    recipe_name = recipe.get("name", "") if isinstance(recipe, dict) else recipe
+    actual = (
+        payload.get("status"),
+        variant_name,
+        payload.get("seed"),
+        payload.get("mode"),
+        profile_name,
+        recipe_name,
+    )
+    expected = (
+        "complete",
+        task.variant,
+        task.seed,
+        mode,
+        backend_profile,
+        optimization_recipe,
+    )
+    if actual != expected:
+        raise RuntimeError(
+            f"existing result contract mismatch in {run_dir}: {actual} != {expected}"
+        )
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--node-index", required=True, type=int)
@@ -87,7 +158,17 @@ def main() -> None:
     parser.add_argument("--gpus", required=True, type=_parse_gpus)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--mode", choices=("probe", "full"), required=True)
+    parser.add_argument(
+        "--partition-strategy",
+        choices=("seed", "variant"),
+        default="seed",
+        help="seed preserves simultaneous pairing; variant reuses compiler caches across seeds",
+    )
     parser.add_argument("--probe-steps", type=int, default=1)
+    parser.add_argument("--backend-profile", default="legacy")
+    parser.add_argument(
+        "--optimization-recipe", choices=tuple(OPTIMIZATION_RECIPES), default="baseline"
+    )
     args = parser.parse_args()
     if args.num_nodes < 1 or not 0 <= args.node_index < args.num_nodes:
         parser.error("node index must be inside [0, num-nodes)")
@@ -105,11 +186,14 @@ def main() -> None:
     for gpu in args.gpus:
         _require_idle(gpu, uuid_by_index)
 
-    all_tasks = _campaign_tasks(args.mode)
-    node_tasks = [
-        task for index, task in enumerate(all_tasks) if index % args.num_nodes == args.node_index
-    ]
-    queues = [node_tasks[index :: len(args.gpus)] for index in range(len(args.gpus))]
+    queues = _task_queues(
+        args.mode,
+        args.node_index,
+        args.num_nodes,
+        len(args.gpus),
+        args.partition_strategy,
+    )
+    node_tasks = [task for queue in queues for task in queue]
     state_path = output_root / f"node-{args.node_index}-{args.mode}.json"
     lock = threading.Lock()
     state = {
@@ -117,6 +201,9 @@ def main() -> None:
         "node_index": args.node_index,
         "num_nodes": args.num_nodes,
         "gpu_allowlist": list(args.gpus),
+        "partition_strategy": args.partition_strategy,
+        "backend_profile": args.backend_profile,
+        "optimization_recipe": args.optimization_recipe,
         "started_at_unix": time.time(),
         "tasks": {task.name: {"status": "queued"} for task in node_tasks},
     }
@@ -131,12 +218,30 @@ def main() -> None:
 
     def worker(gpu: int, tasks: list[Task]) -> None:
         for task in tasks:
+            run_dir = runs_root / task.name
+            try:
+                if _is_matching_complete_run(
+                    run_dir,
+                    task,
+                    args.mode,
+                    args.backend_profile,
+                    args.optimization_recipe,
+                ):
+                    update(
+                        task,
+                        status="complete",
+                        reused_complete_result=True,
+                        finished_at_unix=time.time(),
+                    )
+                    continue
+            except BaseException as error:
+                update(task, status="blocked", error=str(error), finished_at_unix=time.time())
+                continue
             try:
                 _require_idle(gpu, uuid_by_index)
             except BaseException as error:
                 update(task, status="blocked", error=str(error), finished_at_unix=time.time())
                 continue
-            run_dir = runs_root / task.name
             log_path = logs_root / f"{task.name}.log"
             command = [
                 str(torchrun),
@@ -150,13 +255,18 @@ def main() -> None:
                 str(task.seed),
                 "--run-dir",
                 str(run_dir),
+                "--backend-profile",
+                args.backend_profile,
+                "--optimization-recipe",
+                args.optimization_recipe,
             ]
             if args.mode == "probe":
                 command.extend(("--probe-steps", str(args.probe_steps)))
             environment = dict(os.environ)
             environment["CUDA_VISIBLE_DEVICES"] = str(gpu)
             environment.setdefault("NANOCHAT_ATTENTION_BACKEND", "sdpa")
-            cache_root = output_root / "cache" / task.name
+            cache_key = task.variant if args.partition_strategy == "variant" else task.name
+            cache_root = output_root / "cache" / f"node-{args.node_index}" / cache_key
             for variable, directory in (
                 ("CUDA_CACHE_PATH", "cuda"),
                 ("TRITON_CACHE_DIR", "triton"),

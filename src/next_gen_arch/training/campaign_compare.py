@@ -38,6 +38,11 @@ class RunResult:
     wall_seconds: float
     source_commit: str = ""
     megatron_commit: str = ""
+    backend_profile: str = ""
+    optimization_recipe: str = ""
+    source_dirty: bool | None = None
+    source_diff_sha256: str = ""
+    source_worktree_sha256: str = ""
 
     @property
     def key(self) -> tuple[str, str, int]:
@@ -57,6 +62,7 @@ class VariantSummary:
 
 
 def _parse_row(row: dict[str, str]) -> RunResult:
+    dirty = row.get("source_dirty", "").strip().lower()
     return RunResult(
         backend=row["backend"],
         variant=row["variant"],
@@ -69,6 +75,11 @@ def _parse_row(row: dict[str, str]) -> RunResult:
         wall_seconds=float(row["wall_seconds"]),
         source_commit=row.get("source_commit", ""),
         megatron_commit=row.get("megatron_commit", ""),
+        backend_profile=row.get("backend_profile", ""),
+        optimization_recipe=row.get("optimization_recipe", ""),
+        source_dirty={"true": True, "false": False}.get(dirty),
+        source_diff_sha256=row.get("source_diff_sha256", ""),
+        source_worktree_sha256=row.get("source_worktree_sha256", ""),
     )
 
 
@@ -85,6 +96,12 @@ def load_megatron_results(root: Path) -> list[RunResult]:
             continue
         variant_field = payload["variant"]
         variant = variant_field["name"] if isinstance(variant_field, dict) else variant_field
+        profile_field = payload.get("backend_profile", "")
+        profile = (
+            profile_field.get("name", "") if isinstance(profile_field, dict) else profile_field
+        )
+        recipe_field = payload.get("optimization_recipe", "")
+        recipe = recipe_field.get("name", "") if isinstance(recipe_field, dict) else recipe_field
         results.append(
             RunResult(
                 backend="megatron",
@@ -98,6 +115,11 @@ def load_megatron_results(root: Path) -> list[RunResult]:
                 wall_seconds=float(payload["wall_seconds"]),
                 source_commit=str(payload.get("source_commit", "")),
                 megatron_commit=str(payload.get("megatron_commit", "")),
+                backend_profile=str(profile),
+                optimization_recipe=str(recipe),
+                source_dirty=payload.get("source_dirty"),
+                source_diff_sha256=str(payload.get("source_diff_sha256", "")),
+                source_worktree_sha256=str(payload.get("source_worktree_sha256", "")),
             )
         )
     return results
@@ -237,10 +259,42 @@ def cross_backend_metrics(summaries: Iterable[VariantSummary]) -> dict[str, Any]
     if speedrun_baseline is not None and megatron_baseline is not None:
         metrics["baseline_bpb_gap"] = megatron_baseline.mean_bpb - speedrun_baseline.mean_bpb
         metrics["baseline_absolute_throughput_ratio"] = (
-            megatron_baseline.mean_tokens_per_second
-            / speedrun_baseline.mean_tokens_per_second
+            megatron_baseline.mean_tokens_per_second / speedrun_baseline.mean_tokens_per_second
         )
     return metrics
+
+
+def campaign_provenance(rows: Iterable[RunResult]) -> dict[str, dict[str, Any]]:
+    """Keep comparison metadata compact and free of host/data paths."""
+    grouped: dict[str, list[RunResult]] = defaultdict(list)
+    for row in rows:
+        grouped[row.backend].append(row)
+    provenance = {}
+    for backend, backend_rows in sorted(grouped.items()):
+        provenance[backend] = {
+            "backend_profiles": sorted(
+                {row.backend_profile for row in backend_rows if row.backend_profile}
+            ),
+            "optimization_recipes": sorted(
+                {row.optimization_recipe for row in backend_rows if row.optimization_recipe}
+            ),
+            "source_commits": sorted(
+                {row.source_commit for row in backend_rows if row.source_commit}
+            ),
+            "megatron_commits": sorted(
+                {row.megatron_commit for row in backend_rows if row.megatron_commit}
+            ),
+            "source_dirty_values": sorted(
+                {row.source_dirty for row in backend_rows if row.source_dirty is not None}
+            ),
+            "source_diff_sha256": sorted(
+                {row.source_diff_sha256 for row in backend_rows if row.source_diff_sha256}
+            ),
+            "source_worktree_sha256": sorted(
+                {row.source_worktree_sha256 for row in backend_rows if row.source_worktree_sha256}
+            ),
+        }
+    return provenance
 
 
 def _write_csv(path: Path, summaries: list[VariantSummary]) -> None:
@@ -259,7 +313,11 @@ def _write_runs_csv(path: Path, rows: list[RunResult]) -> None:
         writer.writerows(asdict(row) for row in sorted(rows, key=lambda row: row.key))
 
 
-def _markdown(summaries: list[VariantSummary], cross_backend: dict[str, Any]) -> str:
+def _markdown(
+    summaries: list[VariantSummary],
+    cross_backend: dict[str, Any],
+    provenance: dict[str, dict[str, Any]] | None = None,
+) -> str:
     correlation = cross_backend["delta_pearson"]
     correlation_text = f"{correlation:.6f}" if math.isfinite(correlation) else "n/a"
     mean_gap = cross_backend["mean_absolute_delta_gap"]
@@ -271,9 +329,25 @@ def _markdown(summaries: list[VariantSummary], cross_backend: dict[str, Any]) ->
         "",
         "All deltas and throughput ratios are paired to the same backend and seed baseline.",
         "",
-        "| Backend | Variant | Seeds | Mean BPB | Paired Δ BPB | Throughput | tok/s |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
+    megatron_provenance = (provenance or {}).get("megatron", {})
+    recipes = megatron_provenance.get("optimization_recipes", [])
+    if recipes and recipes != ["baseline"]:
+        lines.extend(
+            (
+                "**Controlled-delta warning:** Megatron uses optimization recipe(s) "
+                f"`{', '.join(recipes)}` while the historical speedrun reference does not. "
+                "The cross-system metrics therefore combine recipe and runtime effects; they "
+                "are not a pure backend-equivalence measurement.",
+                "",
+            )
+        )
+    lines.extend(
+        (
+            "| Backend | Variant | Seeds | Mean BPB | Paired Δ BPB | Throughput | tok/s |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        )
+    )
     for row in sorted(summaries, key=lambda item: (item.backend, item.mean_bpb)):
         lines.append(
             f"| {row.backend} | {row.variant} | {row.seeds} | {row.mean_bpb:.6f} | "
@@ -295,6 +369,19 @@ def _markdown(summaries: list[VariantSummary], cross_backend: dict[str, Any]) ->
             "",
         )
     )
+    if provenance:
+        profiles = megatron_provenance.get("backend_profiles", [])
+        lines.extend(
+            (
+                "## Run provenance",
+                "",
+                f"- Megatron backend profile(s): `{', '.join(profiles) or 'not recorded'}`",
+                f"- Megatron optimization recipe(s): `{', '.join(recipes) or 'not recorded'}`",
+                "- Full source, diff/worktree, and Megatron commit fields are retained in "
+                "`runs.csv` and `comparison.json`.",
+                "",
+            )
+        )
     return "\n".join(lines)
 
 
@@ -305,6 +392,7 @@ def write_comparison(
     cross_backend: dict[str, Any],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    provenance = campaign_provenance(rows)
     _write_csv(output_dir / "comparison.csv", summaries)
     _write_runs_csv(output_dir / "runs.csv", rows)
     (output_dir / "comparison.json").write_text(
@@ -313,6 +401,7 @@ def write_comparison(
                 "runs": [asdict(row) for row in rows],
                 "summary": [asdict(row) for row in summaries],
                 "cross_backend": cross_backend,
+                "provenance": provenance,
             },
             indent=2,
             sort_keys=True,
@@ -320,7 +409,9 @@ def write_comparison(
         + "\n",
         encoding="utf-8",
     )
-    (output_dir / "comparison.md").write_text(_markdown(summaries, cross_backend), encoding="utf-8")
+    (output_dir / "comparison.md").write_text(
+        _markdown(summaries, cross_backend, provenance), encoding="utf-8"
+    )
 
 
 def main() -> None:
@@ -348,7 +439,7 @@ def main() -> None:
     summaries = summarize(rows)
     cross_backend = cross_backend_metrics(summaries)
     write_comparison(args.output_dir, rows, summaries, cross_backend)
-    print(_markdown(summaries, cross_backend), end="")
+    print(_markdown(summaries, cross_backend, campaign_provenance(rows)), end="")
 
 
 if __name__ == "__main__":

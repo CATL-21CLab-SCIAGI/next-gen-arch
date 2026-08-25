@@ -23,7 +23,9 @@ from next_gen_arch.arch.base import (
     CausalSelfAttention,
     GPTConfig,
     Linear,
+    apply_qk_features,
     apply_rotary_emb,
+    language_model_loss,
     norm,
 )
 
@@ -190,19 +192,25 @@ class SotaAttention(CausalSelfAttention):
         if self.is_bov_target:
             self.gamma_v.fill_(1.0)
 
-    def _project_qkv(self, x: torch.Tensor, ve: torch.Tensor | None):
+    def _project_qkv(
+        self,
+        x: torch.Tensor,
+        ve: torch.Tensor | None,
+        kv_source: torch.Tensor | None = None,
+    ):
         batch, time, _ = x.shape
+        source = x if kv_source is None else kv_source
         q = self.c_q(x).view(batch, time, self.n_head, self.head_dim)
-        k = self.c_k(x).view(batch, time, self.n_kv_head, self.head_dim)
+        k = self.c_k(source).view(batch, time, self.n_kv_head, self.head_dim)
         if self.is_bov_target:
             if ve is None:
                 raise ValueError("BoV target layer requires a value-table lookup")
             v = self.gamma_v.to(x.dtype) * ve.view(batch, time, self.n_kv_head, self.head_dim)
         else:
-            v = self.c_v(x).view(batch, time, self.n_kv_head, self.head_dim)
+            v = self.c_v(source).view(batch, time, self.n_kv_head, self.head_dim)
             if ve is not None:
                 ve = ve.view(batch, time, self.n_kv_head, self.head_dim)
-                gate = 3 * torch.sigmoid(self.ve_gate(x[..., : self.ve_gate_channels]))
+                gate = 3 * torch.sigmoid(self.ve_gate(source[..., : self.ve_gate_channels]))
                 v = v + gate.unsqueeze(-1) * ve
         return q, k, v
 
@@ -267,17 +275,13 @@ class SotaAttention(CausalSelfAttention):
         y = norm(y) * self.diff_subln_weight.to(y.dtype)
         return y * (1.0 - self.lambda_init)
 
-    def forward(self, x, ve, cos_sin, window_size, kv_cache):
+    def forward(self, x, ve, cos_sin, window_size, kv_cache, kv_source=None):
         batch, time, _ = x.shape
-        q, k, v = self._project_qkv(x, ve)
+        q, k, v = self._project_qkv(x, ve, kv_source=kv_source)
         if self.variant == "differential_attention":
             y = self._differential_attention(q, k, v, cos_sin, kv_cache)
         else:
-            cos, sin = cos_sin
-            q = apply_rotary_emb(q, cos, sin)
-            k = apply_rotary_emb(k, cos, sin)
-            q, k = norm(q), norm(k)
-            q, k = q * 1.2, k * 1.2
+            q, k = apply_qk_features(q, k, cos_sin, self.config, self.layer_idx, self.qk_gain)
             if self.variant == "canon_abcd":
                 flat = torch.cat(
                     (
@@ -346,14 +350,26 @@ class SotaBlock(Block):
             if hasattr(self, name):
                 getattr(self, name).reset_parameters()
 
-    def forward(self, x, ve, cos_sin, window_size, kv_cache):
+    def forward(
+        self,
+        x,
+        ve,
+        cos_sin,
+        window_size,
+        kv_cache,
+        attention_input=None,
+        kv_input=None,
+    ):
         if self.variant == "dynamic_tanh":
-            x = x + self.attn(self.attn_dyt(x), ve, cos_sin, window_size, kv_cache)
+            attention_input = self.attn_dyt(x) if attention_input is None else attention_input
+            x = x + self.attn(
+                attention_input, ve, cos_sin, window_size, kv_cache, kv_source=kv_input
+            )
             return x + self.mlp(self.mlp_dyt(x))
-        attn_input = norm(x)
+        attn_input = norm(x) if attention_input is None else attention_input
         if self.variant == "canon_abcd":
             attn_input = self.canon_a(attn_input)
-        attn_output = self.attn(attn_input, ve, cos_sin, window_size, kv_cache)
+        attn_output = self.attn(attn_input, ve, cos_sin, window_size, kv_cache, kv_source=kv_input)
         if self.variant == "peri_ln":
             attn_output = norm(attn_output)
         x = x + attn_output
@@ -464,8 +480,13 @@ class SotaPoolGPT(GPT):
         x0 = x
         backout_layer = self.config.n_layer // 2
         x_backout = None
+        cached_attention_input = None
+        midpoint_kv_input = None
+        cache_start = self.config.n_layer - self.config.cached_attention_layers
         for layer_idx, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[layer_idx] * x + self.x0_lambdas[layer_idx] * x0
+            if self.config.cached_attention_layers and layer_idx == cache_start:
+                cached_attention_input = self._residual_norm(x)
             if block.attn.is_bov_target:
                 ve = block.attn.value_table(idx).to(x.dtype)
             else:
@@ -474,22 +495,44 @@ class SotaPoolGPT(GPT):
                     if str(layer_idx) in self.value_embeds
                     else None
                 )
-            x = block(x, ve, cos_sin, self.window_sizes[layer_idx], kv_cache)
+            attention_input = cached_attention_input if layer_idx >= cache_start else None
+            kv_input = midpoint_kv_input if layer_idx > backout_layer else None
+            x = block(
+                x,
+                ve,
+                cos_sin,
+                self.window_sizes[layer_idx],
+                kv_cache,
+                attention_input=attention_input,
+                kv_input=kv_input,
+            )
             if layer_idx == backout_layer:
                 x_backout = x
+                if self.config.reuse_midpoint_kv:
+                    midpoint_kv_input = self._residual_norm(x)
         if x_backout is not None:
             x = x - self.backout_lambda.to(x.dtype) * x_backout
         x = self._residual_norm(x, output=True)
 
-        logits = self.lm_head(x)[..., : self.config.vocab_size].float()
-        logits = 15 * torch.tanh(logits / 15)
+        raw_logits = self.lm_head(x)[..., : self.config.vocab_size]
+        logits = raw_logits
+        if self.config.loss_fp32:
+            logits = logits.float()
+        if self.config.logit_transform == "symmetric-softcap":
+            logits = 15 * torch.tanh(logits / 15)
+        elif self.config.logit_transform == "asymmetric":
+            logits = 23 * torch.sigmoid((logits + 5) / 7.5)
+        else:
+            raise ValueError(f"unknown logit_transform={self.config.logit_transform!r}")
         if targets is None:
             return logits
-        return F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            targets.view(-1),
-            ignore_index=-1,
+        return language_model_loss(
+            logits,
+            raw_logits,
+            targets,
             reduction=loss_reduction,
+            z_loss_weight=self.config.z_loss_weight,
+            training=self.training,
         )
 
     def _parameter_groups_for_accounting(self):

@@ -18,7 +18,7 @@ MEGATRON_ROOT = REPOSITORY_ROOT / "third_party" / "Megatron-LM"
 
 def _git_output(*args: str) -> str:
     return subprocess.run(
-        ["git", *args],
+        ["git", "-c", f"safe.directory={MEGATRON_ROOT}", *args],
         cwd=MEGATRON_ROOT,
         check=True,
         text=True,

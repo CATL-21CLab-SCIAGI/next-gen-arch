@@ -67,19 +67,30 @@ HAS_FA3 = _fa3 is not None
 HAS_FA4 = _fa4 is not None
 HAS_FLASH_ATTENTION = HAS_FA3 or HAS_FA4
 
-# Override for testing: set to "fa3", "fa4", "sdpa", or None (auto)
+# Override for testing: set to "fa3", "fa4", "sdpa", or None (environment/auto).
 _override_impl = None
+
+
+def _requested_attention_backend():
+    """Return the explicit process-level backend request, if any."""
+    requested = os.environ.get("NANOCHAT_ATTENTION_BACKEND", "auto").strip().lower()
+    if requested not in {"auto", "fa3", "fa4", "sdpa"}:
+        raise ValueError(
+            f"NANOCHAT_ATTENTION_BACKEND must be one of auto, fa3, fa4, or sdpa; got {requested!r}"
+        )
+    return None if requested == "auto" else requested
 
 
 def _resolve_attention_backend():
     """Resolve the training attention backend for the current process."""
-    if _override_impl == "fa3":
+    requested = _override_impl or _requested_attention_backend()
+    if requested == "fa3":
         assert HAS_FA3, "Cannot override to FA3: not available on this hardware"
         return "fa3"
-    if _override_impl == "fa4":
+    if requested == "fa4":
         assert HAS_FA4, "Cannot override to FA4: not available on this hardware"
         return "fa4"
-    if _override_impl == "sdpa":
+    if requested == "sdpa":
         return "sdpa"
 
     from next_gen_arch.training.runtime import COMPUTE_DTYPE
@@ -98,8 +109,10 @@ def _resolve_attention_backend_reason():
     capability = _get_cuda_capability()
     arch = _get_cuda_arch_family()
 
-    if _override_impl is not None:
-        return f"override={_override_impl}"
+    requested = _override_impl or _requested_attention_backend()
+    if requested is not None:
+        source = "test override" if _override_impl is not None else "NANOCHAT_ATTENTION_BACKEND"
+        return f"{source}={requested}"
 
     from next_gen_arch.training.runtime import COMPUTE_DTYPE
 

@@ -14,7 +14,7 @@ uv sync --extra cpu --group dev
 uv run next-gen-arch doctor --backend megatron
 ```
 
-Use `--extra gpu` for the CUDA 12.8 wheel index. The frozen campaign used Python 3.10.12, PyTorch 2.9.1+cu128, CUDA 12.8, BF16, and NVIDIA L20D GPUs. CPU tests are not a throughput reproduction.
+Use `--extra gpu` for the CUDA 12.8 wheel index. The frozen campaign used Python 3.10.12, PyTorch 2.9.1+cu128, CUDA 12.8, BF16, and NVIDIA B300 GPUs (`sm_103a`). The host's `nvidia-smi` product string was incorrect; PyTorch capability and the physical fleet identity are the authoritative hardware provenance. CPU tests are not a throughput reproduction.
 
 ## 2. Validate published artifacts
 
@@ -139,13 +139,21 @@ python -m next_gen_arch.training.campaign_runner \
   --num-nodes 3 \
   --gpus GPU_LIST \
   --output-root /durable/path/megatron-10m \
-  --mode full
+  --mode full \
+  --partition-strategy variant \
+  --backend-profile legacy \
+  --optimization-recipe baseline
 ```
 
 The runner checks that every physical GPU ID in `GPU_LIST` exists and is idle at startup,
 then checks its UUID again immediately before every task. It never discovers or consumes
 other idle devices implicitly. Run `--mode probe --probe-steps 1` for all 16 architectures
 before allocating the full campaign.
+
+Use `baseline` when reproducing the matched backend comparison. Optimization studies
+must name their delta explicitly—for example, `--backend-profile compile-max-autotune
+--optimization-recipe z-loss-5e-6-clip01`—and must not be presented as backend-only
+equivalence because z-loss/clipping change training semantics.
 
 Aggregate the output against the frozen historical speedrun rows:
 

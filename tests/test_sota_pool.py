@@ -13,6 +13,8 @@ from next_gen_arch.arch.sota import (
     SotaPoolGPT,
 )
 from next_gen_arch.training.models import build_model_from_config_kwargs, model_config_to_dict
+from next_gen_arch.training.optim import setup_model_optimizer
+from next_gen_arch.training.optimization_recipes import get_optimization_recipe
 
 
 def tiny_config(variant="baseline", **kwargs):
@@ -36,6 +38,121 @@ def materialize(model, seed=42):
     model.to_empty(device="cpu")
     model.init_weights()
     return model
+
+
+@pytest.mark.parametrize(
+    "recipe_name",
+    (
+        "partial-rope",
+        "partial-rope-25",
+        "pko",
+        "pko-last",
+        "embed-std1",
+        "qk-gain",
+        "cached-attention",
+        "midpoint-kv",
+        "bf16-loss",
+        "asymmetric-logits",
+        "z-loss-1e-4",
+        "z-loss-5e-6",
+        "z-loss-1e-6",
+        "z-loss-2e-6",
+        "z-loss-1e-5",
+        "z-loss-2e-5",
+        "z-loss-5e-6-clip005",
+        "z-loss-5e-6-clip01",
+        "full-matrix-z-loss-5e-6-clip01",
+        "marin-compound",
+    ),
+)
+def test_portable_architecture_recipes_have_finite_gradients(recipe_name):
+    recipe = get_optimization_recipe(recipe_name)
+    with torch.device("meta"):
+        model = SotaPoolGPT(tiny_config(**recipe.model_overrides))
+    model = materialize(model, seed=17)
+    tokens = torch.randint(0, 128, (2, 8))
+    loss = model(tokens, targets=tokens.roll(-1, dims=1))
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert all(
+        parameter.grad is None or torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+    )
+
+
+def test_hyperball_recipe_uses_nonzero_projection_initialization():
+    recipe = get_optimization_recipe("muonh")
+    with torch.device("meta"):
+        model = SotaPoolGPT(tiny_config(**recipe.model_overrides))
+    model = materialize(model, seed=23)
+
+    assert torch.count_nonzero(model.transformer.h[0].attn.c_proj.weight) > 0
+    assert torch.count_nonzero(model.transformer.h[0].mlp.c_proj.weight) > 0
+
+
+def test_z_loss_is_training_only_and_preserves_per_token_shape():
+    with torch.device("meta"):
+        model = SotaPoolGPT(tiny_config(z_loss_weight=1e-4))
+    model = materialize(model, seed=21)
+    tokens = torch.randint(0, 128, (2, 8))
+    targets = tokens.roll(-1, dims=1)
+
+    model.train()
+    training_loss = model(tokens, targets=targets)
+    per_token = model(tokens, targets=targets, loss_reduction="none")
+    model.eval()
+    evaluation_loss = model(tokens, targets=targets)
+
+    assert training_loss > evaluation_loss
+    assert per_token.shape == (tokens.numel(),)
+
+
+@pytest.mark.parametrize(
+    ("recipe_name", "expected_kind", "hyperball", "exponent"),
+    (
+        ("baseline", "muon", False, 0.0),
+        ("muonh", "muon", True, 0.0),
+        ("muoneqh-half", "muon", True, -0.5),
+        ("muoneqh-quarter", "muon", True, -0.25),
+        ("adamh", "adamh", False, 0.0),
+    ),
+)
+def test_optimizer_recipes_are_explicit(recipe_name, expected_kind, hyperball, exponent):
+    recipe = get_optimization_recipe(recipe_name)
+    with torch.device("meta"):
+        model = SotaPoolGPT(tiny_config(**recipe.model_overrides))
+    model = materialize(model, seed=29)
+    optimizer = setup_model_optimizer(
+        model,
+        distributed=False,
+        matrix_optimizer=recipe.matrix_optimizer,
+        adam_update_every=recipe.adam_update_every,
+    )
+    matrix_group = next(
+        group for group in optimizer.param_groups if group["kind"] in {"muon", "adamh"}
+    )
+
+    assert matrix_group["kind"] == expected_kind
+    assert matrix_group.get("hyperball", False) is hyperball
+    assert matrix_group.get("equilibrate_exponent", 0.0) == exponent
+
+
+def test_cautious_adam_recipe_marks_only_adam_groups():
+    recipe = get_optimization_recipe("cautious-adam-wd")
+    with torch.device("meta"):
+        model = SotaPoolGPT(tiny_config())
+    model = materialize(model, seed=31)
+    optimizer = setup_model_optimizer(
+        model,
+        distributed=False,
+        cautious_adam_weight_decay=recipe.cautious_adam_weight_decay,
+    )
+
+    assert all(
+        group.get("cautious_weight_decay") is True
+        for group in optimizer.param_groups
+        if group["kind"] == "adamw"
+    )
 
 
 def test_pool_baseline_is_bit_identical_to_legacy_nanochat():

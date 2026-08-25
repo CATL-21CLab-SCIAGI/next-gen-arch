@@ -40,6 +40,7 @@ def adamw_step_fused(
     beta2_t: Tensor,  # () - 0-D CPU tensor, beta2
     eps_t: Tensor,  # () - 0-D CPU tensor, epsilon
     wd_t: Tensor,  # () - 0-D CPU tensor, weight decay
+    cautious_weight_decay: bool,
 ) -> None:
     """
     Fused AdamW step: weight_decay -> momentum_update -> bias_correction -> param_update
@@ -53,8 +54,6 @@ def adamw_step_fused(
     wd = wd_t.to(device=p.device, dtype=p.dtype)
     step = step_t.to(device=p.device, dtype=p.dtype)
 
-    # Weight decay (decoupled, applied before the update)
-    p.mul_(1 - lr * wd)
     # Update running averages (lerp_ is cleaner and fuses well)
     exp_avg.lerp_(grad, 1 - beta1)
     exp_avg_sq.lerp_(grad.square(), 1 - beta2)
@@ -64,7 +63,45 @@ def adamw_step_fused(
     # Compute update and apply
     denom = (exp_avg_sq / bias2).sqrt() + eps
     step_size = lr / bias1
-    p.add_(exp_avg / denom, alpha=-step_size)
+    update = exp_avg / denom
+    if cautious_weight_decay:
+        mask = (update * p) >= 0
+        p.sub_(lr * wd * p * mask)
+    else:
+        p.mul_(1 - lr * wd)
+    p.add_(update, alpha=-step_size)
+
+
+@_compile_if_not_mps(dynamic=False, fullgraph=True)
+def adamh_step_fused(
+    stacked_grads: Tensor,
+    stacked_params: Tensor,
+    exp_avg: Tensor,
+    exp_avg_sq: Tensor,
+    step_t: Tensor,
+    lr_t: Tensor,
+    beta1_t: Tensor,
+    beta2_t: Tensor,
+    eps_t: Tensor,
+) -> None:
+    """Adam-preconditioned update projected back to each matrix's Frobenius sphere."""
+    beta1 = beta1_t.to(device=stacked_grads.device, dtype=stacked_grads.dtype)
+    beta2 = beta2_t.to(device=stacked_grads.device, dtype=stacked_grads.dtype)
+    step = step_t.to(device=stacked_grads.device, dtype=stacked_grads.dtype)
+    exp_avg.lerp_(stacked_grads, 1 - beta1)
+    exp_avg_sq.lerp_(stacked_grads.square(), 1 - beta2)
+    direction = (exp_avg / (1 - beta1**step)) / (
+        (exp_avg_sq / (1 - beta2**step)).sqrt()
+        + eps_t.to(device=stacked_grads.device, dtype=stacked_grads.dtype)
+    )
+    param_fp32 = stacked_params.float()
+    direction_fp32 = direction.float()
+    param_norm = param_fp32.norm(dim=(-2, -1), keepdim=True)
+    direction_norm = direction_fp32.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-10)
+    lr = lr_t.to(device=stacked_grads.device, dtype=torch.float32)
+    updated = param_fp32 - lr * direction_fp32 * (param_norm / direction_norm)
+    updated_norm = updated.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-10)
+    stacked_params.copy_((updated * (param_norm / updated_norm)).to(stacked_params.dtype))
 
 
 # -----------------------------------------------------------------------------
@@ -119,6 +156,8 @@ def muon_step_fused(
     beta2_t: Tensor,  # () - 0-D CPU tensor, beta2 for second moment
     ns_steps: int,  # 5 - number of Newton-Schulz/Polar Express iterations
     red_dim: int,  # -1 or -2 - reduction dimension for variance
+    hyperball: bool,
+    equilibrate_exponent: float,
 ) -> None:
     """
     Fused Muon step: momentum -> polar_express -> variance_reduction -> cautious_update
@@ -130,6 +169,22 @@ def muon_step_fused(
     momentum = momentum_t.to(device=stacked_grads.device, dtype=stacked_grads.dtype)
     momentum_buffer.lerp_(stacked_grads, 1 - momentum)
     g = stacked_grads.lerp_(momentum_buffer, momentum)
+
+    if equilibrate_exponent != 0.0:
+        g_fp32 = g.float()
+        row_sumsq = g_fp32.square().sum(dim=-1, keepdim=True)
+        col_sumsq = g_fp32.square().sum(dim=-2, keepdim=True)
+        row_scale = torch.where(
+            row_sumsq > 1e-16,
+            row_sumsq.pow(equilibrate_exponent),
+            torch.ones_like(row_sumsq),
+        )
+        col_scale = torch.where(
+            col_sumsq > 1e-16,
+            col_sumsq.pow(equilibrate_exponent),
+            torch.ones_like(col_sumsq),
+        )
+        g = (g_fp32 * row_scale * col_scale).to(g.dtype)
 
     # Polar express
     # Cast to bf16 for speed when available; skip cast otherwise (fp16 is unstable here due to limited exponent range)
@@ -160,11 +215,20 @@ def muon_step_fused(
     final_scale = step_size * (v_norm / v_norm_new.clamp_min(1e-10))
     g = g * final_scale.to(g.dtype)
 
-    # Cautious weight decay + parameter update
+    # Cautious weight decay + parameter update, or the MuonH hyperball projection.
     lr = lr_t.to(device=g.device, dtype=g.dtype)
-    wd = wd_t.to(device=g.device, dtype=g.dtype)
-    mask = (g * stacked_params) >= 0
-    stacked_params.sub_(lr * g + lr * wd * stacked_params * mask)
+    if hyperball:
+        param_fp32 = stacked_params.float()
+        direction_fp32 = g.float()
+        param_norm = param_fp32.norm(dim=(-2, -1), keepdim=True)
+        direction_norm = direction_fp32.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-10)
+        updated = param_fp32 - lr.float() * direction_fp32 * (param_norm / direction_norm)
+        updated_norm = updated.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-10)
+        stacked_params.copy_((updated * (param_norm / updated_norm)).to(stacked_params.dtype))
+    else:
+        wd = wd_t.to(device=g.device, dtype=g.dtype)
+        mask = (g * stacked_params) >= 0
+        stacked_params.sub_(lr * g + lr * wd * stacked_params * mask)
 
 
 # -----------------------------------------------------------------------------
@@ -214,6 +278,7 @@ class MuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
+        self._optimizer_step = 0
 
     def _step_adamw(self, group: dict) -> None:
         """
@@ -223,11 +288,20 @@ class MuonAdamW(torch.optim.Optimizer):
         for p in group["params"]:
             if p.grad is None:
                 continue
-            grad = p.grad
             state = self.state[p]
+            update_every = int(group.get("update_every", 1))
+            should_update = self._optimizer_step % update_every == update_every - 1
+            grad = p.grad
+            if update_every > 1:
+                if "pending_grad" not in state:
+                    state["pending_grad"] = torch.zeros_like(grad)
+                state["pending_grad"].add_(grad)
+                if not should_update:
+                    continue
+                grad = state["pending_grad"]
 
             # State init
-            if not state:
+            if "exp_avg" not in state:
                 state["step"] = 0
                 state["exp_avg"] = torch.zeros_like(p)
                 state["exp_avg_sq"] = torch.zeros_like(p)
@@ -255,7 +329,43 @@ class MuonAdamW(torch.optim.Optimizer):
                 self._adamw_beta2_t,
                 self._adamw_eps_t,
                 self._adamw_wd_t,
+                bool(group.get("cautious_weight_decay", False)),
             )
+            if update_every > 1:
+                state["pending_grad"].zero_()
+
+    def _step_adamh(self, group: dict) -> None:
+        params = list(group["params"])
+        if not params:
+            return
+        if any(parameter.grad is None for parameter in params):
+            raise RuntimeError("AdamH requires a gradient for every grouped matrix")
+        first = params[0]
+        state = self.state[first]
+        shape, device, dtype = first.shape, first.device, first.dtype
+        if "exp_avg" not in state:
+            state["step"] = 0
+            state["exp_avg"] = torch.zeros(len(params), *shape, dtype=dtype, device=device)
+            state["exp_avg_sq"] = torch.zeros(len(params), *shape, dtype=dtype, device=device)
+        state["step"] += 1
+        stacked_params = torch.stack(params)
+        self._adamw_step_t.fill_(state["step"])
+        self._adamw_lr_t.fill_(group["lr"])
+        self._adamw_beta1_t.fill_(group["betas"][0])
+        self._adamw_beta2_t.fill_(group["betas"][1])
+        self._adamw_eps_t.fill_(group["eps"])
+        adamh_step_fused(
+            torch.stack([parameter.grad for parameter in params]),
+            stacked_params,
+            state["exp_avg"],
+            state["exp_avg_sq"],
+            self._adamw_step_t,
+            self._adamw_lr_t,
+            self._adamw_beta1_t,
+            self._adamw_beta2_t,
+            self._adamw_eps_t,
+        )
+        torch._foreach_copy_(params, list(stacked_params.unbind(0)))
 
     def _step_muon(self, group: dict) -> None:
         """
@@ -308,6 +418,8 @@ class MuonAdamW(torch.optim.Optimizer):
             self._muon_beta2_t,
             group["ns_steps"],
             red_dim,
+            bool(group.get("hyperball", False)),
+            float(group.get("equilibrate_exponent", 0.0)),
         )
 
         # Copy back to original params
@@ -320,8 +432,11 @@ class MuonAdamW(torch.optim.Optimizer):
                 self._step_adamw(group)
             elif group["kind"] == "muon":
                 self._step_muon(group)
+            elif group["kind"] == "adamh":
+                self._step_adamh(group)
             else:
                 raise ValueError(f"Unknown optimizer kind: {group['kind']}")
+        self._optimizer_step += 1
 
 
 # -----------------------------------------------------------------------------
@@ -512,6 +627,7 @@ class DistMuonAdamW(torch.optim.Optimizer):
                 self._adamw_beta2_t,
                 self._adamw_eps_t,
                 self._adamw_wd_t,
+                bool(group.get("cautious_weight_decay", False)),
             )
 
             # Large params need all_gather
@@ -583,6 +699,8 @@ class DistMuonAdamW(torch.optim.Optimizer):
                 self._muon_beta2_t,
                 group["ns_steps"],
                 red_dim,
+                bool(group.get("hyperball", False)),
+                float(group.get("equilibrate_exponent", 0.0)),
             )
             updated_params[:num_owned].copy_(stacked_owned)
 
@@ -675,7 +793,9 @@ def _base_parameter_groups(
     scalar_lr,
 ):
     scale = (model.config.n_embd / 768) ** -0.5
-    matrix_params = list(model.transformer.h.parameters())
+    trunk_params = list(model.transformer.h.parameters())
+    matrix_params = [parameter for parameter in trunk_params if parameter.ndim == 2]
+    architecture_params = [parameter for parameter in trunk_params if parameter.ndim != 2]
     engram_embeddings = [engram.embedding.weight for engram in model.engrams.values()]
     engram_convs = [engram.short_conv.weight for engram in model.engrams.values()]
     matrix_params.extend(
@@ -714,6 +834,8 @@ def _base_parameter_groups(
         )
     if mhc_scalars:
         groups.append(_adamw_group(mhc_scalars, scalar_lr * 0.01, (0.8, 0.95), 0.0))
+    if architecture_params:
+        groups.append(_adamw_group(architecture_params, scalar_lr * 0.01, (0.8, 0.95), 0.0))
     groups.extend(_muon_groups(matrix_params, matrix_lr, weight_decay))
     return groups
 
@@ -961,6 +1083,9 @@ def setup_model_optimizer(
     weight_decay=0.0,
     scalar_lr=0.5,
     distributed: bool | None = None,
+    matrix_optimizer: str = "normuon",
+    adam_update_every: int = 1,
+    cautious_adam_weight_decay: bool = False,
 ):
     """Construct the historical mixed optimizer without coupling models to a trainer."""
     from next_gen_arch.arch.combinations import ParetoComboGPT
@@ -994,6 +1119,29 @@ def setup_model_optimizer(
     else:
         groups = _base_parameter_groups(model, **kwargs)
 
+    matrix_modes = {"normuon", "muonh", "muoneqh-half", "muoneqh-quarter", "adamh"}
+    if matrix_optimizer not in matrix_modes:
+        raise ValueError(f"unknown matrix_optimizer={matrix_optimizer!r}")
+    if adam_update_every < 1:
+        raise ValueError("adam_update_every must be positive")
+    for group in groups:
+        if group["kind"] == "adamw":
+            group["update_every"] = adam_update_every
+            group["cautious_weight_decay"] = cautious_adam_weight_decay
+        elif group["kind"] == "muon":
+            group["hyperball"] = (
+                matrix_optimizer.startswith("muon") and matrix_optimizer != "normuon"
+            )
+            group["equilibrate_exponent"] = {
+                "muoneqh-half": -0.5,
+                "muoneqh-quarter": -0.25,
+            }.get(matrix_optimizer, 0.0)
+            if matrix_optimizer == "adamh":
+                group["kind"] = "adamh"
+                group["betas"] = (0.9, 0.95)
+                group["eps"] = 1e-10
+                group["weight_decay"] = 0.0
+
     grouped_ids = [id(parameter) for group in groups for parameter in group["params"]]
     model_ids = {id(parameter) for parameter in model.parameters()}
     if len(grouped_ids) != len(set(grouped_ids)) or set(grouped_ids) != model_ids:
@@ -1004,7 +1152,13 @@ def setup_model_optimizer(
     )
     if distributed is None:
         distributed, _, _, _ = get_dist_info()
+    if distributed and matrix_optimizer == "adamh":
+        raise NotImplementedError("AdamH recipe is not implemented for DistMuonAdamW")
     optimizer = (DistMuonAdamW if distributed else MuonAdamW)(groups)
     for group in optimizer.param_groups:
         group.setdefault("initial_lr", group["lr"])
+    print0(
+        f"Matrix optimizer: {matrix_optimizer}; auxiliary Adam update interval: "
+        f"{adam_update_every}; cautious Adam WD: {cautious_adam_weight_decay}"
+    )
     return optimizer

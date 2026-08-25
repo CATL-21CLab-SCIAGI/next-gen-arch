@@ -31,6 +31,20 @@ def set_impl(impl):
     fa_module.USE_FA4 = fa_module._resolve_use_fa4()
 
 
+def test_environment_can_force_sdpa(monkeypatch):
+    monkeypatch.setattr(fa_module, "_override_impl", None)
+    monkeypatch.setenv("NANOCHAT_ATTENTION_BACKEND", "sdpa")
+    assert fa_module._resolve_attention_backend() == "sdpa"
+    assert fa_module._resolve_attention_backend_reason() == "NANOCHAT_ATTENTION_BACKEND=sdpa"
+
+
+def test_invalid_environment_backend_fails_closed(monkeypatch):
+    monkeypatch.setattr(fa_module, "_override_impl", None)
+    monkeypatch.setenv("NANOCHAT_ATTENTION_BACKEND", "magic")
+    with pytest.raises(ValueError, match="NANOCHAT_ATTENTION_BACKEND"):
+        fa_module._resolve_attention_backend()
+
+
 def run_both_impls(fn):
     """Run a function with both FA3 and SDPA, return both outputs."""
     set_impl("fa3")

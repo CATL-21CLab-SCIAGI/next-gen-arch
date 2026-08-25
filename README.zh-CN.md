@@ -1,6 +1,6 @@
 # Next-Gen Architecture Lab
 
-[English](README.md) · [完整结果](docs/RESULTS.md) · [10M 后端对比](docs/BACKEND_COMPARISON.md) · [复现指南](docs/REPRODUCIBILITY.md) · [运行后端](docs/RUNTIMES.md) · [架构说明](docs/ARCHITECTURES.md)
+[English](README.md) · [完整结果](docs/RESULTS.md) · [10M 后端对比](docs/BACKEND_COMPARISON.md) · [优化审计](docs/OPTIMIZATION_AUDIT.md) · [复现指南](docs/REPRODUCIBILITY.md) · [运行后端](docs/RUNTIMES.md) · [架构说明](docs/ARCHITECTURES.md)
 
 这是一个兼顾快速受控实验与 Megatron 扩缩的语言模型架构实验仓库。它把 16 种架构机制放进同一实验合同，在相同数据、tokenizer、seed、数据顺序、训练预算和评测方法下，回答一个具体问题：
 

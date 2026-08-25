@@ -114,6 +114,16 @@ class GPTConfig:
     window_pattern: str = "SSSL"
     arch_family: str = "nanochat"
     per_head_muon: bool = False
+    rope_fraction: float = 1.0
+    partial_key_offset: str = "none"
+    embedding_init_std: float = 0.8
+    matrix_init_recipe: str = "speedrun-zero-proj"
+    learnable_qk_gain: bool = False
+    cached_attention_layers: int = 0
+    reuse_midpoint_kv: bool = False
+    loss_fp32: bool = True
+    logit_transform: str = "symmetric-softcap"
+    z_loss_weight: float = 0.0
     # Engram conditional-memory options. They are inert outside the Engram arm.
     engram_layers: tuple[int, ...] = ()
     engram_ngram_orders: tuple[int, ...] = (2, 3)
@@ -135,6 +145,40 @@ class GPTConfig:
 
 def norm(x):
     return F.rms_norm(x, (x.size(-1),))  # note that this will run in bf16, seems ok
+
+
+def language_model_loss(
+    logits: torch.Tensor,
+    raw_logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    reduction: str,
+    z_loss_weight: float,
+    training: bool,
+) -> torch.Tensor:
+    """Cross entropy plus an explicitly training-only final-logit z-loss."""
+    flat_targets = targets.reshape(-1)
+    cross_entropy = F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)),
+        flat_targets,
+        ignore_index=-1,
+        reduction=reduction,
+    )
+    if not training or z_loss_weight <= 0:
+        return cross_entropy
+
+    valid = targets.ne(-1)
+    z_loss = torch.logsumexp(raw_logits.float(), dim=-1).square()
+    z_loss = torch.where(valid, z_loss, torch.zeros_like(z_loss))
+    if reduction == "none":
+        z_loss = z_loss.reshape(-1)
+    elif reduction == "sum":
+        z_loss = z_loss.sum()
+    elif reduction == "mean":
+        z_loss = z_loss.sum() / valid.sum().clamp_min(1)
+    else:
+        raise ValueError(f"unsupported loss reduction {reduction!r}")
+    return cross_entropy + z_loss_weight * z_loss
 
 
 class Linear(nn.Linear):
@@ -184,9 +228,47 @@ def apply_rotary_emb(x, cos, sin):
     return torch.cat([y1, y2], 3)
 
 
+def apply_qk_features(q, k, cos_sin, config, layer_idx, qk_gain=None):
+    """Apply the shared RoPE, QK-normalization, gain, and PKO recipe."""
+    if not 0 < config.rope_fraction <= 1:
+        raise ValueError("rope_fraction must be in (0, 1]")
+    rotary_dim = int(q.size(-1) * config.rope_fraction)
+    rotary_dim -= rotary_dim % 2
+    if rotary_dim < 2:
+        raise ValueError("rope_fraction leaves fewer than two rotary dimensions")
+    cos, sin = cos_sin
+
+    def rotate(x):
+        rotated = apply_rotary_emb(
+            x[..., :rotary_dim],
+            cos[..., : rotary_dim // 2],
+            sin[..., : rotary_dim // 2],
+        )
+        return torch.cat((rotated, x[..., rotary_dim:]), dim=-1)
+
+    q, k = norm(rotate(q)), norm(rotate(k))
+    if qk_gain is None:
+        q, k = q * 1.2, k * 1.2
+    else:
+        q_gain = qk_gain[: q.size(2)].view(1, 1, -1, 1).to(q.dtype)
+        k_gain = qk_gain[: k.size(2)].view(1, 1, -1, 1).to(k.dtype)
+        q, k = q * q_gain, k * k_gain
+
+    offset = config.partial_key_offset
+    if offset not in {"none", "all", "last"}:
+        raise ValueError("partial_key_offset must be none, all, or last")
+    use_offset = offset == "all" or (offset == "last" and layer_idx == config.n_layer - 1)
+    if use_offset and rotary_dim < k.size(-1) and k.size(1) > 1:
+        stationary = k[..., rotary_dim:]
+        shifted = torch.cat((stationary[:, :1], stationary[:, :-1]), dim=1)
+        k = torch.cat((k[..., :rotary_dim], shifted), dim=-1)
+    return q, k
+
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config, layer_idx):
         super().__init__()
+        self.config = config
         self.layer_idx = layer_idx
         self.n_head = config.n_head
         self.n_kv_head = config.n_kv_head
@@ -212,6 +294,7 @@ class CausalSelfAttention(nn.Module):
             else Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
         )
         self.c_proj = Linear(self.n_embd, self.n_embd, bias=False)
+        self.qk_gain = nn.Parameter(torch.empty(self.n_head)) if config.learnable_qk_gain else None
         self.ve_gate_channels = min(12, self.n_embd)
         self.ve_gate = (
             Linear(self.ve_gate_channels, self.n_kv_head, bias=False)
@@ -219,29 +302,26 @@ class CausalSelfAttention(nn.Module):
             else None
         )
 
-    def forward(self, x, ve, cos_sin, window_size, kv_cache):
+    def forward(self, x, ve, cos_sin, window_size, kv_cache, kv_source=None):
         B, T, C = x.size()
+        source = x if kv_source is None else kv_source
 
         # Project the input to get queries, keys, and values
         # Shape: (B, T, H, D) - FA3's native layout, no transpose needed!
         q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
-        k = self.c_k(x).view(B, T, self.n_kv_head, self.head_dim)
-        v = self.c_v(x).view(B, T, self.n_kv_head, self.head_dim)
+        k = self.c_k(source).view(B, T, self.n_kv_head, self.head_dim)
+        v = self.c_v(source).view(B, T, self.n_kv_head, self.head_dim)
 
         # Value residual (ResFormer): mix in value embedding with input-dependent gate per head
         if ve is not None:
             ve = ve.view(B, T, self.n_kv_head, self.head_dim)
             gate = 3 * torch.sigmoid(
-                self.ve_gate(x[..., : self.ve_gate_channels])
+                self.ve_gate(source[..., : self.ve_gate_channels])
             )  # (B, T, n_kv_head), range (0, 3)
             v = v + gate.unsqueeze(-1) * ve
 
         # Apply Rotary Embeddings to queries and keys to get relative positional encoding
-        cos, sin = cos_sin
-        q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
-        q, k = norm(q), norm(k)  # QK norm
-        q = q * 1.2  # sharper attention (split scale between Q and K), TODO think through better
-        k = k * 1.2
+        q, k = apply_qk_features(q, k, cos_sin, self.config, self.layer_idx, self.qk_gain)
 
         # Flash Attention (FA3 on Hopper+, PyTorch SDPA fallback elsewhere)
         # window_size is (left, right) tuple: (N, 0) for causal, (-1, 0) for full context
@@ -292,8 +372,24 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config, layer_idx)
         self.mlp = MLP(config)
 
-    def forward(self, x, ve, cos_sin, window_size, kv_cache):
-        x = x + self.attn(norm(x), ve, cos_sin, window_size, kv_cache)
+    def forward(
+        self,
+        x,
+        ve,
+        cos_sin,
+        window_size,
+        kv_cache,
+        attention_input=None,
+        kv_input=None,
+    ):
+        attention_input = norm(x) if attention_input is None else attention_input
+        if kv_input is None:
+            attn_output = self.attn(attention_input, ve, cos_sin, window_size, kv_cache)
+        else:
+            attn_output = self.attn(
+                attention_input, ve, cos_sin, window_size, kv_cache, kv_source=kv_input
+            )
+        x = x + attn_output
         x = x + self.mlp(norm(x))
         return x
 
@@ -483,7 +579,11 @@ class GPT(nn.Module):
         """
 
         # Embedding and unembedding
-        torch.nn.init.normal_(self.transformer.wte.weight, mean=0.0, std=0.8)
+        torch.nn.init.normal_(
+            self.transformer.wte.weight,
+            mean=0.0,
+            std=self.config.embedding_init_std,
+        )
         torch.nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
 
         # Transformer blocks: uniform init with bound = sqrt(3) * std (same standard deviation as normal)
@@ -495,11 +595,23 @@ class GPT(nn.Module):
             init_projection_uniform_(block.attn.c_q, -s, s)  # weights use Uniform to avoid outliers
             init_projection_uniform_(block.attn.c_k, -s, s)
             init_projection_uniform_(block.attn.c_v, -s, s)
-            torch.nn.init.zeros_(block.attn.c_proj.weight)  # projections are zero
-            torch.nn.init.uniform_(
-                block.mlp.c_fc.weight, -s * 0.4, s * 0.4
-            )  # 0.4x init scale for c_fc
-            torch.nn.init.zeros_(block.mlp.c_proj.weight)
+            if self.config.matrix_init_recipe == "speedrun-zero-proj":
+                torch.nn.init.zeros_(block.attn.c_proj.weight)  # projections are zero
+                torch.nn.init.uniform_(
+                    block.mlp.c_fc.weight, -s * 0.4, s * 0.4
+                )  # 0.4x init scale for c_fc
+                torch.nn.init.zeros_(block.mlp.c_proj.weight)
+            elif self.config.matrix_init_recipe == "hyperball":
+                # Hyperball updates preserve each matrix's Frobenius norm, so a
+                # zero-initialized projection can never move. Scale the Modded
+                # 768-wide .026/.031 recipe as constants times fan-in^-1/2.
+                torch.nn.init.normal_(block.attn.c_proj.weight, std=0.72 * n_embd**-0.5)
+                torch.nn.init.normal_(block.mlp.c_fc.weight, std=0.86 * n_embd**-0.5)
+                torch.nn.init.normal_(block.mlp.c_proj.weight, std=0.86 * n_embd**-0.5)
+            else:
+                raise ValueError(f"unknown matrix_init_recipe={self.config.matrix_init_recipe!r}")
+            if block.attn.qk_gain is not None:
+                block.attn.qk_gain.fill_(1.2)
 
         # Per-layer scalars
         # Per-layer resid init: stronger residual at early layers, weaker at deep layers
@@ -810,8 +922,13 @@ class GPT(nn.Module):
         n_layer = self.config.n_layer
         backout_layer = n_layer // 2  # cache at halfway point
         x_backout = None
+        cached_attention_input = None
+        midpoint_kv_input = None
         for i, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
+            cache_start = n_layer - self.config.cached_attention_layers
+            if self.config.cached_attention_layers and i == cache_start:
+                cached_attention_input = norm(x)
             if str(i) in self.engrams:
                 if kv_cache is not None:
                     raise NotImplementedError(
@@ -835,9 +952,24 @@ class GPT(nn.Module):
                 mlp_output = block.mlp(norm(mlp_input))
                 x = mlp_connection.combine(x, mlp_output, mlp_post, mlp_res)
             else:
-                x = block(x, ve, cos_sin, self.window_sizes[i], kv_cache)
+                attention_input = cached_attention_input if i >= cache_start else None
+                kv_input = midpoint_kv_input if i > backout_layer else None
+                if attention_input is None and kv_input is None:
+                    x = block(x, ve, cos_sin, self.window_sizes[i], kv_cache)
+                else:
+                    x = block(
+                        x,
+                        ve,
+                        cos_sin,
+                        self.window_sizes[i],
+                        kv_cache,
+                        attention_input=attention_input,
+                        kv_input=kv_input,
+                    )
             if i == backout_layer:
                 x_backout = x
+                if self.config.reuse_midpoint_kv:
+                    midpoint_kv_input = norm(x)
         if use_mhc:
             x = x.mean(dim=-2)
             if x_backout is not None:
@@ -849,21 +981,30 @@ class GPT(nn.Module):
 
         # Forward the lm_head (compute logits)
         softcap = 15  # smoothly cap the logits to the range [-softcap, softcap]
-        logits = self.lm_head(
+        raw_logits = self.lm_head(
             x
         )  # (B, T, padded_vocab_size) <- very big tensor, large amount of memory
-        logits = logits[..., : self.config.vocab_size]  # slice to remove padding
-        logits = logits.float()  # switch to fp32 for logit softcap and loss computation
-        logits = softcap * torch.tanh(logits / softcap)  # squash the logits
+        raw_logits = raw_logits[..., : self.config.vocab_size]  # slice to remove padding
+        logits = raw_logits
+        if self.config.loss_fp32:
+            logits = logits.float()  # switch to fp32 for logit softcap and loss computation
+        if self.config.logit_transform == "symmetric-softcap":
+            logits = softcap * torch.tanh(logits / softcap)  # squash the logits
+        elif self.config.logit_transform == "asymmetric":
+            logits = 23 * torch.sigmoid((logits + 5) / 7.5)
+        else:
+            raise ValueError(f"unknown logit_transform={self.config.logit_transform!r}")
 
         if targets is not None:
             # training: given the targets, compute and return the loss
             # TODO experiment with chunked cross-entropy?
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                targets.view(-1),
-                ignore_index=-1,
+            loss = language_model_loss(
+                logits,
+                raw_logits,
+                targets,
                 reduction=loss_reduction,
+                z_loss_weight=self.config.z_loss_weight,
+                training=self.training,
             )
             return loss
         else:

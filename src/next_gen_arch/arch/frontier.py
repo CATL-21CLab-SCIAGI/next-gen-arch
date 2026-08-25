@@ -23,6 +23,7 @@ from next_gen_arch.arch.base import (
     apply_rotary_emb,
     has_ve,
     init_projection_uniform_,
+    language_model_loss,
     norm,
 )
 
@@ -1091,15 +1092,18 @@ class FrontierPoolGPT(GPT):
 
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction="mean"):
         hidden, cos_sin = self._trunk(idx, kv_cache)
-        logits = self.lm_head(hidden)[..., : self.config.vocab_size].float()
+        raw_logits = self.lm_head(hidden)[..., : self.config.vocab_size]
+        logits = raw_logits.float()
         logits = 15 * torch.tanh(logits / 15)
         if targets is None:
             return logits
-        lm_loss = F.cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            targets.reshape(-1),
-            ignore_index=-1,
+        lm_loss = language_model_loss(
+            logits,
+            raw_logits,
+            targets,
             reduction=loss_reduction,
+            z_loss_weight=self.config.z_loss_weight,
+            training=self.training,
         )
         if self.config.frontier_variant != "shared_mtp3" or not self.training:
             return lm_loss

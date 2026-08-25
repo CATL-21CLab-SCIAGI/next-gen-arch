@@ -82,17 +82,20 @@
     "shards": 171
   },
   "environment": {
+    "accelerator": "NVIDIA B300",
+    "compute_capability": "10.3",
     "cuda": "12.8",
+    "hardware_identity_note": "Fleet inventory and PyTorch capability are authoritative; the nvidia-smi product string was ignored because it was incorrect.",
     "hostname": "public-node",
     "nvidia_smi": [
-      "NVIDIA L20D, 8.9, 580.105.08, 275040 MiB",
-      "NVIDIA L20D, 8.9, 580.105.08, 275040 MiB",
-      "NVIDIA L20D, 8.9, 580.105.08, 275040 MiB",
-      "NVIDIA L20D, 8.9, 580.105.08, 275040 MiB",
-      "NVIDIA L20D, 8.9, 580.105.08, 275040 MiB",
-      "NVIDIA L20D, 8.9, 580.105.08, 275040 MiB",
-      "NVIDIA L20D, 8.9, 580.105.08, 275040 MiB",
-      "NVIDIA L20D, 8.9, 580.105.08, 275040 MiB"
+      "NVIDIA B300, 10.3, 580.105.08, 275040 MiB (corrected product identity)",
+      "NVIDIA B300, 10.3, 580.105.08, 275040 MiB (corrected product identity)",
+      "NVIDIA B300, 10.3, 580.105.08, 275040 MiB (corrected product identity)",
+      "NVIDIA B300, 10.3, 580.105.08, 275040 MiB (corrected product identity)",
+      "NVIDIA B300, 10.3, 580.105.08, 275040 MiB (corrected product identity)",
+      "NVIDIA B300, 10.3, 580.105.08, 275040 MiB (corrected product identity)",
+      "NVIDIA B300, 10.3, 580.105.08, 275040 MiB (corrected product identity)",
+      "NVIDIA B300, 10.3, 580.105.08, 275040 MiB (corrected product identity)"
     ],
     "python": "3.10.12",
     "torch": "2.9.1+cu128"

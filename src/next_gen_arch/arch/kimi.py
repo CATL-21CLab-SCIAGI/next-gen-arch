@@ -25,6 +25,7 @@ from next_gen_arch.arch.base import (
     Linear,
     has_ve,
     init_projection_uniform_,
+    language_model_loss,
     norm,
 )
 
@@ -835,14 +836,17 @@ class KimiAttnRes(GPT):
 
         hidden = self._apply_read(self.output_residual_read, completed_blocks + [partial_block])
         hidden = norm(hidden)
-        logits = self.lm_head(hidden)[..., : self.config.vocab_size].float()
+        raw_logits = self.lm_head(hidden)[..., : self.config.vocab_size]
+        logits = raw_logits.float()
         softcap = 15
         logits = softcap * torch.tanh(logits / softcap)
         if targets is None:
             return logits
-        return F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            targets.view(-1),
-            ignore_index=-1,
+        return language_model_loss(
+            logits,
+            raw_logits,
+            targets,
             reduction=loss_reduction,
+            z_loss_weight=self.config.z_loss_weight,
+            training=self.training,
         )

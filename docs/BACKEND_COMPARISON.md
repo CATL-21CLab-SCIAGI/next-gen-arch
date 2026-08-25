@@ -80,7 +80,7 @@ tool rejects duplicate or unknown correction rows.
   `55ac7082517c3878ae653c07c09c534b8aed49f6`
 
 The full pass completed `48/48` finite runs and the correction completed `3/3` finite
-runs. It used three nodes with five explicitly allowlisted L20D GPUs per node. Three
+runs. It used three nodes with five explicitly allowlisted NVIDIA B300 GPUs per node. Three
 pre-existing busy GPUs on each node were excluded and left untouched.
 
 ## Reproduce the aggregation

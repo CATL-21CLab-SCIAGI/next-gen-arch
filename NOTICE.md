@@ -4,6 +4,13 @@ Next-Gen Architecture Lab is derived from the MIT-licensed [nanochat](https://gi
 
 [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) is consumed only as the Git submodule `third_party/Megatron-LM`, pinned to `55ac7082517c3878ae653c07c09c534b8aed49f6`. Its own license and notices remain inside the submodule. This repository does not vendor, rewrite, or relicense Megatron-LM source files.
 
+The optimization audit also studies public experiments and reports from
+[Marin](https://github.com/marin-community/marin) at
+`299c7f3245e2e6998345980cadad75f45088f63f` and the current Modded-NanoGPT
+history at `ecbb586296d3dac36fd206211f25d63bad4a6b35`. Marin/Levanter source is not
+vendored or used as a runtime backend; portable hypotheses are independently
+expressed as small, attributed experiment recipes.
+
 Architecture modules in this repository are research adaptations informed by the primary sources listed in [`docs/ARCHITECTURES.md`](docs/ARCHITECTURES.md). They are not represented as official implementations, endorsements, or exact reproductions of the authors' complete systems.
 
 “nanochat”, “Engram”, “Kimi”, “Qwen”, “DeepSeek”, “GLM”, “Inkling”, and other project names belong to their respective owners. No model weights, dataset shards, tokenizer binaries, or third-party trademarks are distributed as project assets.

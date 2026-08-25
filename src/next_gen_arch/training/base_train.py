@@ -1555,6 +1555,7 @@ summary_data = {
     else {},
 }
 if master_process:
+    os.makedirs(checkpoint_dir, exist_ok=True)
     summary_path = os.path.join(checkpoint_dir, "training_summary.json")
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary_data, f, indent=2)

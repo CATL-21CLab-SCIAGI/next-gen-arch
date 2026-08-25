@@ -1,6 +1,6 @@
 # Next-Gen Architecture Lab
 
-[简体中文](README.zh-CN.md) · [Results](docs/RESULTS.md) · [10M backend comparison](docs/BACKEND_COMPARISON.md) · [Reproducibility](docs/REPRODUCIBILITY.md) · [Runtimes](docs/RUNTIMES.md) · [Architecture notes](docs/ARCHITECTURES.md)
+[简体中文](README.zh-CN.md) · [Results](docs/RESULTS.md) · [10M backend comparison](docs/BACKEND_COMPARISON.md) · [Optimization audit](docs/OPTIMIZATION_AUDIT.md) · [Reproducibility](docs/REPRODUCIBILITY.md) · [Runtimes](docs/RUNTIMES.md) · [Architecture notes](docs/ARCHITECTURES.md)
 
 [![CI](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml/badge.svg)](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
