@@ -171,9 +171,11 @@ contract. Deltas and throughput ratios use the same compiler profile and seed ba
 | `max-autotune` + full-matrix Muon + clip 0.1 | 1.516369 | -0.029263 | **1,778,327** | **1.068×** |
 | `max-autotune` + full-matrix Muon + z-loss + clip 0.1 | 1.512061 | -0.033572 | 1,732,109 | 1.040× |
 
-The promoted portable recipe is `compile-max-autotune` plus `z-loss-5e-6-clip01`.
-Full-matrix Muon is a faster baseline Pareto point, but cannot be applied to the
-all-model campaign without erasing the explicitly controlled `per-head-muon` arm.
+The baseline-only promotion candidate was `compile-max-autotune` plus
+`z-loss-5e-6-clip01`. Full-matrix Muon is a faster baseline Pareto point, but cannot be
+applied to the all-model campaign without erasing the explicitly controlled
+`per-head-muon` arm. The required all-architecture portability gate below rejected the
+z-loss-plus-clipping recipe as a global default.
 
 “Promoted” here means steady-state/scaling throughput, not shortest one-off 10M wall
 time. For the z-loss-plus-clip recipe, regular `compile` averaged 122.7 seconds wall
@@ -191,6 +193,26 @@ seeds improve and reduced standard deviation to 0.0060.
 The full seed-42 clipping refinement was monotone beyond the optimum neighborhood:
 0.05/0.10 yielded 1.517251/1.517205 BPB, while 0.15/0.20/0.30 yielded
 1.519837/1.521959/1.524585. The upstream 0.1 choice is therefore retained.
+
+### All-architecture portability gate
+
+The baseline result did not generalize. A `16 variants × 3 seeds` campaign applied
+`compile-max-autotune` plus `z-loss-5e-6-clip01` without changing any other contract
+field. It produced 45 finite results and three deliberate fail-fast results:
+
+- all three `kimi-k3-kda-update` seeds developed a non-finite local gradient norm at
+  iteration 2 and were stopped before the data-parallel collective;
+- `qwen-gdn` regressed to mean BPB `2.939011`, or `+1.431906` relative to the matched
+  recipe baseline;
+- `kda` regressed to mean BPB `1.613106`, or `+0.106002`;
+- over the 14 non-baseline variants with finite results in both systems, delta
+  correlation with the historical speedrun reference fell to `-0.320154`.
+
+This is strong evidence against treating a baseline-winning objective/optimizer recipe
+as backend infrastructure. It remains available for isolated studies, but the optimized
+backend comparison uses only the execution profile `compile-max-autotune` with the
+unchanged `baseline` recipe. The partial comparison and explicit failure manifest are in
+[`results/megatron-10m-global-zclip-b300`](../results/megatron-10m-global-zclip-b300/).
 
 ## Modded-NanoGPT records 1–89
 
