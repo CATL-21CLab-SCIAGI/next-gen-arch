@@ -73,6 +73,11 @@ class MegatronBackendProfile:
     overlap_grad_reduce: bool = False
     ddp_num_buckets: int | None = None
     ddp_average_in_collective: bool = False
+    compile_mode_overrides: tuple[tuple[str, str | None], ...] = ()
+
+    def resolved_compile_mode(self, variant: str) -> str | None:
+        overrides = dict(self.compile_mode_overrides)
+        return overrides[variant] if variant in overrides else self.compile_mode
 
 
 MEGATRON_BACKEND_PROFILES = {
@@ -99,6 +104,17 @@ MEGATRON_BACKEND_PROFILES = {
             compile_architecture=True,
             use_mcore_bf16_master=True,
             compile_mode="max-autotune",
+        ),
+        MegatronBackendProfile(
+            name="compile-safe-autotune",
+            compile_architecture=True,
+            use_mcore_bf16_master=True,
+            compile_mode="max-autotune",
+            compile_mode_overrides=(
+                ("kda", None),
+                ("kimi-k3-kda-update", None),
+                ("qwen-gdn", None),
+            ),
         ),
         MegatronBackendProfile(
             name="compile-dp-overlap",
@@ -643,8 +659,9 @@ def _run_megatron(
                 )
             schedule_holder["parameter_count"] = actual_parameters
             compile_kwargs = {"dynamic": False}
-            if profile.compile_mode is not None:
-                compile_kwargs["mode"] = profile.compile_mode
+            compile_mode = profile.resolved_compile_mode(variant.name)
+            if compile_mode is not None:
+                compile_kwargs["mode"] = compile_mode
             self.architecture = (
                 torch.compile(architecture, **compile_kwargs)
                 if profile.compile_architecture
@@ -730,13 +747,15 @@ def _environment(
     recipe: OptimizationRecipe,
 ) -> dict[str, Any]:
     repository = _repository_root()
+    profile_payload = asdict(profile)
+    profile_payload["resolved_compile_mode"] = profile.resolved_compile_mode(variant.name)
     return {
         "backend": "megatron",
         "support_tier": "mcore_training_wrapper",
         "variant": asdict(variant),
         "seed": seed,
         "mode": mode,
-        "backend_profile": asdict(profile),
+        "backend_profile": profile_payload,
         "optimization_recipe": asdict(recipe),
         "host": socket.gethostname(),
         "platform": platform.platform(),

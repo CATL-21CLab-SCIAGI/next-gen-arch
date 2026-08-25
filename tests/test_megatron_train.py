@@ -49,6 +49,7 @@ def test_global_rank_defaults_to_single_process_and_honors_torchrun(monkeypatch)
         ("compile", True, True, True, None, False, None, False),
         ("compile-reduce-overhead", True, True, True, "reduce-overhead", False, None, False),
         ("compile-max-autotune", True, True, True, "max-autotune", False, None, False),
+        ("compile-safe-autotune", True, True, True, "max-autotune", False, None, False),
         ("compile-dp-overlap", True, True, True, None, True, 4, False),
         ("compile-dp-overlap-average", True, True, True, None, True, 4, True),
         ("native-master", False, False, True, None, False, None, False),
@@ -74,6 +75,16 @@ def test_backend_profiles_are_explicit_factorial_ablation(
     assert profile.overlap_grad_reduce is overlap_grad_reduce
     assert profile.ddp_num_buckets == ddp_num_buckets
     assert profile.ddp_average_in_collective is average_in_collective
+
+
+def test_safe_autotune_profile_falls_back_for_numerically_sensitive_mixers():
+    profile = get_megatron_backend_profile("compile-safe-autotune")
+
+    assert profile.resolved_compile_mode("baseline") == "max-autotune"
+    assert profile.resolved_compile_mode("engram") == "max-autotune"
+    assert profile.resolved_compile_mode("kda") is None
+    assert profile.resolved_compile_mode("kimi-k3-kda-update") is None
+    assert profile.resolved_compile_mode("qwen-gdn") is None
 
 
 def test_megatron_arguments_follow_profile_precision_and_finite_policy():
