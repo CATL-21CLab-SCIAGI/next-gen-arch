@@ -54,6 +54,13 @@ _EVAL_BYTES = 0
 _TOKEN_BYTES: torch.Tensor | None = None
 
 
+def _current_training_iteration(args) -> int:
+    """Read Megatron's live loop counter, falling back to its resume counter."""
+    if hasattr(args, "curr_iteration"):
+        return int(args.curr_iteration)
+    return int(args.iteration)
+
+
 def _git_output(root: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args],
@@ -436,7 +443,7 @@ def _run_megatron(variant: TenMVariant, seed: int, tokenizer):
                 raise RuntimeError("labels are required during the 10M comparison")
             args = get_args()
             if hasattr(self.architecture, "set_training_step"):
-                self.architecture.set_training_step(int(args.iteration))
+                self.architecture.set_training_step(_current_training_iteration(args))
             return self.architecture(
                 input_ids,
                 labels,
