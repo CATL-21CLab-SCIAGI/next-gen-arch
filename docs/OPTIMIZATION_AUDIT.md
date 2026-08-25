@@ -130,7 +130,7 @@ CUDA/PyTorch versions, and selected `ptxas`.
 | `adam-every-2` | Modded #39 | recipe; auxiliary gradients accumulate for two steps |
 | `cautious-adam-wd` | Modded #50/current record | recipe |
 | `marin-compound` | Marin #4999 | recipe containing only the dense, portable components |
-| `compile-reduce-overhead`, `compile-max-autotune` | PyTorch compiler modes | profiles; measured separately from model recipes |
+| `compile-reduce-overhead`, `compile-max-autotune`, `compile-safe-autotune` | PyTorch compiler modes | profiles; safe policy is variant-resolved from the portability gate |
 | `compile-dp-overlap*` | Megatron/Modded communication overlap | two-rank profiles; rejected at 10M, retained for scale |
 
 Hyperball recipes deliberately replace zero projection initialization. A
@@ -210,9 +210,40 @@ field. It produced 45 finite results and three deliberate fail-fast results:
 
 This is strong evidence against treating a baseline-winning objective/optimizer recipe
 as backend infrastructure. It remains available for isolated studies, but the optimized
-backend comparison uses only the execution profile `compile-max-autotune` with the
-unchanged `baseline` recipe. The partial comparison and explicit failure manifest are in
+backend comparison keeps the unchanged `baseline` recipe. The partial comparison and
+explicit failure manifest are in
 [`results/megatron-10m-global-zclip-b300`](../results/megatron-10m-global-zclip-b300/).
+
+### Execution-profile portability gate
+
+The recipe-free `16 variants × 3 seeds` follow-up tested whether max-autotune itself
+was execution-only. It was not numerically neutral for every graph:
+
+- the primary pass terminated all 48 keys with 43 finite results and five fail-fast
+  results;
+- KDA seeds 42/44 and all Kimi K3 KDA seeds produced non-finite local gradient norms
+  on the first backward pass;
+- KDA seed 43 was finite but regressed to `1.579430 BPB`;
+- all three Qwen GDN seeds were finite but severely corrupted, averaging about
+  `2.68 BPB`;
+- nine default-compile controls covering KDA, Kimi K3 KDA, and Qwen GDN were all
+  finite and restored the expected signal.
+
+The resulting `compile-safe-autotune` policy therefore uses max-autotune for 13 stable
+variants and default `torch.compile` for those three sensitive variants. The accepted
+comparison contains 39 untouched max-autotune rows and nine explicit default-compile
+rows. It reaches paired-delta correlation `0.971361` with speedrun, mean absolute delta
+gap `0.009241 BPB`, and sign agreement for `13/15` non-baseline variants.
+
+For the baseline, max-autotune reaches `1,576,266 tok/s` by median steady step and
+`1,529,304 tok/s` over measured post-warmup steps, versus speedrun's historical
+`1,360,228 tok/s`. Fresh isolated caches still dominate the small run: mean Megatron
+process wall time is `567.0 s`, versus `79.8 s` for speedrun. This reinforces the
+earlier break-even result: regular compile or speedrun is appropriate for cold 10M
+screens; safe max-autotune is a steady-state/scaling policy.
+
+The complete accepted comparison, raw provenance, and policy manifest are in
+[`results/megatron-10m-safe-autotune-b300`](../results/megatron-10m-safe-autotune-b300/).
 
 ## Modded-NanoGPT records 1–89
 

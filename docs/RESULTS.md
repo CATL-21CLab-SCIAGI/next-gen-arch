@@ -1,6 +1,9 @@
 # Results and interpretation
 
-Historical scaling values in this document are frozen as of 2026-08-24 (UTC+8). The matched 10M backend comparison was completed on 2026-08-25. Validation BPB is lower-is-better. `Δ` is the mean paired difference from the same-scale, same-backend baseline over matching seeds.
+Historical scaling values in this document are frozen as of 2026-08-24 (UTC+8). The
+original matched 10M backend comparison completed on 2026-08-25; the B300 optimized
+follow-up completed on 2026-08-26. Validation BPB is lower-is-better. `Δ` is the mean
+paired difference from the same-scale, same-backend baseline over matching seeds.
 
 ## Read the regimes separately
 
@@ -11,7 +14,7 @@ The repository records two training-budget regimes:
 
 Absolute BPB values across these regimes are not directly comparable. Paired deltas inside a row group are the intended comparison.
 
-## Matched 10M Megatron versus speedrun comparison
+## Optimized matched 10M Megatron versus speedrun comparison
 
 The 16 variants completed three seeds on both backends under the same approximately
 12-token-per-parameter contract. Megatron used the pinned MCore lifecycle with
@@ -20,24 +23,32 @@ every custom mechanism.
 
 | Backend | Baseline BPB | Best variant | Best BPB | Best Δ | Baseline tok/s |
 | --- | ---: | --- | ---: | ---: | ---: |
-| Megatron | 1.533885 | KDA | **1.464074** | -0.069811 | 752,144 |
+| Megatron safe-autotune | 1.547758 | KDA | **1.465789** | -0.081969 | 1,576,266* |
 | speedrun | 1.554980 | Kimi K3 KDA | **1.461594** | -0.093387 | 1,360,228 |
 
-Across the 15 non-baseline variants, paired deltas have Pearson correlation `0.975948`,
-mean absolute gap `0.012369 BPB`, and matching improvement/degradation direction for
-`12/15` variants. Megatron baseline throughput is `0.553×` speedrun, while its baseline
-BPB is lower by `0.021095`. The backends therefore agree strongly on broad ranking but
-are not numerically interchangeable; causal comparisons must remain paired within a
-backend.
+`*` Megatron uses median steady-state step throughput; speedrun uses its historical
+post-warmup aggregate. The comparable Megatron post-warmup aggregate is `1,529,304
+tok/s`, or `1.124×` speedrun. Fresh max-autotune caches make one-off Megatron process
+wall time much worse (`567.0 s` versus `79.8 s`), so speedrun remains preferable for
+cold small-model screens.
 
-The original Megatron pass completed 48/48 finite runs. A post-run audit found that DSA
-read the fixed resume iteration instead of Megatron's live `curr_iteration`, leaving its
-sparsity schedule in warmup. The adapter was fixed and all three DSA seeds were rerun;
-only those exact keys replace the invalid rows. The corrected DSA result is `1.625196`
-BPB (`+0.091311`), consistent with the speedrun negative result. See the
-[complete backend table and provenance audit](BACKEND_COMPARISON.md),
-[`backend-10m-runs.csv`](../results/backend-10m-runs.csv), and
-[`backend-10m-comparison.json`](../results/backend-10m-comparison.json).
+Across the 15 non-baseline variants, paired deltas have Pearson correlation `0.971361`,
+mean absolute gap `0.009241 BPB`, and matching improvement/degradation direction for
+`13/15` variants. Megatron baseline BPB is lower by `0.007222`. The backends therefore
+agree strongly on broad ranking but are not numerically interchangeable; causal
+comparisons remain paired within a backend.
+
+The initial max-autotune pass produced 43 finite and five fail-fast rows. KDA seeds
+42/44 and all three Kimi K3 KDA seeds became non-finite on their first backward pass;
+the finite KDA seed 43 and all three finite Qwen GDN rows were quality-corrupted. Nine
+default-compile controls were all finite. The accepted set therefore uses max-autotune
+for 13 variants and default compile for KDA, Kimi K3 KDA, and Qwen GDN. See the
+[complete backend table and provenance audit](BACKEND_COMPARISON.md) and the
+[`safe-autotune campaign artifacts`](../results/megatron-10m-safe-autotune-b300/).
+
+The original regular-compile comparison remains published as a causal reference. It
+completed 48/48 finite runs plus the three-seed DSA correction and reached correlation
+`0.975948`; its Megatron baseline was materially slower (`752,144 tok/s`).
 
 ## Completed 100M and 300M controls
 
@@ -121,10 +132,14 @@ The table must not be called a final leaderboard. In particular, Qwen GDN was pe
 
 - **BPB:** summed token negative log-likelihood divided by the number of represented UTF-8 bytes and by `ln(2)`. Unlike per-token loss, it is comparable across tokenizations in principle; this campaign nevertheless fixes the tokenizer.
 - **Paired Δ BPB:** for each seed, variant final BPB minus its aligned baseline final BPB, averaged over valid paired seeds.
-- **Throughput ratio:** variant training tokens per second divided by aligned baseline throughput on the campaign hardware.
+- **Throughput ratio:** variant training tokens per second divided by aligned baseline throughput on the campaign hardware. The optimized Megatron table uses median steady-state steps; its artifacts also retain transition-inclusive post-warmup throughput and full process wall time.
 - **Parameters:** probed instantiated parameter count. Engram's retrieval tables are trainable parameters and are included.
 
-Historical scale values, seed validity, parameter counts, and statuses are in [`results/key-metrics.csv`](../results/key-metrics.csv). The 10M backend comparison has separate [summary](../results/backend-10m-comparison.csv) and [per-run](../results/backend-10m-runs.csv) tables so its runtime provenance is not mixed into the older campaigns.
+Historical scale values, seed validity, parameter counts, and statuses are in
+[`results/key-metrics.csv`](../results/key-metrics.csv). The original and optimized
+10M comparisons have separate [legacy artifacts](../results/backend-10m-comparison.csv)
+and [B300 safe-autotune artifacts](../results/megatron-10m-safe-autotune-b300/) so
+runtime provenance is not mixed into the older campaigns.
 
 ## Interpretation rules
 

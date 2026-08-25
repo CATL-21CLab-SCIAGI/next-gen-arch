@@ -356,7 +356,7 @@ def campaign_provenance(rows: Iterable[RunResult]) -> dict[str, dict[str, Any]]:
 def _write_csv(path: Path, summaries: list[VariantSummary]) -> None:
     fieldnames = list(VariantSummary.__dataclass_fields__)
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(asdict(row) for row in summaries)
 
@@ -364,7 +364,7 @@ def _write_csv(path: Path, summaries: list[VariantSummary]) -> None:
 def _write_runs_csv(path: Path, rows: list[RunResult]) -> None:
     fieldnames = list(RunResult.__dataclass_fields__)
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(asdict(row) for row in sorted(rows, key=lambda row: row.key))
 

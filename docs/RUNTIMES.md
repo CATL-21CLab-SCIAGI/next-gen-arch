@@ -71,6 +71,15 @@ simultaneous seed pairing; `variant` keeps a variant's seeds on one queue so com
 artifacts are reused. A restarted runner reuses an existing complete result only after
 checking its variant, seed, mode, backend profile, and recipe; mismatches fail closed.
 
+`compile-safe-autotune` is the measured B300 policy for this architecture grid. It uses
+`max-autotune` for 13 stable variants and default `torch.compile` for KDA, Kimi K3 KDA,
+and Qwen GDN. Those three overrides are numerical-safety requirements, not quality
+recipes: max-autotune caused first-backward non-finite gradients or severe quality
+corruption, while all nine default-compile controls were finite. Every result records
+both the named profile and its resolved compile mode. The campaign aggregator keeps
+failed-key recovery separate from explicit replacement, rejecting overlap in either
+direction.
+
 ## Portable configuration
 
 Experiment YAML files compose in order:
@@ -105,4 +114,6 @@ Training and evaluation load the same schema-versioned prompt set. The default i
 - The two backends do not promise bitwise, optimizer, throughput, or checkpoint equivalence.
 - Cross-backend quality claims require a separately frozen paired contract and backend-specific validation evidence.
 
-The accepted 96-run comparison and its DSA correction audit are published in [BACKEND_COMPARISON.md](BACKEND_COMPARISON.md).
+The original and safe-autotune 96-run comparisons, DSA correction, compiler recovery,
+and throughput-basis audits are published in
+[BACKEND_COMPARISON.md](BACKEND_COMPARISON.md).

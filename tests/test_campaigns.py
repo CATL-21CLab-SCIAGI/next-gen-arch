@@ -30,6 +30,9 @@ PUBLISHED_COMPARISON = DEFAULT_REFERENCE.with_name("backend-10m-comparison.json"
 OPTIMIZATION_RUNS = (
     Path(__file__).resolve().parents[1] / "results" / "megatron-10m-optimization-runs-b300.csv"
 )
+SAFE_AUTOTUNE_RESULTS = (
+    Path(__file__).resolve().parents[1] / "results" / "megatron-10m-safe-autotune-b300"
+)
 
 
 def test_ten_m_grid_is_complete_and_parameter_counts_are_frozen():
@@ -182,3 +185,37 @@ def test_optimization_ledger_covers_every_executable_recipe() -> None:
     )
     assert {row["accelerator"] for row in rows} == {"NVIDIA B300"}
     assert {row["compute_capability"] for row in rows} == {"10.3"}
+
+
+def test_published_safe_autotune_comparison_is_complete_and_provenanced() -> None:
+    rows = validate_results(
+        load_speedrun_reference(SAFE_AUTOTUNE_RESULTS / "runs.csv"), allow_partial=False
+    )
+    assert len(rows) == 96
+
+    megatron_rows = [row for row in rows if row.backend == "megatron"]
+    assert len(megatron_rows) == 48
+    assert sum(row.backend_profile == "compile-max-autotune" for row in megatron_rows) == 39
+    assert sum(row.backend_profile == "compile" for row in megatron_rows) == 9
+    assert {row.source_commit for row in megatron_rows} == {
+        "f8bc91df1aa10a2e4fd193cb9acdc4df3cdba975"
+    }
+    assert {row.source_dirty for row in megatron_rows} == {False}
+    assert {row.source_worktree_sha256 for row in megatron_rows} == {
+        "33c2da2f369cc6a117055a71d327f41de48fe448131a6a62c936189bf2d3e4c3"
+    }
+    assert {row.megatron_commit for row in megatron_rows} == {
+        "55ac7082517c3878ae653c07c09c534b8aed49f6"
+    }
+
+    metrics = cross_backend_metrics(summarize(rows))
+    assert abs(metrics["delta_pearson"] - 0.9713608264480493) < 1e-12
+    assert metrics["delta_sign_agreement_count"] == 13
+    assert abs(metrics["mean_absolute_delta_gap"] - 0.009241204591297257) < 1e-12
+
+    campaign = json.loads((SAFE_AUTOTUNE_RESULTS / "campaign.json").read_text())
+    assert campaign["hardware"]["accelerator"] == "NVIDIA B300"
+    assert campaign["hardware"]["compute_capability"] == "10.3"
+    assert campaign["contract"]["accepted_megatron_runs"] == 48
+    assert campaign["contract"]["primary_fail_fast_runs"] == 5
+    assert campaign["contract"]["recovery_finite_runs"] == 9

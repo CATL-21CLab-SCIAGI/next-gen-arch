@@ -41,14 +41,23 @@ Validation **BPB (bits per byte; lower is better)** is the primary quality metri
 
 ### Megatron versus speedrun at approximately 10M parameters
 
-The completed comparison contains `16 variants × 3 seeds × 2 backends = 96` accepted runs. Across the 15 non-baseline variants, paired ΔBPB has a Pearson correlation of `0.975948`; improvement/degradation direction agrees for `12/15` variants, and the mean absolute delta gap is `0.012369 BPB`.
+The B300 safe-autotune comparison contains `16 variants × 3 seeds × 2 backends = 96`
+accepted runs. Across the 15 non-baseline variants, paired ΔBPB has a Pearson
+correlation of `0.971361`; improvement/degradation direction agrees for `13/15`
+variants, and the mean absolute delta gap is `0.009241 BPB`.
 
 | Backend | Best variant | Mean BPB | Paired Δ BPB | Baseline tok/s |
 | --- | --- | ---: | ---: | ---: |
-| Megatron | KDA | **1.464074** | -0.069811 | 752,144 |
+| Megatron safe-autotune | KDA | **1.465789** | -0.081969 | 1,576,266* |
 | speedrun | Kimi K3 KDA | **1.461594** | -0.093387 | 1,360,228 |
 
-Megatron's small baseline reaches `0.553×` the absolute speedrun throughput, making speedrun about `1.81×` faster for rapid screening. Megatron remains the intended path to distributed scale. Absolute BPB also shifts by `-0.021095` on the Megatron baseline, so only within-backend paired deltas should be interpreted causally. See the [complete table and correction audit](docs/BACKEND_COMPARISON.md).
+`*` Megatron reports median steady-state steps. Its post-warmup aggregate is
+`1,529,304 tok/s` (`1.124×` speedrun), but fresh max-autotune caches make the one-off
+process wall time `567.0 s` versus speedrun's `79.8 s`. Speedrun therefore remains the
+better cold small-model screen; Megatron wins only after compilation is amortized.
+Max-autotune was unsafe for KDA, Kimi K3 KDA, and Qwen GDN, so those nine accepted rows
+use default `torch.compile`; all other rows use max-autotune. See the
+[complete table and numerical-safety audit](docs/BACKEND_COMPARISON.md).
 
 ### Parameter-scaling campaign: about 12 training tokens per parameter
 
@@ -83,7 +92,12 @@ Known failures in that snapshot:
 - two Inkling relative-attention runs became non-finite;
 - three Engram runs hit a harness assertion because d32 injection layers were reused while constructing a d12 meta-reference model. This repository scales those reference layers proportionally and classifies the incident as a harness failure, not a model-quality result.
 
-The full dated tables and limitations are in [docs/RESULTS.md](docs/RESULTS.md). Machine-readable values live in [results/key-metrics.csv](results/key-metrics.csv); the 10M comparison is in [results/backend-10m-comparison.json](results/backend-10m-comparison.json), and [results/campaign-status-2026-08-24.json](results/campaign-status-2026-08-24.json) preserves the 1B audit snapshot.
+The full dated tables and limitations are in [docs/RESULTS.md](docs/RESULTS.md).
+Machine-readable values live in [results/key-metrics.csv](results/key-metrics.csv); the
+optimized 10M comparison is in
+[results/megatron-10m-safe-autotune-b300](results/megatron-10m-safe-autotune-b300/), and
+[results/campaign-status-2026-08-24.json](results/campaign-status-2026-08-24.json)
+preserves the 1B audit snapshot.
 
 ## Reproducibility contract
 
@@ -207,7 +221,7 @@ Engram and mHC used separate experimental forks during the live campaign. They a
 4. **Short-convolution KV and gated attention are robust low-parameter changes.** The former gains more quality; the latter stays closer to baseline speed.
 5. **mHC is promising but not yet reliable.** Its fixed-token results are strong, while the newer scaling setup becomes non-finite.
 6. **The current DSA and relative-attention paths are poor fits for this 2K-context benchmark.** DSA uses masked dense SDPA, so this experiment does not test a true sparse-kernel speedup.
-7. **The 10M architecture signal transfers across backends, but backend choice still matters.** Delta correlation is high, while three small effects change sign and speedrun is substantially faster at this size.
+7. **The 10M architecture signal transfers across backends, but backend choice still matters.** Delta correlation is high and two small effects change sign. Safe-autotune Megatron is faster in steady state; speedrun is far faster for a cold one-off run.
 
 ## Roadmap
 

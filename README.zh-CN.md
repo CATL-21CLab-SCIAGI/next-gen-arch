@@ -33,14 +33,22 @@
 
 ### 约 10M 参数的 Megatron—speedrun 对比
 
-完整对比包含 `16 个变体 × 3 个 seed × 2 个后端 = 96` 个采纳 run。15 个非 baseline 变体的成对 ΔBPB 跨后端 Pearson 相关系数为 `0.975948`，改善/退化方向一致 `12/15`，平均绝对 delta 差为 `0.012369 BPB`。
+B300 safe-autotune 对比包含 `16 个变体 × 3 个 seed × 2 个后端 = 96` 个采纳
+run。15 个非 baseline 变体的成对 ΔBPB 跨后端 Pearson 相关系数为 `0.971361`，
+改善/退化方向一致 `13/15`，平均绝对 delta 差为 `0.009241 BPB`。
 
 | 后端 | 最佳变体 | 平均 BPB | 成对 Δ BPB | baseline tok/s |
 | --- | --- | ---: | ---: | ---: |
-| Megatron | KDA | **1.464074** | -0.069811 | 752,144 |
+| Megatron safe-autotune | KDA | **1.465789** | -0.081969 | 1,576,266* |
 | speedrun | Kimi K3 KDA | **1.461594** | -0.093387 | 1,360,228 |
 
-Megatron 小模型 baseline 的绝对吞吐是 speedrun 的 `0.553×`，即 speedrun 快约 `1.81×`，更适合快速筛选；Megatron 仍是分布式扩缩后端。Megatron baseline 的绝对 BPB 也相对偏移 `-0.021095`，因此因果判断应使用各后端内部的成对 delta。完整表格、DSA 修正审计和逐 run provenance 见 [后端对比报告](docs/BACKEND_COMPARISON.md)。
+`*` Megatron 使用稳态 step 中位数；其 warmup 后聚合吞吐为 `1,529,304 tok/s`
+（speedrun 的 `1.124×`）。但新建 max-autotune cache 时，完整进程耗时为
+`567.0 s`，speedrun 仅 `79.8 s`，因此一次性小模型筛选仍应使用 speedrun；
+只有编译成本被复用或摊薄后，Megatron 的稳态优势才成立。max-autotune 对
+KDA、Kimi K3 KDA、Qwen GDN 不安全，这 9 个采纳 run 使用默认
+`torch.compile`，其余 39 个使用 max-autotune。完整表格和数值安全审计见
+[后端对比报告](docs/BACKEND_COMPARISON.md)。
 
 ### 参数缩放实验：约 12 个训练 token / 参数
 
@@ -77,7 +85,9 @@ Megatron 小模型 baseline 的绝对吞吐是 speedrun 的 `0.553×`，即 spee
 - Inkling relative attention 的两个 run 出现非有限值；
 - 三个 Engram run 因 d12 meta-reference 错用了 d32 的 `7,15,23` 注入层而触发断言。这是 harness bug，不是模型质量失败。仓库已按深度同比例映射 reference 层。
 
-完整数据见 [docs/RESULTS.md](docs/RESULTS.md)、[results/key-metrics.csv](results/key-metrics.csv) 与 [results/backend-10m-comparison.json](results/backend-10m-comparison.json)。
+完整数据见 [docs/RESULTS.md](docs/RESULTS.md)、
+[results/key-metrics.csv](results/key-metrics.csv) 与
+[B300 safe-autotune 结果目录](results/megatron-10m-safe-autotune-b300/)。
 
 ## 实验合同
 
@@ -166,7 +176,7 @@ uv build
 4. sconv-KV 和 gated attention 是稳健的低额外参数改造。
 5. mHC 的固定-token结果很好，但缩放设置数值不稳定，暂不应视为可靠方案。
 6. 当前 DSA 与 relative attention 不适合 2K-context 实现；DSA 仍是 masked dense SDPA，不能证明真实稀疏 kernel 的速度收益。
-7. 10M 架构信号总体可跨后端迁移，但后端并非无关变量：三个小效应改变方向，且 speedrun 在该规模显著更快。
+7. 10M 架构信号总体可跨后端迁移，但后端并非无关变量：两个小效应改变方向；safe-autotune Megatron 稳态更快，speedrun 的冷启动一次性实验快得多。
 
 ## 路线图
 

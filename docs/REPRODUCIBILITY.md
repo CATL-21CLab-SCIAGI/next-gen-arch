@@ -140,8 +140,8 @@ python -m next_gen_arch.training.campaign_runner \
   --gpus GPU_LIST \
   --output-root /durable/path/megatron-10m \
   --mode full \
-  --partition-strategy variant \
-  --backend-profile legacy \
+  --partition-strategy seed \
+  --backend-profile compile-safe-autotune \
   --optimization-recipe baseline
 ```
 
@@ -150,10 +150,12 @@ then checks its UUID again immediately before every task. It never discovers or 
 other idle devices implicitly. Run `--mode probe --probe-steps 1` for all 16 architectures
 before allocating the full campaign.
 
-Use `baseline` when reproducing the matched backend comparison. Optimization studies
-must name their delta explicitly—for example, `--backend-profile compile-max-autotune
---optimization-recipe z-loss-5e-6-clip01`—and must not be presented as backend-only
-equivalence because z-loss/clipping change training semantics.
+Use `baseline` when reproducing the matched backend comparison. The safe-autotune
+profile resolves to max-autotune for 13 variants and default compile for KDA, Kimi K3
+KDA, and Qwen GDN; the selected mode is recorded per run. Optimization studies must
+name their delta explicitly—for example, `--optimization-recipe
+z-loss-5e-6-clip01`—and must not be presented as backend-only equivalence because
+z-loss/clipping change training semantics.
 
 Aggregate the output against the frozen historical speedrun rows:
 
@@ -164,7 +166,14 @@ python -m next_gen_arch.training.campaign_compare \
   --output-dir /durable/path/backend-comparison
 ```
 
-For the exact published result, the original 48-row pass is overlaid with the three DSA
+The current safe profile should produce one complete 48-row directory. The historical
+optimized campaign discovered the policy during execution, so its exact aggregation
+uses `--override-root` for finite-but-corrupted keys and `--recovery-root` for failed
+keys. Replacement rejects unknown keys; recovery rejects overlap. The policy manifest
+in [`results/megatron-10m-safe-autotune-b300`](../results/megatron-10m-safe-autotune-b300/)
+records the exact split.
+
+For the original regular-compile result, the 48-row pass is overlaid with the three DSA
 correction rows by adding:
 
 ```text
@@ -180,6 +189,9 @@ See [BACKEND_COMPARISON.md](BACKEND_COMPARISON.md) for the bug audit and interpr
 - nanochat upstream commit recorded by the campaign: `b9f5025652d51470e2c31117100d9ff48717b911`
 - modded-nanogpt speedrun lineage commit: `f411b3d346aa52d3504324ca93c230fd84c6c07f`
 - Megatron-LM submodule commit: `55ac7082517c3878ae653c07c09c534b8aed49f6`
+- B300 safe-autotune training source commit (all 48 accepted rows): `f8bc91df1aa10a2e4fd193cb9acdc4df3cdba975`
+- B300 safe-autotune policy commit: `f79d77c8f81f953666e58d6dcb4f1b52194bba2c`
+- B300 safe-autotune source worktree SHA-256: `33c2da2f369cc6a117055a71d327f41de48fe448131a6a62c936189bf2d3e4c3`
 - 10M Megatron primary-pass source commit (45 accepted rows): `e6d9b0b1153e74078dbb87d4c0e8b12c8d4df513`
 - 10M corrected DSA source commit (3 accepted rows): `ed8336e5403d8da75082502a96a115f06ee17334`
 - frozen core tree SHA-256: `fc6bf75d17121b3321877d4aede10205fac0b8d4c33ed2e99cb426ca78feec67`
@@ -187,4 +199,9 @@ See [BACKEND_COMPARISON.md](BACKEND_COMPARISON.md) for the bug audit and interpr
 - frozen mHC fork tree SHA-256: `c79b52cc9fc577ef61bdd61858b5bb070c5a3e6a9381d0b04157055d76b9026b`
 - frozen orchestration tree SHA-256: `2ffc3950ea4679e66e1f1105a0d5fe7eab238dc712109a6fa5393bfffc5ecf00`
 
-The historical scaling per-file hashes remain in [`results/parameter-scale-100m-1b-v1-manifest.json`](../results/parameter-scale-100m-1b-v1-manifest.json). Every accepted 10M backend row and its source/Megatron commit is in [`results/backend-10m-runs.csv`](../results/backend-10m-runs.csv).
+The historical scaling per-file hashes remain in
+[`results/parameter-scale-100m-1b-v1-manifest.json`](../results/parameter-scale-100m-1b-v1-manifest.json).
+Every accepted optimized 10M row and its source/Megatron commit is in
+[`results/megatron-10m-safe-autotune-b300/runs.csv`](../results/megatron-10m-safe-autotune-b300/runs.csv);
+the original comparison remains in
+[`results/backend-10m-runs.csv`](../results/backend-10m-runs.csv).
