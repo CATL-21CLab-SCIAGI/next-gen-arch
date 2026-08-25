@@ -187,6 +187,17 @@ def test_optimizer_groups_kda_vectors_at_fixed_adamw_lr():
     assert model.estimate_flops() > 0
 
 
+def test_kda_shared_forward_has_empty_engram_interface():
+    model = KimiKDA(tiny_config())
+    model.init_weights()
+    tokens = torch.randint(0, model.config.vocab_size, (1, model.config.sequence_len))
+
+    loss = model(tokens, targets=tokens.roll(-1, dims=1))
+
+    assert not model.engrams
+    assert torch.isfinite(loss)
+
+
 def test_kda_shared_initialization_is_bit_identical_to_paired_baseline():
     config = tiny_config()
     baseline_config = GPTConfig(

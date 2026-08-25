@@ -131,7 +131,7 @@ class MotifMHCConnection(nn.Module):
         n = self.num_streams
         flat = streams.flatten(-2).float()
         inv_rms = torch.rsqrt(flat.square().mean(dim=-1, keepdim=True) + 1e-6)
-        raw = F.linear(flat, self.mapping_proj.weight)
+        raw = F.linear(flat, self.mapping_proj.weight.to(dtype=flat.dtype))
         scales = torch.cat(
             (
                 self.alpha[0].expand(n),

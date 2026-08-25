@@ -334,7 +334,11 @@ class MHCConnection(nn.Module):
         n = self.num_streams
         flat = streams.flatten(-2).float()
         inv_rms = torch.rsqrt(flat.square().mean(dim=-1, keepdim=True) + self.norm_eps)
-        projected = F.linear(flat, self.mapping_proj.weight)
+        # mHC deliberately computes its routing maps in FP32.  Some training
+        # backends keep a reduced-precision model replica beside FP32 optimizer
+        # masters, so cast the replica explicitly instead of assuming that the
+        # parameter storage dtype matches ``streams.float()``.
+        projected = F.linear(flat, self.mapping_proj.weight.to(dtype=flat.dtype))
         scales = torch.cat(
             (
                 self.alpha[0].expand(n),

@@ -36,6 +36,18 @@ def test_mhc_mapping_constraints_and_gradients():
     assert connection.alpha.grad is not None
 
 
+def test_mhc_mapping_accepts_reduced_precision_model_replica():
+    connection = make_connection().to(dtype=torch.bfloat16)
+    streams = torch.randn(2, 3, 4, 16, dtype=torch.bfloat16, requires_grad=True)
+
+    h_pre, h_post, h_res = connection.compute_mappings(streams)
+    (h_pre.square().mean() + h_post.square().mean() + h_res.square().mean()).backward()
+
+    assert h_pre.dtype == h_post.dtype == h_res.dtype == torch.float32
+    assert connection.mapping_proj.weight.grad is not None
+    assert torch.isfinite(connection.mapping_proj.weight.grad).all()
+
+
 def test_mhc_zero_bias_initialization_matches_paper_parameterization():
     connection = make_connection()
     assert torch.equal(connection.bias, torch.zeros_like(connection.bias))

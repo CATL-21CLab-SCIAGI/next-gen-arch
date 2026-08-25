@@ -398,6 +398,9 @@ class KimiKDA(GPT):
                 if has_ve(i, config.n_layer)
             }
         )
+        # KimiKDA reuses GPT.forward without constructing GPT's optional
+        # Engram memories.  Preserve that shared-forward interface explicitly.
+        self.engrams = nn.ModuleDict()
         self.rotary_seq_len = config.sequence_len * 10
         cos, sin = self._precompute_rotary_embeddings(
             self.rotary_seq_len, self.config.n_embd // self.config.n_head
