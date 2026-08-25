@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from next_gen_arch.training.campaign_runner import Task, _is_matching_complete_run, _task_queues
+from next_gen_arch.training.campaign_runner import (
+    Task,
+    _cache_directory,
+    _is_matching_complete_run,
+    _task_queues,
+)
 from next_gen_arch.training.campaigns import TEN_M_SEEDS, TEN_M_VARIANTS
 
 
@@ -86,3 +91,14 @@ def test_complete_run_contract_mismatch_fails_closed(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="contract mismatch"):
         _is_matching_complete_run(tmp_path, task, "full", "compile", "baseline")
+
+
+def test_explicit_warm_cache_root_uses_original_task_names(tmp_path) -> None:
+    output = tmp_path / "output"
+    cache = tmp_path / "cold-cache"
+    task = Task("baseline", 42)
+
+    assert _cache_directory(output, cache, 2, task, "seed") == cache / "baseline-seed42"
+    assert _cache_directory(output, None, 2, task, "variant") == (
+        output / "cache" / "node-2" / "baseline"
+    )

@@ -151,12 +151,33 @@ def _is_matching_complete_run(
     return True
 
 
+def _cache_directory(
+    output_root: Path,
+    external_cache_root: Path | None,
+    node_index: int,
+    task: Task,
+    partition_strategy: str,
+) -> Path:
+    if external_cache_root is not None:
+        # The original campaign used one task-name cache shared through NAS.
+        # Keeping this explicit avoids silently borrowing artifacts from an
+        # unrelated campaign while enabling a deliberate warm-cache pass.
+        return external_cache_root / task.name
+    cache_key = task.variant if partition_strategy == "variant" else task.name
+    return output_root / "cache" / f"node-{node_index}" / cache_key
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--node-index", required=True, type=int)
     parser.add_argument("--num-nodes", required=True, type=int)
     parser.add_argument("--gpus", required=True, type=_parse_gpus)
     parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument(
+        "--cache-root",
+        type=Path,
+        help="explicit existing task-name cache root for a provenance-labeled warm pass",
+    )
     parser.add_argument("--mode", choices=("probe", "full"), required=True)
     parser.add_argument(
         "--partition-strategy",
@@ -178,6 +199,9 @@ def main() -> None:
         parser.error("NANOCHAT_BASE_DIR must point at the frozen campaign data root")
 
     output_root = args.output_root.expanduser().resolve()
+    external_cache_root = (
+        args.cache_root.expanduser().resolve() if args.cache_root is not None else None
+    )
     runs_root = output_root / "runs"
     logs_root = output_root / "logs"
     runs_root.mkdir(parents=True, exist_ok=True)
@@ -204,6 +228,7 @@ def main() -> None:
         "partition_strategy": args.partition_strategy,
         "backend_profile": args.backend_profile,
         "optimization_recipe": args.optimization_recipe,
+        "external_cache_root": str(external_cache_root) if external_cache_root else None,
         "started_at_unix": time.time(),
         "tasks": {task.name: {"status": "queued"} for task in node_tasks},
     }
@@ -265,8 +290,13 @@ def main() -> None:
             environment = dict(os.environ)
             environment["CUDA_VISIBLE_DEVICES"] = str(gpu)
             environment.setdefault("NANOCHAT_ATTENTION_BACKEND", "sdpa")
-            cache_key = task.variant if args.partition_strategy == "variant" else task.name
-            cache_root = output_root / "cache" / f"node-{args.node_index}" / cache_key
+            cache_root = _cache_directory(
+                output_root,
+                external_cache_root,
+                args.node_index,
+                task,
+                args.partition_strategy,
+            )
             for variable, directory in (
                 ("CUDA_CACHE_PATH", "cuda"),
                 ("TRITON_CACHE_DIR", "triton"),
