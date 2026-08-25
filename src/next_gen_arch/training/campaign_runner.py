@@ -156,11 +156,25 @@ def main() -> None:
             environment = dict(os.environ)
             environment["CUDA_VISIBLE_DEVICES"] = str(gpu)
             environment.setdefault("NANOCHAT_ATTENTION_BACKEND", "sdpa")
+            cache_root = output_root / "cache" / task.name
+            for variable, directory in (
+                ("CUDA_CACHE_PATH", "cuda"),
+                ("TRITON_CACHE_DIR", "triton"),
+                ("TORCHINDUCTOR_CACHE_DIR", "torchinductor"),
+            ):
+                cache_path = cache_root / directory
+                cache_path.mkdir(parents=True, exist_ok=True)
+                environment[variable] = str(cache_path)
+            ptxas_path = environment.get("NGA_PTXAS_PATH") or environment.get("TRITON_PTXAS_PATH")
+            if ptxas_path:
+                environment["TRITON_PTXAS_PATH"] = ptxas_path
+                environment["PTXAS_CUDA_PATH"] = ptxas_path
             update(
                 task,
                 status="running",
                 gpu=gpu,
                 command=command,
+                triton_ptxas_path=environment.get("TRITON_PTXAS_PATH"),
                 started_at_unix=time.time(),
             )
             with log_path.open("w", encoding="utf-8") as log:

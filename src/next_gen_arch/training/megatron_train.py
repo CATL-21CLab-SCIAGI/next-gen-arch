@@ -280,6 +280,8 @@ def _install_optimizer_adapter(variant: TenMVariant) -> dict[str, SpeedrunSchedu
         )
         schedule = SpeedrunSchedule(optimizer, variant)
         schedule_holder["schedule"] = schedule
+        args.iteration = 0
+        args.num_floating_point_operations_so_far = 0
         return model, optimizer, schedule
 
     training_module.setup_model_and_optimizer = setup_model_and_optimizer
@@ -481,6 +483,7 @@ def _environment(variant: TenMVariant, seed: int, mode: str) -> dict[str, Any]:
         "source_commit": _git_output(repository, "rev-parse", "HEAD"),
         "megatron_commit": MEGATRON_COMMIT,
         "data_root": os.environ.get("NANOCHAT_BASE_DIR"),
+        "triton_ptxas_path": os.environ.get("TRITON_PTXAS_PATH"),
         "semantic_equivalence": (
             "same architecture, ClimbMix packing, tokenizer, seed, batch budget, and "
             "mixed Muon/Adam schedule; MCore owns initialization, DDP accumulation, "
