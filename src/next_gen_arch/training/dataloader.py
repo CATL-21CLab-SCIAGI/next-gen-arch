@@ -23,7 +23,7 @@ from next_gen_arch.training.dataset import list_parquet_files
 from next_gen_arch.training.runtime import get_dist_info
 
 
-def _document_batches(split, resume_state_dict, tokenizer_batch_size):
+def _document_batches(split, resume_state_dict, tokenizer_batch_size, *, distributed=True):
     """
     Infinite iterator over document batches (list of text strings) from parquet files.
 
@@ -31,7 +31,14 @@ def _document_batches(split, resume_state_dict, tokenizer_batch_size):
     where text_batch is a list of document strings, indices track position for resumption,
     and epoch counts how many times we've cycled through the dataset (starts at 1).
     """
-    ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
+    _ddp, ddp_rank, _ddp_local_rank, ddp_world_size = get_dist_info()
+    if not distributed:
+        # Reconstruct the canonical single-rank document stream on every rank.
+        # This is intentionally separate from normal DDP sharding: comparison
+        # campaigns use it to preserve the historical packing/data-order contract
+        # while redistributing already-packed rows over a new world size.
+        ddp_rank = 0
+        ddp_world_size = 1
 
     warn_on_legacy = ddp_rank == 0 and split == "train"  # rank 0 on train split will warn on legacy
     parquet_paths = list_parquet_files(warn_on_legacy=warn_on_legacy)
@@ -82,6 +89,7 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
     device="cuda",
     resume_state_dict=None,
     buffer_size=1000,
+    distributed=True,
 ):
     """
     BOS-aligned dataloader with Best-Fit Cropping.
@@ -108,7 +116,12 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
     # retain the approximate parquet-row-group resume behavior for compatibility.
     resume_batch_index = None if resume_state_dict is None else resume_state_dict.get("batch_index")
     document_resume_state = resume_state_dict if resume_batch_index is None else None
-    batches = _document_batches(split, document_resume_state, tokenizer_batch_size)
+    batches = _document_batches(
+        split,
+        document_resume_state,
+        tokenizer_batch_size,
+        distributed=distributed,
+    )
     bos_token = tokenizer.get_bos_token_id()
     doc_buffer = []
     pq_idx, rg_idx, epoch = 0, 0, 1
@@ -196,3 +209,79 @@ def tokenizing_distributed_data_loader_bos_bestfit(*args, **kwargs):
         *args, **kwargs
     ):
         yield inputs, targets
+
+
+def balanced_replicated_batch_slice(
+    global_batch_size: int,
+    rank: int,
+    world_size: int,
+) -> tuple[int, int, int]:
+    """Return ``(start, active, padded_local_size)`` for one exact global batch.
+
+    Every rank receives the same static local shape ``ceil(global/world)``.
+    When the global batch is not divisible by the world size, trailing ranks
+    contain one or more ignored rows.  Active rows remain contiguous in the
+    canonical single-rank packing stream.
+    """
+    if global_batch_size <= 0:
+        raise ValueError("global_batch_size must be positive")
+    if world_size <= 0 or not 0 <= rank < world_size:
+        raise ValueError("rank must be inside a positive world size")
+    base, extra = divmod(global_batch_size, world_size)
+    local_size = base + int(extra > 0)
+    active = base + int(rank < extra)
+    start = rank * base + min(rank, extra)
+    return start, active, local_size
+
+
+def tokenizing_replicated_global_batch_loader_with_state_bos_bestfit(
+    tokenizer,
+    global_B,
+    T,
+    split,
+    *,
+    tokenizer_threads=4,
+    tokenizer_batch_size=128,
+    device="cuda",
+    resume_state_dict=None,
+    buffer_size=1000,
+):
+    """Pack the historical rank-0 stream, then partition it over all ranks.
+
+    This loader is for topology-reproduction experiments, not ordinary data
+    parallel training.  It preserves the exact canonical row order for an
+    arbitrary distributed world size.  Padding targets use ``ignore_index=-1``
+    so the caller can keep a static local shape without changing the effective
+    global batch.
+    """
+    _ddp, rank, _local_rank, world_size = get_dist_info()
+    start, active, local_size = balanced_replicated_batch_slice(global_B, rank, world_size)
+    source = tokenizing_distributed_data_loader_with_state_bos_bestfit(
+        tokenizer,
+        global_B,
+        T,
+        split,
+        tokenizer_threads=tokenizer_threads,
+        tokenizer_batch_size=tokenizer_batch_size,
+        device=device,
+        resume_state_dict=resume_state_dict,
+        buffer_size=buffer_size,
+        distributed=False,
+    )
+    for global_inputs, global_targets, state_dict in source:
+        local_inputs = global_inputs[start : start + active]
+        local_targets = global_targets[start : start + active]
+        padding = local_size - active
+        if padding:
+            # Tokens only need to be valid embedding indices; their targets are
+            # fully ignored, so these rows contribute neither loss nor gradient.
+            template = global_inputs[:1]
+            local_inputs = torch.cat((local_inputs, template.expand(padding, -1)), dim=0)
+            ignored = torch.full(
+                (padding, T),
+                -1,
+                dtype=global_targets.dtype,
+                device=global_targets.device,
+            )
+            local_targets = torch.cat((local_targets, ignored), dim=0)
+        yield local_inputs, local_targets, state_dict, active

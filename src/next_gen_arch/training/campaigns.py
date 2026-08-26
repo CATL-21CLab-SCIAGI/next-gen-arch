@@ -1,21 +1,29 @@
-"""Small, frozen campaign contracts shared by execution backends."""
+"""Frozen comparison contracts shared by execution backends."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
-TEN_M_SEEDS = (42, 43, 44)
-TEN_M_SEQUENCE_LENGTH = 2048
-TEN_M_MICRO_BATCH_SIZE = 16
-TEN_M_GLOBAL_BATCH_SIZE = 192
-TEN_M_BATCH_TOKENS = TEN_M_SEQUENCE_LENGTH * TEN_M_GLOBAL_BATCH_SIZE
-TEN_M_EVAL_TOKENS = 3_932_160
+COMPARISON_SEEDS = (42, 43, 44)
+COMPARISON_SEQUENCE_LENGTH = 2048
+HISTORICAL_MICRO_BATCH_SIZE = 16
+COMPARISON_GLOBAL_BATCH_SIZE = 192
+COMPARISON_BATCH_TOKENS = COMPARISON_SEQUENCE_LENGTH * COMPARISON_GLOBAL_BATCH_SIZE
+COMPARISON_EVAL_TOKENS = 3_932_160
+
+# Public compatibility aliases for the original 10M campaign API.
+TEN_M_SEEDS = COMPARISON_SEEDS
+TEN_M_SEQUENCE_LENGTH = COMPARISON_SEQUENCE_LENGTH
+TEN_M_MICRO_BATCH_SIZE = HISTORICAL_MICRO_BATCH_SIZE
+TEN_M_GLOBAL_BATCH_SIZE = COMPARISON_GLOBAL_BATCH_SIZE
+TEN_M_BATCH_TOKENS = COMPARISON_BATCH_TOKENS
+TEN_M_EVAL_TOKENS = COMPARISON_EVAL_TOKENS
 
 
 @dataclass(frozen=True)
-class TenMVariant:
-    """One architecture arm from the frozen parameter-size sweep."""
+class CampaignVariant:
+    """One architecture arm from a frozen parameter-size campaign."""
 
     name: str
     parameter_count: int
@@ -25,7 +33,7 @@ class TenMVariant:
 
     @property
     def training_tokens(self) -> int:
-        return self.steps * TEN_M_BATCH_TOKENS
+        return self.steps * COMPARISON_BATCH_TOKENS
 
     def model_kwargs(self) -> dict[str, Any]:
         return dict(self.model_overrides)
@@ -37,8 +45,8 @@ def _variant(
     steps: int,
     warmup_steps: int,
     **model_overrides: Any,
-) -> TenMVariant:
-    return TenMVariant(
+) -> CampaignVariant:
+    return CampaignVariant(
         name=name,
         parameter_count=parameter_count,
         steps=steps,
@@ -211,6 +219,34 @@ TEN_M_VARIANTS = (
 
 TEN_M_VARIANTS_BY_NAME = {variant.name: variant for variant in TEN_M_VARIANTS}
 
+HUNDRED_M_VARIANTS = (
+    _variant(
+        "baseline",
+        105_775_510,
+        3_228,
+        40,
+        arch_family="sota_pool",
+        sota_extra_lr=0.005,
+        canon_kernel_size=4,
+        bov_target_fraction=1.0 / 3.0,
+        sota_variant="baseline",
+    ),
+)
+HUNDRED_M_VARIANTS_BY_NAME = {variant.name: variant for variant in HUNDRED_M_VARIANTS}
+
+CAMPAIGN_GEOMETRIES = {
+    "10m": {"depth": 5, "aspect_ratio": 11, "head_dim": 8},
+    "100m": {"depth": 10, "aspect_ratio": 38, "head_dim": 64},
+}
+CAMPAIGN_VARIANTS = {
+    "10m": TEN_M_VARIANTS_BY_NAME,
+    "100m": HUNDRED_M_VARIANTS_BY_NAME,
+}
+
+# Kept as an alias so downstream imports do not break while the generalized
+# name is used by new scale-aware code.
+TenMVariant = CampaignVariant
+
 
 def get_ten_m_variant(name: str) -> TenMVariant:
     try:
@@ -220,6 +256,21 @@ def get_ten_m_variant(name: str) -> TenMVariant:
         raise ValueError(f"unknown 10M variant {name!r}; choose one of: {choices}") from error
 
 
+def get_campaign_variant(scale: str, name: str) -> CampaignVariant:
+    try:
+        variants = CAMPAIGN_VARIANTS[scale]
+    except KeyError as error:
+        choices = ", ".join(CAMPAIGN_VARIANTS)
+        raise ValueError(f"unknown campaign scale {scale!r}; choose one of: {choices}") from error
+    try:
+        return variants[name]
+    except KeyError as error:
+        choices = ", ".join(variants)
+        raise ValueError(
+            f"unknown {scale} variant {name!r}; choose one of: {choices}"
+        ) from error
+
+
 def ten_m_model_config_kwargs(variant: TenMVariant) -> dict[str, Any]:
     """Return the exact shared geometry plus the arm-specific mechanism."""
     return {
@@ -227,6 +278,24 @@ def ten_m_model_config_kwargs(variant: TenMVariant) -> dict[str, Any]:
         "aspect_ratio": 11,
         "head_dim": 8,
         "max_seq_len": TEN_M_SEQUENCE_LENGTH,
+        "vocab_size": 32_768,
+        "window_pattern": "L",
+        "fog_variant": "flash",
+        "per_head_muon": True,
+        **variant.model_kwargs(),
+    }
+
+
+def campaign_model_config_kwargs(scale: str, variant: CampaignVariant) -> dict[str, Any]:
+    """Return exact shared geometry plus the arm-specific mechanism."""
+    try:
+        geometry = CAMPAIGN_GEOMETRIES[scale]
+    except KeyError as error:
+        choices = ", ".join(CAMPAIGN_GEOMETRIES)
+        raise ValueError(f"unknown campaign scale {scale!r}; choose one of: {choices}") from error
+    return {
+        **geometry,
+        "max_seq_len": COMPARISON_SEQUENCE_LENGTH,
         "vocab_size": 32_768,
         "window_pattern": "L",
         "fog_variant": "flash",

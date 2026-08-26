@@ -20,6 +20,7 @@ import json
 import math
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -36,8 +37,10 @@ from next_gen_arch.training.attention import (
 from next_gen_arch.training.base_eval import evaluate_core
 from next_gen_arch.training.checkpoint import load_checkpoint, save_checkpoint
 from next_gen_arch.training.dataloader import (
+    balanced_replicated_batch_slice,
     tokenizing_distributed_data_loader_bos_bestfit,
     tokenizing_distributed_data_loader_with_state_bos_bestfit,
+    tokenizing_replicated_global_batch_loader_with_state_bos_bestfit,
 )
 from next_gen_arch.training.engine import Engine
 from next_gen_arch.training.loss_eval import evaluate_bpb
@@ -463,6 +466,15 @@ parser.add_argument(
     help="total batch size in tokens. decent numbers are e.g. 524288. (-1 = auto-compute optimal)",
 )
 parser.add_argument(
+    "--exact-global-batch-replay",
+    action=argparse.BooleanOptionalAction,
+    default=False,
+    help=(
+        "rebuild the canonical single-rank packing stream and repartition each exact global "
+        "batch over the current world size using ignored padding rows"
+    ),
+)
+parser.add_argument(
     "--embedding-lr", type=float, default=0.3, help="learning rate for embedding parameters (Adam)"
 )
 parser.add_argument(
@@ -558,6 +570,18 @@ parser.add_argument(
     default=1,
     help="scan gradients for NaN/Inf every N steps (0 disables gradient scans; loss and validation are always checked)",
 )
+parser.add_argument(
+    "--metrics-path",
+    type=Path,
+    default=None,
+    help="optional rank-0 JSONL path for structured train/validation curve points",
+)
+parser.add_argument(
+    "--metrics-every",
+    type=int,
+    default=10,
+    help="write one structured training point every N optimizer steps",
+)
 args = parser.parse_args()
 if args.fp8 and args.arch_family == "fog":
     parser.error("--fp8 is the legacy nanochat path. Use --precision-recipe for --arch-family=fog.")
@@ -583,6 +607,8 @@ if args.arch_family == "engram" and any(
     parser.error(f"--engram-layers={args.engram_layers} must fit depth {args.depth}")
 if args.finite_check_every < 0:
     parser.error("--finite-check-every must be non-negative")
+if args.metrics_every < 1:
+    parser.error("--metrics-every must be positive")
 if args.arch_family in {"deepseek_dsa", "frontier_pool", "pareto_combo"}:
     # DSA and several frontier components add legitimate matrix shapes. The
     # fused optimizer helper is fullgraph-compiled once per shape, so PyTorch's
@@ -607,6 +633,21 @@ ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type
 master_process = ddp_rank == 0  # this process will do logging, checkpointing etc.
 synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
+
+metrics_path = args.metrics_path.expanduser().resolve() if args.metrics_path is not None else None
+if master_process and metrics_path is not None:
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        metrics_path.touch(exist_ok=False)
+    except FileExistsError as error:
+        raise RuntimeError(f"refusing to overwrite existing metrics file: {metrics_path}") from error
+
+
+def append_metric(payload: dict) -> None:
+    if not master_process or metrics_path is None:
+        return
+    with metrics_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
 def any_rank_nonfinite(local_flag: torch.Tensor) -> bool:
@@ -1117,23 +1158,70 @@ if scaler is not None:
 # -----------------------------------------------------------------------------
 # Initialize the DataLoaders for train/val
 dataloader_resume_state_dict = None if not resuming else meta_data["dataloader_state_dict"]
-train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(
-    tokenizer,
-    args.device_batch_size,
-    args.max_seq_len,
-    split="train",
-    device=device,
-    resume_state_dict=dataloader_resume_state_dict,
-)
-
-
-def build_val_loader():
-    return tokenizing_distributed_data_loader_bos_bestfit(
-        tokenizer, args.device_batch_size, args.max_seq_len, split="val", device=device
+if args.exact_global_batch_replay:
+    if total_batch_size % args.max_seq_len:
+        raise ValueError("exact replay requires total batch tokens divisible by sequence length")
+    replay_global_sequences = total_batch_size // args.max_seq_len
+    _slice_start, replay_active_sequences, replay_local_sequences = (
+        balanced_replicated_batch_slice(
+            replay_global_sequences,
+            ddp_rank,
+            ddp_world_size,
+        )
+    )
+    if args.device_batch_size != replay_local_sequences:
+        raise ValueError(
+            "exact replay local batch mismatch: "
+            f"--device-batch-size={args.device_batch_size}, expected {replay_local_sequences} "
+            f"for {replay_global_sequences} sequences over {ddp_world_size} ranks"
+        )
+    train_loader = tokenizing_replicated_global_batch_loader_with_state_bos_bestfit(
+        tokenizer,
+        replay_global_sequences,
+        args.max_seq_len,
+        split="train",
+        device=device,
+        resume_state_dict=dataloader_resume_state_dict,
     )
 
+    def build_val_loader():
+        source = tokenizing_replicated_global_batch_loader_with_state_bos_bestfit(
+            tokenizer,
+            replay_global_sequences,
+            args.max_seq_len,
+            split="val",
+            device=device,
+        )
+        for inputs, targets, _state, _active in source:
+            yield inputs, targets
 
-x, y, dataloader_state_dict = next(train_loader)  # kick off load of the very first batch of data
+    x, y, dataloader_state_dict, replay_active_sequences = next(train_loader)
+    print0(
+        "Exact global-batch replay: "
+        f"{replay_global_sequences} active sequences -> static local batch "
+        f"{replay_local_sequences} over {ddp_world_size} ranks"
+    )
+else:
+    replay_global_sequences = None
+    replay_active_sequences = None
+    replay_local_sequences = None
+    train_loader = tokenizing_distributed_data_loader_with_state_bos_bestfit(
+        tokenizer,
+        args.device_batch_size,
+        args.max_seq_len,
+        split="train",
+        device=device,
+        resume_state_dict=dataloader_resume_state_dict,
+    )
+
+    def build_val_loader():
+        return tokenizing_distributed_data_loader_bos_bestfit(
+            tokenizer, args.device_batch_size, args.max_seq_len, split="val", device=device
+        )
+
+    x, y, dataloader_state_dict = next(
+        train_loader
+    )  # kick off load of the very first batch of data
 
 # -----------------------------------------------------------------------------
 # Calculate the number of iterations we will train for and set up the various schedulers
@@ -1229,8 +1317,11 @@ tokens_per_fwdbwd = (
 world_tokens_per_fwdbwd = (
     tokens_per_fwdbwd * ddp_world_size
 )  # total tokens per iteration for all ranks
-assert total_batch_size % world_tokens_per_fwdbwd == 0
-grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd
+if args.exact_global_batch_replay:
+    grad_accum_steps = 1
+else:
+    assert total_batch_size % world_tokens_per_fwdbwd == 0
+    grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd
 print0(
     f"Tokens / micro-batch / rank: {args.device_batch_size} x {args.max_seq_len} = {tokens_per_fwdbwd:,}"
 )
@@ -1251,14 +1342,28 @@ while True:
     if args.eval_every > 0 and (last_step or step % args.eval_every == 0):
         model.eval()
         val_loader = build_val_loader()
-        eval_steps = args.eval_tokens // (
-            args.device_batch_size * args.max_seq_len * ddp_world_size
-        )
+        if args.exact_global_batch_replay:
+            if args.eval_tokens % total_batch_size:
+                raise ValueError("exact replay requires eval tokens divisible by total batch tokens")
+            eval_steps = args.eval_tokens // total_batch_size
+        else:
+            eval_steps = args.eval_tokens // (
+                args.device_batch_size * args.max_seq_len * ddp_world_size
+            )
         with disable_fp8(model):
             with precision_backend.eval_context():
                 val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
         require_finite_scalar("validation BPB", val_bpb, step)
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
+        append_metric(
+            {
+                "kind": "validation",
+                "step": step,
+                "tokens": total_batch_size * step,
+                "bpb": val_bpb,
+                "eval_tokens": args.eval_tokens,
+            }
+        )
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
         wandb_run.log(
@@ -1369,21 +1474,34 @@ while True:
     loss_nonfinite = torch.zeros((), device=device, dtype=torch.bool)
     for _micro_step in range(grad_accum_steps):
         with precision_backend.training_context():
-            loss = model(x, y)
+            if args.exact_global_batch_replay:
+                local_loss_sum = model(x, y, loss_reduction="sum")
+                loss = local_loss_sum * ddp_world_size / total_batch_size
+            else:
+                loss = model(x, y)
         loss_nonfinite.logical_or_(~torch.isfinite(loss.detach()).all())
-        if hasattr(orig_model, "consume_training_metrics"):
+        if args.exact_global_batch_replay:
+            global_loss_sum = local_loss_sum.detach().float().clone()
+            if is_ddp_initialized():
+                dist.all_reduce(global_loss_sum, op=dist.ReduceOp.SUM)
+            train_loss = global_loss_sum / total_batch_size
+        elif hasattr(orig_model, "consume_training_metrics"):
             architecture_log_data = orig_model.consume_training_metrics()
             train_loss = architecture_log_data.get("train/lm_loss", loss.detach())
         else:
             train_loss = loss.detach()  # for logging
-        loss = loss / grad_accum_steps  # each .backward() is a grad sum => normalize loss here
+        if not args.exact_global_batch_replay:
+            loss = loss / grad_accum_steps  # each .backward() is a grad sum => normalize loss here
         if scaler is not None:
             scaler.scale(loss).backward()
         else:
             loss.backward()
-        x, y, dataloader_state_dict = next(
-            train_loader
-        )  # prefetch the next batch while the GPU is busy with forward/backward
+        if args.exact_global_batch_replay:
+            x, y, dataloader_state_dict, replay_active_sequences = next(train_loader)
+        else:
+            x, y, dataloader_state_dict = next(
+                train_loader
+            )  # prefetch the next batch while the GPU is busy with forward/backward
     if any_rank_nonfinite(loss_nonfinite):
         raise FloatingPointError(f"Non-finite training loss detected at step {step}")
     if args.finite_check_every and step % args.finite_check_every == 0:
@@ -1465,6 +1583,18 @@ while True:
     print0(
         f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | bf16_mfu: {mfu:.2f} | epoch: {epoch} | total time: {total_training_time / 60:.2f}m{eta_str}{architecture_suffix}"
     )
+    if step % args.metrics_every == 0:
+        append_metric(
+            {
+                "kind": "train",
+                "step": step,
+                "tokens": total_batch_size * (step + 1),
+                "loss": debiased_smooth_loss,
+                "step_seconds": dt,
+                "tokens_per_second": tok_per_sec,
+                "lr_multiplier": lrm,
+            }
+        )
     if quant_log_data:
         preview_keys = [
             "quant/qkv/kurtosis",
@@ -1538,6 +1668,10 @@ summary_data = {
     "executed_flops_per_token": executed_flops_per_token,
     "seed": args.seed,
     "model_tag": output_dirname,
+    "exact_global_batch_replay": args.exact_global_batch_replay,
+    "global_batch_sequences": total_batch_size // args.max_seq_len,
+    "distributed_world_size": ddp_world_size,
+    "static_local_batch_sequences": replay_local_sequences,
     "step": num_iterations,
     "num_iterations": num_iterations,
     "total_tokens": total_tokens,

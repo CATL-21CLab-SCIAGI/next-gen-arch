@@ -19,6 +19,8 @@ from next_gen_arch.training.campaign_compare import (
 )
 from next_gen_arch.training.campaigns import (
     TEN_M_VARIANTS,
+    campaign_model_config_kwargs,
+    get_campaign_variant,
     ten_m_model_config_kwargs,
     verify_ten_m_contract,
 )
@@ -42,6 +44,19 @@ def test_ten_m_grid_is_complete_and_parameter_counts_are_frozen():
         with torch.device("meta"):
             model = instantiate_model(config)
         assert model.num_scaling_params()["total"] == variant.parameter_count
+
+
+def test_100m_baseline_geometry_and_parameter_count_are_frozen():
+    variant = get_campaign_variant("100m", "baseline")
+    config = build_model_config(**campaign_model_config_kwargs("100m", variant))
+    with torch.device("meta"):
+        model = instantiate_model(config)
+
+    assert config.n_layer == 10
+    assert config.n_embd == 384
+    assert config.n_head == 6
+    assert variant.steps == 3_228
+    assert model.num_scaling_params()["total"] == 105_775_510
 
 
 def test_speedrun_10m_reference_matches_frozen_contract():

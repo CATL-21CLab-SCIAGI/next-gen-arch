@@ -1,12 +1,19 @@
 from types import SimpleNamespace
 
 import pytest
+import torch
 
-from next_gen_arch.training.campaigns import TEN_M_BATCH_TOKENS, get_ten_m_variant
+import next_gen_arch.training.megatron_train as megatron_train
+from next_gen_arch.training.campaigns import (
+    TEN_M_BATCH_TOKENS,
+    get_campaign_variant,
+    get_ten_m_variant,
+)
 from next_gen_arch.training.megatron_train import (
     SpeedrunSchedule,
     _current_training_iteration,
     _global_rank,
+    _loss_func,
     _megatron_arguments,
     _source_provenance,
     get_megatron_backend_profile,
@@ -97,6 +104,40 @@ def test_megatron_arguments_follow_profile_precision_and_finite_policy():
     assert "--no-check-for-nan-in-loss-and-grad" not in legacy
     assert "--bf16" not in speedrun
     assert "--no-check-for-nan-in-loss-and-grad" not in speedrun
+
+
+def test_100m_exact_replay_keeps_192_active_sequences_on_world_15(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "15")
+    variant = get_campaign_variant("100m", "baseline")
+    arguments = _megatron_arguments(
+        variant,
+        get_megatron_backend_profile("speedrun"),
+        get_optimization_recipe("baseline"),
+        scale="100m",
+        exact_global_batch_replay=True,
+    )
+
+    assert arguments[arguments.index("--num-layers") + 1] == "10"
+    assert arguments[arguments.index("--hidden-size") + 1] == "384"
+    assert arguments[arguments.index("--num-attention-heads") + 1] == "6"
+    assert arguments[arguments.index("--micro-batch-size") + 1] == "13"
+    assert arguments[arguments.index("--global-batch-size") + 1] == "195"
+    assert arguments[arguments.index("--eval-interval") + 1] == "250"
+    assert "--calculate-per-token-loss" in arguments
+
+
+def test_masked_padding_is_excluded_from_megatron_loss_and_bpb(monkeypatch):
+    monkeypatch.setattr(megatron_train, "_TOKEN_BYTES", torch.tensor([0, 1, 2, 3]))
+    monkeypatch.setattr(megatron_train, "_TRAIN_METRICS_ENABLED", False)
+    labels = torch.tensor([[1, 2], [-1, -1]])
+    losses = torch.tensor([[2.0, 3.0], [0.0, 0.0]])
+
+    loss_sum, token_count, report = _loss_func(labels, True, losses)
+
+    assert loss_sum.item() == 5.0
+    assert token_count.item() == 2
+    assert report["lm loss"].tolist() == [5.0, 2.0]
+    assert report["bpb"][0].item() == 5.0
 
 
 def test_recipe_controls_reach_megatron_arguments():

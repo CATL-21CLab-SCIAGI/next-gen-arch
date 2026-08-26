@@ -29,19 +29,21 @@ import torch
 
 from next_gen_arch.backends.megatron import MEGATRON_COMMIT, MEGATRON_ROOT, validate_submodule
 from next_gen_arch.training.campaigns import (
-    TEN_M_BATCH_TOKENS,
-    TEN_M_EVAL_TOKENS,
-    TEN_M_GLOBAL_BATCH_SIZE,
-    TEN_M_MICRO_BATCH_SIZE,
-    TEN_M_SEEDS,
-    TEN_M_SEQUENCE_LENGTH,
-    TenMVariant,
-    get_ten_m_variant,
-    ten_m_model_config_kwargs,
+    CAMPAIGN_VARIANTS,
+    COMPARISON_BATCH_TOKENS,
+    COMPARISON_EVAL_TOKENS,
+    COMPARISON_GLOBAL_BATCH_SIZE,
+    COMPARISON_SEEDS,
+    COMPARISON_SEQUENCE_LENGTH,
+    HISTORICAL_MICRO_BATCH_SIZE,
+    CampaignVariant,
+    campaign_model_config_kwargs,
+    get_campaign_variant,
 )
 from next_gen_arch.training.dataloader import (
     tokenizing_distributed_data_loader_bos_bestfit,
     tokenizing_distributed_data_loader_with_state_bos_bestfit,
+    tokenizing_replicated_global_batch_loader_with_state_bos_bestfit,
 )
 from next_gen_arch.training.models import (
     build_engram_token_map,
@@ -58,7 +60,21 @@ from next_gen_arch.training.tokenizer import get_token_bytes, get_tokenizer
 
 _EVAL_NATS = 0.0
 _EVAL_BYTES = 0
+_TRAIN_LOSS_SUM = 0.0
+_TRAIN_TOKENS = 0
+_TRAIN_METRICS_ENABLED = False
 _TOKEN_BYTES: torch.Tensor | None = None
+
+
+def _world_size() -> int:
+    return int(os.environ.get("WORLD_SIZE", "1"))
+
+
+def _append_jsonl(path: Path | None, payload: dict[str, Any]) -> None:
+    if path is None or _global_rank() != 0:
+        return
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
 @dataclass(frozen=True)
@@ -249,7 +265,7 @@ def _reduce_validation_totals() -> tuple[float, int]:
     return float(totals[0].item()), int(totals[1].item())
 
 
-def _claim_run_directory(run_dir: Path, variant: TenMVariant, seed: int) -> Path:
+def _claim_run_directory(run_dir: Path, variant: CampaignVariant, seed: int) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     marker = run_dir / "RUNNING.json"
     descriptor = {
@@ -272,26 +288,48 @@ def _claim_run_directory(run_dir: Path, variant: TenMVariant, seed: int) -> Path
 
 
 def _megatron_arguments(
-    variant: TenMVariant,
+    variant: CampaignVariant,
     profile: MegatronBackendProfile,
     recipe: OptimizationRecipe,
+    *,
+    scale: str = "10m",
+    exact_global_batch_replay: bool = False,
 ) -> list[str]:
-    eval_iters = TEN_M_EVAL_TOKENS // TEN_M_BATCH_TOKENS
+    model_kwargs = campaign_model_config_kwargs(scale, variant)
+    head_dim = int(model_kwargs["head_dim"])
+    hidden_size = (
+        (int(model_kwargs["depth"]) * int(model_kwargs["aspect_ratio"]) + head_dim - 1)
+        // head_dim
+        * head_dim
+    )
+    num_attention_heads = hidden_size // head_dim
+    if exact_global_batch_replay:
+        micro_batch_size = math.ceil(COMPARISON_GLOBAL_BATCH_SIZE / _world_size())
+        scheduled_global_batch_size = micro_batch_size * _world_size()
+        if profile.ddp_average_in_collective:
+            raise ValueError(
+                "exact per-token batch replay is incompatible with DDP average-in-collective"
+            )
+    else:
+        micro_batch_size = HISTORICAL_MICRO_BATCH_SIZE
+        scheduled_global_batch_size = COMPARISON_GLOBAL_BATCH_SIZE
+    eval_iters = COMPARISON_EVAL_TOKENS // COMPARISON_BATCH_TOKENS
+    eval_interval = 250 if scale == "100m" else variant.steps
     arguments = [
         "next-gen-arch-megatron",
         "--use-mcore-models",
         "--num-layers",
-        "5",
+        str(model_kwargs["depth"]),
         "--hidden-size",
-        "56",
+        str(hidden_size),
         "--ffn-hidden-size",
-        "224",
+        str(4 * hidden_size),
         "--num-attention-heads",
-        "7",
+        str(num_attention_heads),
         "--seq-length",
-        str(TEN_M_SEQUENCE_LENGTH),
+        str(COMPARISON_SEQUENCE_LENGTH),
         "--max-position-embeddings",
-        str(TEN_M_SEQUENCE_LENGTH),
+        str(COMPARISON_SEQUENCE_LENGTH),
         "--position-embedding-type",
         "rope",
         "--normalization",
@@ -303,9 +341,9 @@ def _megatron_arguments(
         "--hidden-dropout",
         "0.0",
         "--micro-batch-size",
-        str(TEN_M_MICRO_BATCH_SIZE),
+        str(micro_batch_size),
         "--global-batch-size",
-        str(TEN_M_GLOBAL_BATCH_SIZE),
+        str(scheduled_global_batch_size),
         "--train-iters",
         str(variant.steps),
         "--tensor-model-parallel-size",
@@ -339,7 +377,7 @@ def _megatron_arguments(
         "--num-workers",
         "0",
         "--eval-interval",
-        str(variant.steps),
+        str(eval_interval),
         "--eval-iters",
         str(eval_iters),
         "--log-interval",
@@ -354,6 +392,8 @@ def _megatron_arguments(
         "--no-bias-dropout-fusion",
         "--no-rope-fusion",
     ]
+    if exact_global_batch_replay:
+        arguments.append("--calculate-per-token-loss")
     if profile.use_mcore_bf16_master:
         arguments.append("--bf16")
     if profile.overlap_grad_reduce:
@@ -373,9 +413,18 @@ def _megatron_arguments(
 class SpeedrunSchedule:
     """The historical warmup/warmdown, momentum, and decay schedule."""
 
-    def __init__(self, optimizer, variant: TenMVariant):
+    def __init__(
+        self,
+        optimizer,
+        variant: CampaignVariant,
+        *,
+        metrics_path: Path | None = None,
+        metrics_every: int = 10,
+    ):
         self.optimizer = optimizer
         self.variant = variant
+        self.metrics_path = metrics_path
+        self.metrics_every = metrics_every
         self.iteration = 0
         self.step_timestamps: list[float] = []
         self._apply(0)
@@ -414,10 +463,32 @@ class SpeedrunSchedule:
                 group["weight_decay"] = weight_decay
 
     def step(self, increment: int) -> None:
+        global _TRAIN_LOSS_SUM, _TRAIN_TOKENS
         del increment
         self.iteration += 1
         self.step_timestamps.append(time.perf_counter())
         self._apply(min(self.iteration, self.variant.steps))
+        if self.metrics_path is not None:
+            totals = torch.tensor(
+                (_TRAIN_LOSS_SUM, float(_TRAIN_TOKENS)),
+                device=torch.cuda.current_device(),
+                dtype=torch.float64,
+            )
+            if torch.distributed.is_initialized():
+                torch.distributed.all_reduce(totals, op=torch.distributed.ReduceOp.SUM)
+            if self.iteration % self.metrics_every == 0 and totals[1] > 0:
+                _append_jsonl(
+                    self.metrics_path,
+                    {
+                        "kind": "train",
+                        "step": self.iteration,
+                        "tokens": self.iteration * COMPARISON_BATCH_TOKENS,
+                        "loss": float((totals[0] / totals[1]).item()),
+                        "lr_multiplier": self._lr_multiplier(self.iteration),
+                    },
+                )
+            _TRAIN_LOSS_SUM = 0.0
+            _TRAIN_TOKENS = 0
 
     def state_dict(self) -> dict[str, int]:
         return {"iteration": self.iteration}
@@ -456,17 +527,20 @@ class SpeedrunSchedule:
         p90_step = ordered[max(0, math.ceil(0.9 * len(ordered)) - 1)]
         return {
             "measured_training_seconds": elapsed,
-            "tokens_per_second": measured_steps * TEN_M_BATCH_TOKENS / elapsed,
+            "tokens_per_second": measured_steps * COMPARISON_BATCH_TOKENS / elapsed,
             "median_step_seconds": median_step,
             "p90_step_seconds": p90_step,
-            "steady_state_tokens_per_second": TEN_M_BATCH_TOKENS / median_step,
+            "steady_state_tokens_per_second": COMPARISON_BATCH_TOKENS / median_step,
         }
 
 
 def _install_optimizer_adapter(
-    variant: TenMVariant,
+    variant: CampaignVariant,
     profile: MegatronBackendProfile,
     recipe: OptimizationRecipe,
+    *,
+    metrics_path: Path | None = None,
+    metrics_every: int = 10,
 ) -> dict[str, SpeedrunSchedule]:
     import megatron.training.training as training_module
     from megatron.core.optimizer.optimizer import Float16OptimizerWithFloat16Params, FP32Optimizer
@@ -480,7 +554,7 @@ def _install_optimizer_adapter(
         model = training_module.get_model(model_provider_func, model_type, wrap_with_ddp=True)
         unwrapped = training_module.unwrap_model(model)
         if len(unwrapped) != 1 or not hasattr(unwrapped[0], "architecture"):
-            raise RuntimeError("the 10M adapter requires one non-pipelined architecture model")
+            raise RuntimeError("the comparison adapter requires one non-pipelined architecture model")
         architecture = unwrapped[0].architecture
         optimizer_model = getattr(architecture, "_orig_mod", architecture)
         raw_optimizer = setup_model_optimizer(
@@ -520,7 +594,12 @@ def _install_optimizer_adapter(
                 optimizer_config,
                 init_state_fn=lambda *_args, **_kwargs: None,
             )
-        schedule = SpeedrunSchedule(optimizer, variant)
+        schedule = SpeedrunSchedule(
+            optimizer,
+            variant,
+            metrics_path=metrics_path,
+            metrics_every=metrics_every,
+        )
         schedule_holder["schedule"] = schedule
         args.iteration = 0
         args.num_floating_point_operations_so_far = 0
@@ -530,12 +609,45 @@ def _install_optimizer_adapter(
     return schedule_holder
 
 
-def _external_batch_loader(tokenizer, split: str):
+def _external_batch_loader(
+    tokenizer,
+    split: str,
+    *,
+    exact_global_batch_replay: bool = False,
+):
+    if exact_global_batch_replay:
+        if split == "train":
+            source = tokenizing_replicated_global_batch_loader_with_state_bos_bestfit(
+                tokenizer,
+                COMPARISON_GLOBAL_BATCH_SIZE,
+                COMPARISON_SEQUENCE_LENGTH,
+                split="train",
+                device="cuda",
+            )
+            for tokens, labels, _state, _active in source:
+                yield {"tokens": tokens, "labels": labels}
+            return
+
+        eval_batches = COMPARISON_EVAL_TOKENS // COMPARISON_BATCH_TOKENS
+        while True:
+            # Historical speedrun evaluation rebuilt the validation loader for
+            # every checkpoint.  Recreate the same first eval window here.
+            source = tokenizing_replicated_global_batch_loader_with_state_bos_bestfit(
+                tokenizer,
+                COMPARISON_GLOBAL_BATCH_SIZE,
+                COMPARISON_SEQUENCE_LENGTH,
+                split="val",
+                device="cuda",
+            )
+            for _ in range(eval_batches):
+                tokens, labels, _state, _active = next(source)
+                yield {"tokens": tokens, "labels": labels}
+
     if split == "train":
         source = tokenizing_distributed_data_loader_with_state_bos_bestfit(
             tokenizer,
-            TEN_M_MICRO_BATCH_SIZE,
-            TEN_M_SEQUENCE_LENGTH,
+            HISTORICAL_MICRO_BATCH_SIZE,
+            COMPARISON_SEQUENCE_LENGTH,
             split="train",
             device="cuda",
         )
@@ -544,8 +656,8 @@ def _external_batch_loader(tokenizer, split: str):
     else:
         source = tokenizing_distributed_data_loader_bos_bestfit(
             tokenizer,
-            TEN_M_MICRO_BATCH_SIZE,
-            TEN_M_SEQUENCE_LENGTH,
+            HISTORICAL_MICRO_BATCH_SIZE,
+            COMPARISON_SEQUENCE_LENGTH,
             split="val",
             device="cuda",
         )
@@ -554,17 +666,22 @@ def _external_batch_loader(tokenizer, split: str):
 
 
 def _loss_func(labels: torch.Tensor, training: bool, output_tensor: torch.Tensor):
-    global _EVAL_BYTES, _EVAL_NATS, _TOKEN_BYTES
+    global _EVAL_BYTES, _EVAL_NATS, _TOKEN_BYTES, _TRAIN_LOSS_SUM, _TRAIN_TOKENS
     losses = output_tensor.reshape(-1).float()
     labels = labels.reshape(-1)
-    loss_sum = losses.sum()
-    token_count = torch.tensor(labels.numel(), device=labels.device, dtype=torch.int64)
+    valid = labels >= 0
+    loss_sum = (losses * valid).sum()
+    token_count = valid.sum(dtype=torch.int64)
     if _TOKEN_BYTES is None or _TOKEN_BYTES.device != labels.device:
         _TOKEN_BYTES = get_token_bytes(device=labels.device)
-    byte_counts = _TOKEN_BYTES[labels]
+    safe_labels = torch.where(valid, labels, torch.zeros_like(labels))
+    byte_counts = torch.where(valid, _TOKEN_BYTES[safe_labels], 0)
     nats = (losses * (byte_counts > 0)).sum()
     bytes_sum = byte_counts.sum()
-    if not training:
+    if training and _TRAIN_METRICS_ENABLED:
+        _TRAIN_LOSS_SUM += float(loss_sum.detach())
+        _TRAIN_TOKENS += int(token_count.detach())
+    elif not training:
         _EVAL_NATS += float(nats.detach())
         _EVAL_BYTES += int(bytes_sum.detach())
     report = {
@@ -594,20 +711,38 @@ def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
 
 
 def _run_megatron(
-    variant: TenMVariant,
+    variant: CampaignVariant,
     seed: int,
     tokenizer,
     profile: MegatronBackendProfile,
     recipe: OptimizationRecipe,
+    *,
+    scale: str,
+    exact_global_batch_replay: bool,
+    metrics_path: Path | None,
+    metrics_every: int,
 ):
+    global _EVAL_BYTES, _EVAL_NATS, _TRAIN_LOSS_SUM, _TRAIN_METRICS_ENABLED, _TRAIN_TOKENS
+    _EVAL_NATS = 0.0
+    _EVAL_BYTES = 0
+    _TRAIN_LOSS_SUM = 0.0
+    _TRAIN_TOKENS = 0
+    _TRAIN_METRICS_ENABLED = metrics_path is not None
     sys.path.insert(0, str(MEGATRON_ROOT))
-    sys.argv = _megatron_arguments(variant, profile, recipe) + ["--seed", str(seed)]
+    sys.argv = _megatron_arguments(
+        variant,
+        profile,
+        recipe,
+        scale=scale,
+        exact_global_batch_replay=exact_global_batch_replay,
+    ) + ["--seed", str(seed)]
 
+    import megatron.training.training as training_module
     from megatron.core.datasets import utils as dataset_utils
     from megatron.core.enums import ModelType
     from megatron.core.process_groups_config import ProcessGroupCollection
     from megatron.core.transformer.module import MegatronModule
-    from megatron.training import get_args, pretrain, print_rank_0
+    from megatron.training import get_args, print_rank_0
     from megatron.training.arguments import core_transformer_config_from_args
 
     def skip_unused_dataset_helper_build() -> None:
@@ -615,7 +750,7 @@ def _run_megatron(
 
     dataset_utils.compile_helpers = skip_unused_dataset_helper_build
 
-    model_kwargs = ten_m_model_config_kwargs(variant)
+    model_kwargs = campaign_model_config_kwargs(scale, variant)
     model_kwargs.update(recipe.model_overrides)
 
     class ArchitectureMegatronModel(MegatronModule):
@@ -674,7 +809,7 @@ def _run_megatron(
                 tensor is None for tensor in input_tensor
             )
             if input_tensor is not None and not is_empty_pipeline_input:
-                raise RuntimeError("the 10M adapter requires PP=1")
+                raise RuntimeError("the comparison adapter requires PP=1")
 
         def forward(
             self,
@@ -688,7 +823,7 @@ def _run_megatron(
         ):
             del position_ids, attention_mask, loss_mask, packed_seq_params
             if labels is None:
-                raise RuntimeError("labels are required during the 10M comparison")
+                raise RuntimeError("labels are required during the comparison")
             args = get_args()
             if hasattr(self.architecture, "set_training_step"):
                 self.architecture.set_training_step(_current_training_iteration(args))
@@ -722,29 +857,100 @@ def _run_megatron(
 
     def datasets_provider(_sample_counts):
         return (
-            _external_batch_loader(tokenizer, "train"),
-            _external_batch_loader(tokenizer, "val"),
+            _external_batch_loader(
+                tokenizer,
+                "train",
+                exact_global_batch_replay=exact_global_batch_replay,
+            ),
+            _external_batch_loader(
+                tokenizer,
+                "val",
+                exact_global_batch_replay=exact_global_batch_replay,
+            ),
             None,
         )
 
     datasets_provider.is_distributed = True
-    schedule_holder = _install_optimizer_adapter(variant, profile, recipe)
-    pretrain(
-        datasets_provider,
-        model_provider,
-        ModelType.encoder_or_decoder,
-        _forward_step,
-        args_defaults={"tokenizer_type": "NullTokenizer"},
+    schedule_holder = _install_optimizer_adapter(
+        variant,
+        profile,
+        recipe,
+        metrics_path=metrics_path,
+        metrics_every=metrics_every,
     )
-    return schedule_holder["schedule"], int(schedule_holder["parameter_count"])
+    validation_holder: dict[str, float] = {}
+    original_evaluate_and_print = training_module.evaluate_and_print_results
+
+    def record_evaluate_and_print(
+        prefix,
+        forward_step_func,
+        data_iterator,
+        model,
+        iteration,
+        process_non_loss_data_func,
+        config,
+        **kwargs,
+    ):
+        global _EVAL_BYTES, _EVAL_NATS
+        _EVAL_NATS = 0.0
+        _EVAL_BYTES = 0
+        result = original_evaluate_and_print(
+            prefix,
+            forward_step_func,
+            data_iterator,
+            model,
+            iteration,
+            process_non_loss_data_func,
+            config,
+            **kwargs,
+        )
+        validation_nats, validation_bytes = _reduce_validation_totals()
+        if validation_bytes <= 0:
+            raise RuntimeError("Megatron validation produced no represented bytes")
+        bpb = validation_nats / (math.log(2.0) * validation_bytes)
+        validation_holder["final_bpb"] = bpb
+        _append_jsonl(
+            metrics_path,
+            {
+                "kind": "validation",
+                "step": int(iteration),
+                "tokens": int(iteration) * COMPARISON_BATCH_TOKENS,
+                "bpb": bpb,
+                "eval_tokens": COMPARISON_EVAL_TOKENS,
+            },
+        )
+        return result
+
+    training_module.evaluate_and_print_results = record_evaluate_and_print
+    try:
+        training_module.pretrain(
+            datasets_provider,
+            model_provider,
+            ModelType.encoder_or_decoder,
+            _forward_step,
+            args_defaults={"tokenizer_type": "NullTokenizer"},
+        )
+    finally:
+        training_module.evaluate_and_print_results = original_evaluate_and_print
+        _TRAIN_METRICS_ENABLED = False
+    if "final_bpb" not in validation_holder:
+        raise RuntimeError("Megatron completed without a recorded validation point")
+    return (
+        schedule_holder["schedule"],
+        int(schedule_holder["parameter_count"]),
+        validation_holder["final_bpb"],
+    )
 
 
 def _environment(
-    variant: TenMVariant,
+    variant: CampaignVariant,
     seed: int,
     mode: str,
     profile: MegatronBackendProfile,
     recipe: OptimizationRecipe,
+    *,
+    scale: str,
+    exact_global_batch_replay: bool,
 ) -> dict[str, Any]:
     repository = _repository_root()
     profile_payload = asdict(profile)
@@ -753,8 +959,17 @@ def _environment(
         "backend": "megatron",
         "support_tier": "mcore_training_wrapper",
         "variant": asdict(variant),
+        "scale": scale,
         "seed": seed,
         "mode": mode,
+        "exact_global_batch_replay": exact_global_batch_replay,
+        "effective_global_batch_sequences": COMPARISON_GLOBAL_BATCH_SIZE,
+        "scheduled_global_batch_sequences": (
+            math.ceil(COMPARISON_GLOBAL_BATCH_SIZE / _world_size()) * _world_size()
+            if exact_global_batch_replay
+            else COMPARISON_GLOBAL_BATCH_SIZE
+        ),
+        "world_size": _world_size(),
         "backend_profile": profile_payload,
         "optimization_recipe": asdict(recipe),
         "host": socket.gethostname(),
@@ -779,10 +994,18 @@ def _environment(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scale", choices=tuple(CAMPAIGN_VARIANTS), default="10m")
     parser.add_argument("--variant", required=True)
-    parser.add_argument("--seed", required=True, type=int, choices=TEN_M_SEEDS)
+    parser.add_argument("--seed", required=True, type=int, choices=COMPARISON_SEEDS)
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--probe-steps", type=int, default=0)
+    parser.add_argument(
+        "--exact-global-batch-replay",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="preserve the 192-sequence canonical stream over non-divisible DP worlds",
+    )
+    parser.add_argument("--metrics-every", type=int, default=10)
     parser.add_argument(
         "--backend-profile",
         choices=tuple(MEGATRON_BACKEND_PROFILES),
@@ -798,7 +1021,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.probe_steps < 0:
         parser.error("--probe-steps must be non-negative")
-    contract_variant = get_ten_m_variant(args.variant)
+    if args.metrics_every < 1:
+        parser.error("--metrics-every must be positive")
+    contract_variant = get_campaign_variant(args.scale, args.variant)
     variant = (
         replace(contract_variant, steps=args.probe_steps) if args.probe_steps else contract_variant
     )
@@ -810,21 +1035,43 @@ def main() -> None:
     marker = (
         _claim_run_directory(run_dir, variant, args.seed) if primary else run_dir / "RUNNING.json"
     )
+    metrics_path = run_dir / "metrics.jsonl"
     try:
+        if primary:
+            try:
+                metrics_path.touch(exist_ok=False)
+            except FileExistsError as error:
+                raise RuntimeError(
+                    f"refusing to overwrite existing metrics file: {metrics_path}"
+                ) from error
         submodule = validate_submodule()
-        environment = _environment(variant, args.seed, mode, profile, recipe)
+        environment = _environment(
+            variant,
+            args.seed,
+            mode,
+            profile,
+            recipe,
+            scale=args.scale,
+            exact_global_batch_replay=args.exact_global_batch_replay,
+        )
         environment["submodule"] = submodule
         if primary:
             _write_json(run_dir / "resolved_run.json", environment)
         tokenizer = get_tokenizer()
         started = time.perf_counter()
-        schedule, parameter_count = _run_megatron(variant, args.seed, tokenizer, profile, recipe)
+        schedule, parameter_count, final_bpb = _run_megatron(
+            variant,
+            args.seed,
+            tokenizer,
+            profile,
+            recipe,
+            scale=args.scale,
+            exact_global_batch_replay=args.exact_global_batch_replay,
+            metrics_path=metrics_path,
+            metrics_every=args.metrics_every,
+        )
         wall_seconds = time.perf_counter() - started
         throughput = schedule.throughput_summary()
-        validation_nats, validation_bytes = _reduce_validation_totals()
-        if validation_bytes <= 0:
-            raise RuntimeError("Megatron completed without a validation BPB denominator")
-        final_bpb = validation_nats / (math.log(2.0) * validation_bytes)
         if not math.isfinite(final_bpb):
             raise RuntimeError("validation produced a non-finite final BPB")
         result = {
@@ -835,7 +1082,7 @@ def main() -> None:
             "training_tokens": variant.training_tokens,
             "contract_training_steps": contract_variant.steps,
             "contract_training_tokens": contract_variant.training_tokens,
-            "validation_tokens": TEN_M_EVAL_TOKENS,
+            "validation_tokens": COMPARISON_EVAL_TOKENS,
             "final_bpb": final_bpb,
             "wall_seconds": wall_seconds,
             **throughput,
