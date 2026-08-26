@@ -339,6 +339,7 @@ def _megatron_arguments(
     dataset: str = "climbmix",
     scale: str = "10m",
     exact_global_batch_replay: bool = False,
+    micro_batch_size_override: int | None = None,
 ) -> list[str]:
     model_kwargs = _model_config_kwargs(dataset, scale, variant)
     head_dim = int(model_kwargs["head_dim"])
@@ -353,8 +354,21 @@ def _megatron_arguments(
             raise ValueError(
                 "FineWeb DP requires the 192-sequence global batch to be divisible by world size"
             )
-        micro_batch_size = COMPARISON_GLOBAL_BATCH_SIZE // _world_size()
+        rank_batch_size = COMPARISON_GLOBAL_BATCH_SIZE // _world_size()
+        micro_batch_size = (
+            micro_batch_size_override
+            if micro_batch_size_override is not None
+            else rank_batch_size
+        )
+        if micro_batch_size <= 0:
+            raise ValueError("micro batch size must be positive")
+        if COMPARISON_GLOBAL_BATCH_SIZE % (micro_batch_size * _world_size()):
+            raise ValueError(
+                "FineWeb global batch must be divisible by micro batch size times world size"
+            )
         scheduled_global_batch_size = COMPARISON_GLOBAL_BATCH_SIZE
+    elif micro_batch_size_override is not None:
+        raise ValueError("micro batch override is currently supported only for FineWeb")
     elif exact_global_batch_replay:
         micro_batch_size = math.ceil(COMPARISON_GLOBAL_BATCH_SIZE / _world_size())
         scheduled_global_batch_size = micro_batch_size * _world_size()
@@ -670,16 +684,27 @@ def _external_batch_loader(
     dataset: str = "climbmix",
     data_root: Path | None = None,
     exact_global_batch_replay: bool = False,
+    micro_batch_size_override: int | None = None,
 ):
     if dataset == "fineweb10b":
         if data_root is None:
             raise ValueError("FineWeb requires an explicit data root")
         if COMPARISON_GLOBAL_BATCH_SIZE % _world_size():
             raise ValueError("FineWeb global batch is not divisible by DP world size")
+        rank_batch_size = COMPARISON_GLOBAL_BATCH_SIZE // _world_size()
+        local_batch_size = (
+            micro_batch_size_override
+            if micro_batch_size_override is not None
+            else rank_batch_size
+        )
+        if COMPARISON_GLOBAL_BATCH_SIZE % (local_batch_size * _world_size()):
+            raise ValueError(
+                "FineWeb global batch must be divisible by micro batch size times world size"
+            )
         source = fineweb_distributed_data_loader(
             data_root,
             split,
-            COMPARISON_GLOBAL_BATCH_SIZE // _world_size(),
+            local_batch_size,
             COMPARISON_SEQUENCE_LENGTH,
             device="cuda",
         )
@@ -826,6 +851,7 @@ def _run_megatron(
     data_root: Path | None,
     scale: str,
     exact_global_batch_replay: bool,
+    micro_batch_size_override: int | None,
     metrics_path: Path | None,
     metrics_every: int,
 ):
@@ -848,6 +874,7 @@ def _run_megatron(
         dataset=dataset,
         scale=scale,
         exact_global_batch_replay=exact_global_batch_replay,
+        micro_batch_size_override=micro_batch_size_override,
     ) + ["--seed", str(seed)]
 
     import megatron.training.training as training_module
@@ -978,6 +1005,7 @@ def _run_megatron(
                 dataset=dataset,
                 data_root=data_root,
                 exact_global_batch_replay=exact_global_batch_replay,
+                micro_batch_size_override=micro_batch_size_override,
             ),
             _external_batch_loader(
                 tokenizer,
@@ -985,6 +1013,7 @@ def _run_megatron(
                 dataset=dataset,
                 data_root=data_root,
                 exact_global_batch_replay=exact_global_batch_replay,
+                micro_batch_size_override=micro_batch_size_override,
             ),
             None,
         )
@@ -1071,10 +1100,24 @@ def _environment(
     data_root: Path | None,
     scale: str,
     exact_global_batch_replay: bool,
+    micro_batch_size_override: int | None,
 ) -> dict[str, Any]:
     repository = _repository_root()
     profile_payload = asdict(profile)
     profile_payload["resolved_compile_mode"] = profile.resolved_compile_mode(variant.name)
+    if micro_batch_size_override is not None:
+        micro_batch_size = micro_batch_size_override
+    elif dataset == "fineweb10b":
+        micro_batch_size = COMPARISON_GLOBAL_BATCH_SIZE // _world_size()
+    elif exact_global_batch_replay:
+        micro_batch_size = math.ceil(COMPARISON_GLOBAL_BATCH_SIZE / _world_size())
+    else:
+        micro_batch_size = HISTORICAL_MICRO_BATCH_SIZE
+    scheduled_global_batch_size = (
+        math.ceil(COMPARISON_GLOBAL_BATCH_SIZE / _world_size()) * _world_size()
+        if exact_global_batch_replay
+        else COMPARISON_GLOBAL_BATCH_SIZE
+    )
     return {
         "backend": "megatron",
         "support_tier": "mcore_training_wrapper",
@@ -1085,11 +1128,11 @@ def _environment(
         "dataset": dataset,
         "exact_global_batch_replay": exact_global_batch_replay,
         "effective_global_batch_sequences": COMPARISON_GLOBAL_BATCH_SIZE,
-        "scheduled_global_batch_sequences": (
-            math.ceil(COMPARISON_GLOBAL_BATCH_SIZE / _world_size()) * _world_size()
-            if exact_global_batch_replay
-            else COMPARISON_GLOBAL_BATCH_SIZE
+        "micro_batch_sequences": micro_batch_size,
+        "gradient_accumulation_microbatches": (
+            scheduled_global_batch_size // (micro_batch_size * _world_size())
         ),
+        "scheduled_global_batch_sequences": scheduled_global_batch_size,
         "world_size": _world_size(),
         "backend_profile": profile_payload,
         "optimization_recipe": asdict(recipe),
@@ -1127,6 +1170,11 @@ def main() -> None:
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--probe-steps", type=int, default=0)
     parser.add_argument(
+        "--micro-batch-size",
+        type=int,
+        help="FineWeb rank-local micro batch; Megatron accumulates to the fixed global batch",
+    )
+    parser.add_argument(
         "--exact-global-batch-replay",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -1150,11 +1198,19 @@ def main() -> None:
         parser.error("--probe-steps must be non-negative")
     if args.metrics_every < 1:
         parser.error("--metrics-every must be positive")
+    if args.micro_batch_size is not None and args.micro_batch_size < 1:
+        parser.error("--micro-batch-size must be positive")
     if args.dataset == "fineweb10b":
         if args.scale not in FINEWEB_CAMPAIGN_VARIANTS:
             parser.error(f"--scale={args.scale} is not available for FineWeb")
         if args.data_root is None:
             parser.error("--data-root is required for FineWeb")
+        if args.micro_batch_size is not None and COMPARISON_GLOBAL_BATCH_SIZE % (
+            args.micro_batch_size * _world_size()
+        ):
+            parser.error(
+                "FineWeb global batch must be divisible by micro batch size times world size"
+            )
         contract_variant = resolve_fineweb_variant(args.scale, args.variant)
         data_root = args.data_root.expanduser().resolve()
         data_summary = inspect_fineweb_dataset(
@@ -1200,6 +1256,7 @@ def main() -> None:
             data_root=data_root,
             scale=args.scale,
             exact_global_batch_replay=args.exact_global_batch_replay,
+            micro_batch_size_override=args.micro_batch_size,
         )
         environment["runtime"] = runtime
         if data_summary is not None:
@@ -1222,6 +1279,7 @@ def main() -> None:
             data_root=data_root,
             scale=args.scale,
             exact_global_batch_replay=args.exact_global_batch_replay,
+            micro_batch_size_override=args.micro_batch_size,
             metrics_path=metrics_path,
             metrics_every=args.metrics_every,
         )

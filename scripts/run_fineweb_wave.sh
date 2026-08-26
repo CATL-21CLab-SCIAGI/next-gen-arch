@@ -15,6 +15,7 @@ NGA_NNODES="${NGA_NNODES:-3}"
 NGA_GPUS_PER_NODE="${NGA_GPUS_PER_NODE:-8}"
 NGA_PROBE_STEPS="${NGA_PROBE_STEPS:-0}"
 NGA_BACKEND_PROFILE="${NGA_BACKEND_PROFILE:-compile}"
+NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-}"
 NGA_SCALES="${NGA_SCALES:-1m 10m 100m 300m}"
 NGA_VARIANTS="${NGA_VARIANTS:-baseline engram kda dsa attnres mhc gated-attention situ-glu inkling-relative-attention glm-mla xielu qwen-gdn inkling-sconv-kv inkling-sconv-residual partial-rope-25 kimi-k3-kda-update colu}"
 
@@ -40,6 +41,10 @@ for variant in $NGA_VARIANTS; do
         if [[ "$NGA_PROBE_STEPS" != "0" ]]; then
             probe_args=(--probe-steps "$NGA_PROBE_STEPS")
         fi
+        micro_batch_args=()
+        if [[ -n "$NGA_MICRO_BATCH_SIZE" ]]; then
+            micro_batch_args=(--micro-batch-size "$NGA_MICRO_BATCH_SIZE")
+        fi
         echo "start: $scale/$variant node_rank=$NGA_NODE_RANK"
         "$NGA_PYTHON" -m torch.distributed.run \
             --nnodes="$NGA_NNODES" \
@@ -57,6 +62,7 @@ for variant in $NGA_VARIANTS; do
             --backend-profile "$NGA_BACKEND_PROFILE" \
             --optimization-recipe baseline \
             --metrics-every 10 \
+            "${micro_batch_args[@]}" \
             "${probe_args[@]}"
         status=$?
         echo "finish: $scale/$variant status=$status"

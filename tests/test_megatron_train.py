@@ -179,6 +179,37 @@ def test_fineweb_100m_contract_uses_24_way_dp_and_gpt2_vocabulary(monkeypatch):
     assert arguments[arguments.index("--context-parallel-size") + 1] == "1"
 
 
+def test_fineweb_single_gpu_microbatch_override_accumulates_to_global_batch(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    variant = resolve_fineweb_variant("1m", "baseline")
+    arguments = _megatron_arguments(
+        variant,
+        get_megatron_backend_profile("compile"),
+        get_optimization_recipe("baseline"),
+        dataset="fineweb10b",
+        scale="1m",
+        micro_batch_size_override=16,
+    )
+
+    assert arguments[arguments.index("--micro-batch-size") + 1] == "16"
+    assert arguments[arguments.index("--global-batch-size") + 1] == "192"
+
+
+def test_fineweb_microbatch_override_must_divide_global_batch(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    variant = resolve_fineweb_variant("1m", "baseline")
+
+    with pytest.raises(ValueError, match="global batch must be divisible"):
+        _megatron_arguments(
+            variant,
+            get_megatron_backend_profile("compile"),
+            get_optimization_recipe("baseline"),
+            dataset="fineweb10b",
+            scale="1m",
+            micro_batch_size_override=17,
+        )
+
+
 def test_masked_padding_is_excluded_from_megatron_loss_and_bpb(monkeypatch):
     monkeypatch.setattr(megatron_train, "_TOKEN_BYTES", torch.tensor([0, 1, 2, 3]))
     monkeypatch.setattr(megatron_train, "_TRAIN_METRICS_ENABLED", False)
