@@ -1,0 +1,13 @@
+extends:
+  - megatron_native_dense_100m_dp_seed42.yaml
+name: megatron-native-moe-100m-ep1-seed42
+model:
+  num_experts: 6
+  moe_ffn_hidden_size: 768
+  moe_router_topk: 2
+  moe_router_load_balancing_type: aux_loss
+  moe_aux_loss_coeff: 0.01
+  moe_router_dtype: fp32
+  moe_token_dispatcher_type: alltoall
+  moe_grouped_gemm: true
+  moe_permute_fusion: true

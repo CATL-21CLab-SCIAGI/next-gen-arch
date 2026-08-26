@@ -1,0 +1,34 @@
+model:
+  num_layers: 10
+  hidden_size: 384
+  ffn_hidden_size: 1536
+  num_attention_heads: 6
+  sequence_length: 2048
+  transformer_impl: transformer_engine
+  attention_dropout: 0.0
+  hidden_dropout: 0.0
+  init_method_std: 0.02
+training:
+  precision: bf16
+  optimizer: adam
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_epsilon: 1.0e-8
+  micro_batch_size: 1
+  global_batch_size: 180
+  target_train_tokens: 73728000
+  learning_rate: 0.0006
+  minimum_learning_rate: 0.00006
+  lr_decay_style: cosine
+  lr_warmup_fraction: 0.1
+  weight_decay: 0.1
+  clip_grad: 1.0
+  calculate_per_token_loss: true
+  log_throughput: true
+  deterministic: true
+  save: false
+  tensorboard: false
+  eval_interval: 50
+  eval_iters: 5
+  save_interval: 10000
+  log_interval: 1

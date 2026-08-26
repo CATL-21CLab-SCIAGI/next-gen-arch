@@ -1,0 +1,5 @@
+extends:
+  - megatron_native_dense_100m_dp_seed42.yaml
+name: megatron-native-dense-100m-pp2-seed42
+parallelism:
+  pipeline: 2

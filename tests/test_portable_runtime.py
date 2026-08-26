@@ -47,6 +47,77 @@ def test_megatron_spec_renders_eight_rank_scaling_plan(monkeypatch, tmp_path):
     assert plan.metadata["effective_training_tokens"] <= 12_000_000_000
 
 
+@pytest.mark.parametrize(
+    ("config_name", "model_parallel", "data_parallel", "expert_parallel", "microbatches"),
+    (
+        ("megatron_native_dense_100m_dp_seed42.yaml", 1, 18, 1, 10),
+        ("megatron_native_dense_100m_tp3_seed42.yaml", 3, 6, 1, 30),
+        ("megatron_native_dense_100m_pp2_seed42.yaml", 2, 9, 1, 20),
+        ("megatron_native_dense_100m_cp2_seed42.yaml", 2, 9, 1, 20),
+        ("megatron_native_moe_100m_ep1_seed42.yaml", 1, 18, 1, 10),
+        ("megatron_native_moe_100m_ep6_seed42.yaml", 1, 18, 6, 10),
+    ),
+)
+def test_native_parallelism_campaign_renders_frozen_18_rank_contract(
+    monkeypatch,
+    tmp_path,
+    config_name,
+    model_parallel,
+    data_parallel,
+    expert_parallel,
+    microbatches,
+):
+    for name, value in {
+        "NGA_TRAIN_DATA": tmp_path / "train_text_document",
+        "NGA_VALID_DATA": tmp_path / "valid_text_document",
+        "NGA_DATA_CACHE": tmp_path / "cache",
+        "NGA_TOKENIZER": tmp_path / "tokenizer",
+        "NGA_OUTPUT_DIR": tmp_path / "output",
+    }.items():
+        monkeypatch.setenv(name, str(value))
+
+    spec = load_experiment(ROOT / "configs" / "experiments" / config_name)
+    plan = get_backend(spec.backend).render(spec)
+
+    assert plan.argv[:9] == (
+        "torchrun",
+        "--nnodes=3",
+        "--nproc-per-node=6",
+        "--node-rank",
+        "env:NODE_RANK",
+        "--master-addr",
+        "env:MASTER_ADDR",
+        "--master-port",
+        "env:MASTER_PORT",
+    )
+    assert plan.metadata["world_size"] == 18
+    assert plan.metadata["model_parallel_size"] == model_parallel
+    assert plan.metadata["data_parallel_size"] == data_parallel
+    assert plan.metadata["expert_parallel_size"] == expert_parallel
+    assert plan.metadata["expert_data_parallel_size"] == data_parallel // expert_parallel
+    assert plan.metadata["num_microbatches"] == microbatches
+    assert plan.metadata["effective_training_tokens"] == 73_728_000
+    assert "--save" not in plan.argv
+    assert "--tensorboard-dir" not in plan.argv
+    assert plan.env == {
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+        "NCCL_ALGO": "Ring",
+        "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
+    }
+    assert '--node-rank "${NODE_RANK}"' in plan.shell()
+
+    if "tp3" in config_name:
+        assert "--sequence-parallel" in plan.argv
+    if "cp2" in config_name:
+        assert plan.argv[plan.argv.index("--cp-comm-type") + 1] == "p2p"
+    if "moe" in config_name:
+        assert plan.argv[plan.argv.index("--num-experts") + 1] == "6"
+        assert plan.argv[plan.argv.index("--moe-ffn-hidden-size") + 1] == "768"
+        assert "--moe-grouped-gemm" in plan.argv
+        assert "--moe-permute-fusion" in plan.argv
+
+
 def test_megatron_submodule_is_pinned_and_clean():
     assert validate_submodule()["commit"] == MEGATRON_COMMIT
 
