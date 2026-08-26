@@ -164,3 +164,27 @@ def test_fineweb_shard_validation_rejects_truncated_payload(tmp_path):
 
     with pytest.raises(ValueError, match="length mismatch"):
         dataloader.inspect_fineweb_shard(shard)
+
+
+def test_fineweb_inventory_accepts_a_validated_prefix_large_enough_for_run(tmp_path):
+    _write_fineweb_shard(tmp_path / "fineweb_train_000001.bin", list(range(32)))
+    _write_fineweb_shard(tmp_path / "fineweb_val_000000.bin", list(range(16)))
+
+    summary = dataloader.inspect_fineweb_dataset(tmp_path, required_train_tokens=17)
+
+    assert summary == {
+        "visible_train_shards": 1,
+        "validated_train_shards": 1,
+        "validation_shards": 1,
+        "validated_train_tokens": 32,
+        "validation_tokens": 16,
+        "complete_inventory": False,
+    }
+
+
+def test_fineweb_inventory_rejects_an_insufficient_prefix(tmp_path):
+    _write_fineweb_shard(tmp_path / "fineweb_train_000001.bin", list(range(8)))
+    _write_fineweb_shard(tmp_path / "fineweb_val_000000.bin", list(range(8)))
+
+    with pytest.raises(ValueError, match="fewer than the required"):
+        dataloader.inspect_fineweb_dataset(tmp_path, required_train_tokens=9)

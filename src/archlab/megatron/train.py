@@ -1157,7 +1157,10 @@ def main() -> None:
             parser.error("--data-root is required for FineWeb")
         contract_variant = resolve_fineweb_variant(args.scale, args.variant)
         data_root = args.data_root.expanduser().resolve()
-        data_summary = inspect_fineweb_dataset(data_root)
+        data_summary = inspect_fineweb_dataset(
+            data_root,
+            required_train_tokens=contract_variant.training_tokens + 1,
+        )
     else:
         if args.scale not in CAMPAIGN_VARIANTS:
             parser.error(f"--scale={args.scale} is not available for ClimbMix")

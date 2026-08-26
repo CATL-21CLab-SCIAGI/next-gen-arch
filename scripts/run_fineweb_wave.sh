@@ -10,11 +10,16 @@ NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/fineweb10b-
 NGA_TOKENIZER_CACHE="${NGA_TOKENIZER_CACHE:-/mnt/oss/datasets/tokenizers/tiktoken}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
 NGA_MASTER_PORT="${NGA_MASTER_PORT:-29531}"
+NGA_NNODES="${NGA_NNODES:-3}"
+NGA_GPUS_PER_NODE="${NGA_GPUS_PER_NODE:-8}"
 NGA_PROBE_STEPS="${NGA_PROBE_STEPS:-0}"
 NGA_SCALES="${NGA_SCALES:-1m 10m 100m 300m}"
 NGA_VARIANTS="${NGA_VARIANTS:-baseline engram kda dsa attnres mhc gated-attention situ-glu inkling-relative-attention glm-mla xielu qwen-gdn inkling-sconv-kv inkling-sconv-residual partial-rope-25 kimi-k3-kda-update colu}"
 
-export PATH="$(dirname "$NGA_PYTHON"):$PATH"
+export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
+export PATH="$(dirname "$NGA_PYTHON"):$CUDA_HOME/bin:$PATH"
+export CPATH="$CUDA_HOME/targets/x86_64-linux/include${CPATH:+:$CPATH}"
+export TRITON_PTXAS_PATH="${TRITON_PTXAS_PATH:-$CUDA_HOME/bin/ptxas}"
 export PYTHONPATH="$NGA_REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export TIKTOKEN_CACHE_DIR="$NGA_TOKENIZER_CACHE"
 export NGA_CONTAINER_DIGEST="${NGA_CONTAINER_DIGEST:-nemo-26.06}"
@@ -35,8 +40,8 @@ for variant in $NGA_VARIANTS; do
         fi
         echo "start: $scale/$variant node_rank=$NGA_NODE_RANK"
         "$NGA_PYTHON" -m torch.distributed.run \
-            --nnodes=3 \
-            --nproc-per-node=8 \
+            --nnodes="$NGA_NNODES" \
+            --nproc-per-node="$NGA_GPUS_PER_NODE" \
             --node-rank="$NGA_NODE_RANK" \
             --master-addr="$MASTER_ADDR" \
             --master-port="$NGA_MASTER_PORT" \

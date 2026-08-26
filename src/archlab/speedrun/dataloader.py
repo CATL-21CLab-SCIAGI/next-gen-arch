@@ -54,30 +54,50 @@ def inspect_fineweb_dataset(
     root: str | Path,
     *,
     expected_train_shards: int = 103,
-) -> dict[str, int]:
-    """Validate the complete public FineWeb10B binary inventory."""
+    required_train_tokens: int | None = None,
+) -> dict[str, int | bool]:
+    """Validate the FineWeb prefix required by a run and report visible inventory."""
     root = Path(root)
     train = sorted(root.glob("fineweb_train_*.bin"))
     validation = sorted(root.glob("fineweb_val_*.bin"))
-    expected_train = [
-        root / f"fineweb_train_{index:06d}.bin"
-        for index in range(1, expected_train_shards + 1)
-    ]
     expected_validation = [root / "fineweb_val_000000.bin"]
-    if len(train) != expected_train_shards or train != expected_train:
-        raise ValueError(
-            f"FineWeb10B requires train shards 000001..000103; found {len(train)}"
-        )
+    if not train:
+        raise ValueError("FineWeb10B has no visible train shards")
     if validation != expected_validation:
         raise ValueError("FineWeb10B requires exactly fineweb_val_000000.bin")
-    train_tokens = sum(inspect_fineweb_shard(path) for path in train)
+    if required_train_tokens is None and len(train) != expected_train_shards:
+        raise ValueError(
+            f"complete FineWeb10B requires {expected_train_shards} train shards; "
+            f"found {len(train)}"
+        )
+    required_train_tokens = required_train_tokens or 0
+    train_tokens = 0
+    validated_train_shards = 0
+    paths_to_validate = (
+        [root / f"fineweb_train_{index:06d}.bin" for index in range(1, expected_train_shards + 1)]
+        if required_train_tokens == 0
+        else train
+    )
+    for expected_index, path in enumerate(paths_to_validate, start=1):
+        if path.name != f"fineweb_train_{expected_index:06d}.bin" or not path.is_file():
+            raise ValueError(f"FineWeb10B is missing required train shard {expected_index:06d}")
+        train_tokens += inspect_fineweb_shard(path)
+        validated_train_shards += 1
+        if train_tokens >= required_train_tokens and required_train_tokens > 0:
+            break
+    if train_tokens < required_train_tokens:
+        raise ValueError(
+            f"FineWeb prefix has {train_tokens} validated tokens, fewer than the "
+            f"required {required_train_tokens}"
+        )
     validation_tokens = sum(inspect_fineweb_shard(path) for path in validation)
     return {
-        "train_shards": len(train),
+        "visible_train_shards": len(train),
+        "validated_train_shards": validated_train_shards,
         "validation_shards": len(validation),
-        "train_tokens": train_tokens,
+        "validated_train_tokens": train_tokens,
         "validation_tokens": validation_tokens,
-        "total_tokens": train_tokens + validation_tokens,
+        "complete_inventory": len(train) == expected_train_shards,
     }
 
 
