@@ -148,8 +148,8 @@ uv run next-gen-arch command --size 300m --variant engram --seed 42 --run-name m
 
 ```bash
 export NANOCHAT_BASE_DIR=/path/to/next-gen-arch-data
-uv run python -m next_gen_arch.training.dataset -n 170
-uv run python -m next_gen_arch.training.tok_train --vocab-size 32768
+uv run python -m archlab.speedrun.dataset -n 170
+uv run python -m archlab.speedrun.tok_train --vocab-size 32768
 ```
 
 渲染可移植 speedrun 合同：
@@ -157,15 +157,15 @@ uv run python -m next_gen_arch.training.tok_train --vocab-size 32768
 ```bash
 export NGA_DATA_ROOT=/path/to/next-gen-arch-data
 uv run next-gen-arch render \
-  --config configs/experiments/speedrun_qwen_gdn_100m_seed42.yaml
+  --config recipes/experiments/speedrun_qwen_gdn_100m_seed42.yaml
 ```
 
-Megatron 示例使用 `NGA_TRAIN_DATA`、`NGA_VALID_DATA`、`NGA_DATA_CACHE`、`NGA_TOKENIZER` 和 `NGA_OUTPUT_DIR` 注入机器路径，再渲染 `configs/experiments/megatron_baseline_1b_seed42.yaml`。
+Megatron 示例使用 `NGA_TRAIN_DATA`、`NGA_VALID_DATA`、`NGA_DATA_CACHE`、`NGA_TOKENIZER` 和 `NGA_OUTPUT_DIR` 注入机器路径，再渲染 `recipes/experiments/megatron_baseline_1b_seed42.yaml`。
 
 汇总 Megatron 10M campaign 并与冻结 speedrun 参考比较：
 
 ```bash
-uv run python -m next_gen_arch.training.campaign_compare \
+uv run python -m archlab.speedrun.campaign_compare \
   --megatron-root /path/to/megatron-results \
   --reference results/speedrun-10m-reference.csv \
   --output-dir /path/to/comparison
@@ -176,8 +176,8 @@ uv run python -m next_gen_arch.training.campaign_compare \
 本地质量门禁：
 
 ```bash
-uv run ruff check src/next_gen_arch tests
-uv run python -m compileall -q src/next_gen_arch
+uv run ruff check src/archlab tests
+uv run python -m compileall -q src/archlab
 uv run pytest -m "not slow" -q
 uv build
 ```
@@ -206,4 +206,4 @@ uv build
 - 所有组合实验保留 baseline 与各单组件对照；
 - 发布更完整的训练曲线和硬件归一化效率数据。
 
-所有 Python 代码集中在 `src/next_gen_arch`：`arch/` 只保留按架构族合并的模型定义，`training/` 统一承载训练、数据、优化器、kernel、评测和运行时，`backends/` 是执行适配，`prompts/` 是可移植 prompt。当前 16 种机制已验证单 rank MCore wrapper，100M baseline 也已完成三节点 15-way data parallel；但尚不能据此声称全部机制支持 Megatron tensor、pipeline、expert 或 context parallelism。项目以 [MIT License](LICENSE) 发布；各架构名称和论文归原作者所有，详见 [NOTICE.md](NOTICE.md)。
+所有 Python 代码集中在 `src/archlab`：`architectures/` 只保留按架构族合并的模型定义，`megatron/` 是唯一的 MCore 适配边界，`optimizers/` 放置新增优化器，`speedrun/` 冻结继承自 modded-nanogpt 的轻量训练路径，`prompts/` 保持 prompt 可移植。实验参数统一放在 `recipes/`，Megatron 固定为只读 submodule。当前 16 种机制已验证单 rank MCore wrapper，100M baseline 也已完成三节点 15-way data parallel；但尚不能据此声称全部机制支持 Megatron tensor、pipeline、expert 或 context parallelism。项目以 [MIT License](LICENSE) 发布；各架构名称和论文归原作者所有，详见 [NOTICE.md](NOTICE.md)。

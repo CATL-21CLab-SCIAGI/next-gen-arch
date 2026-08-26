@@ -4,8 +4,8 @@ import math
 import pytest
 import torch
 
-from next_gen_arch.arch.base import GPT, GPTConfig
-from next_gen_arch.arch.dsa import (
+from archlab.architectures.base import GPT, GPTConfig
+from archlab.architectures.dsa import (
     DSA_BACKEND,
     DeepSeekDSA,
     DeepSeekDSAConfig,
@@ -13,8 +13,8 @@ from next_gen_arch.arch.dsa import (
     LightningIndexer,
     _apply_partial_noninterleaved_rope,
 )
-from next_gen_arch.training.models import build_model_from_config_kwargs
-from next_gen_arch.training.optim import setup_model_optimizer
+from archlab.optimizers.speedrun import setup_model_optimizer
+from archlab.speedrun.models import build_model_from_config_kwargs
 
 
 def tiny_config(**overrides):

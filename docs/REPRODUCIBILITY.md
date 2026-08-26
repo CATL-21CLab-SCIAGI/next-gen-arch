@@ -20,7 +20,7 @@ Use `--extra gpu` for the CUDA 12.8 wheel index. The frozen campaign used Python
 
 ```bash
 uv run next-gen-arch verify
-uv run python -c "from next_gen_arch.results import verify_metrics; print(verify_metrics())"
+uv run python -c "from archlab.results import verify_metrics; print(verify_metrics())"
 ```
 
 The manifest must form a complete `3 sizes × 16 variants × 3 seeds = 144 runs` Cartesian grid. The result checker validates schema, unique rows, finite BPB/deltas, and seed counts.
@@ -31,7 +31,7 @@ Choose a writable storage directory outside the Git checkout:
 
 ```bash
 export NANOCHAT_BASE_DIR=/path/to/next-gen-arch-data
-uv run python -m next_gen_arch.training.dataset -n 170
+uv run python -m archlab.speedrun.dataset -n 170
 ```
 
 The downloader retrieves train shards 0–169 and the fixed validation shard 6542 from the public `karpathy/climbmix-400b-shuffle` dataset. The campaign data directory contained 171 parquet shards and had the following name/size fingerprint:
@@ -55,7 +55,7 @@ The campaign fixed one 32,768-token nanochat BPE for every run. Its recorded art
 You can train a compatible tokenizer for new experiments:
 
 ```bash
-uv run python -m next_gen_arch.training.tok_train \
+uv run python -m archlab.speedrun.tok_train \
   --vocab-size 32768 \
   --max-chars 2000000000 \
   --doc-cap 10000
@@ -107,7 +107,7 @@ The public manifest retains the frozen experimental source-tree hashes. The cons
 
 ## 7. Numerical failure policy
 
-`src/next_gen_arch/training/base_train.py` checks:
+`src/archlab/speedrun/base_train.py` checks:
 
 - validation loss whenever validation runs;
 - every training microstep loss;
@@ -124,7 +124,7 @@ The consolidated trainer maps reference layers proportionally to the target dept
 ## 9. Reproduce the 10M Megatron comparison
 
 The frozen small-model contract is defined in
-`src/next_gen_arch/training/campaigns.py`: 16 variants, seeds `42/43/44`, depth 5,
+`src/archlab/speedrun/campaigns.py`: 16 variants, seeds `42/43/44`, depth 5,
 hidden size 56, seven heads, head dimension 8, sequence length 2,048, BF16, microbatch
 16, global batch 192, and approximately 12 training tokens per parameter.
 
@@ -134,7 +134,7 @@ editing the contract:
 
 ```bash
 export NANOCHAT_BASE_DIR=/path/to/frozen-data
-python -m next_gen_arch.training.campaign_runner \
+python -m archlab.speedrun.campaign_runner \
   --node-index NODE_INDEX \
   --num-nodes 3 \
   --gpus GPU_LIST \
@@ -160,7 +160,7 @@ z-loss/clipping change training semantics.
 Aggregate the output against the frozen historical speedrun rows:
 
 ```bash
-python -m next_gen_arch.training.campaign_compare \
+python -m archlab.speedrun.campaign_compare \
   --megatron-root /durable/path/megatron-10m \
   --reference results/speedrun-10m-reference.csv \
   --output-dir /durable/path/backend-comparison

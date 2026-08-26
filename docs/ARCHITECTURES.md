@@ -1,6 +1,6 @@
 # Architecture map
 
-The implementations are compact research adaptations in `src/next_gen_arch/arch`. They are not claimed to be the official code from the cited projects. A paper or project link explains the mechanism that motivated each controlled arm; it does not imply exact equivalence to the authors' full system.
+The implementations are compact research adaptations in `src/archlab/architectures`. They are not claimed to be the official code from the cited projects. A paper or project link explains the mechanism that motivated each controlled arm; it does not imply exact equivalence to the authors' full system.
 
 ## Frozen 16-variant grid
 
@@ -27,7 +27,7 @@ The implementations are compact research adaptations in `src/next_gen_arch/arch`
 
 The architecture families ultimately construct one `GPT` interface with shared token embedding, language-model head, loss evaluation, optimizer factory, data loader, and checkpoint manager. Variant-only parameters are initialized from a private RNG so adding a module does not perturb the shared backbone initialization for a matched seed.
 
-Engram and mHC historically lived in separate campaign source trees. Their definitions are merged with the shared GPT primitives in `src/next_gen_arch/arch/base.py`; construction and checkpoint compatibility live in `src/next_gen_arch/training/models.py`. Megatron adapters are a separate capability boundary; a speedrun implementation is not automatically considered ported.
+Engram and mHC historically lived in separate campaign source trees. Their definitions are merged with the shared GPT primitives in `src/archlab/architectures/base.py`; construction and checkpoint compatibility live in `src/archlab/speedrun/models.py`. Megatron adapters are a separate capability boundary; a speedrun implementation is not automatically considered ported.
 
 ## Implementation caveats
 

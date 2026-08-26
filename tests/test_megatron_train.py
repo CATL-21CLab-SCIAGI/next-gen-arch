@@ -3,13 +3,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import next_gen_arch.training.megatron_train as megatron_train
-from next_gen_arch.training.campaigns import (
-    TEN_M_BATCH_TOKENS,
-    get_campaign_variant,
-    get_ten_m_variant,
-)
-from next_gen_arch.training.megatron_train import (
+import archlab.megatron.train as megatron_train
+from archlab.megatron.train import (
     SpeedrunSchedule,
     _current_training_iteration,
     _global_rank,
@@ -18,7 +13,12 @@ from next_gen_arch.training.megatron_train import (
     _source_provenance,
     get_megatron_backend_profile,
 )
-from next_gen_arch.training.optimization_recipes import get_optimization_recipe
+from archlab.optimizers.recipes import get_optimization_recipe
+from archlab.speedrun.campaigns import (
+    TEN_M_BATCH_TOKENS,
+    get_campaign_variant,
+    get_ten_m_variant,
+)
 
 
 def test_current_training_iteration_prefers_live_megatron_counter():

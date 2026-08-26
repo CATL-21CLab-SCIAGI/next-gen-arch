@@ -3,16 +3,16 @@ import copy
 import pytest
 import torch
 
-from next_gen_arch.arch.base import GPT, GPTConfig
-from next_gen_arch.arch.kimi import AttnResRead, KimiAttnRes, KimiAttnResConfig
-from next_gen_arch.training.models import (
+from archlab.architectures.base import GPT, GPTConfig
+from archlab.architectures.kimi import AttnResRead, KimiAttnRes, KimiAttnResConfig
+from archlab.optimizers.speedrun import setup_model_optimizer
+from archlab.speedrun.models import (
     build_model_config,
     build_model_from_config_kwargs,
     instantiate_model,
     model_config_to_dict,
     patch_model_config_kwargs,
 )
-from next_gen_arch.training.optim import setup_model_optimizer
 
 
 def tiny_config(**overrides):

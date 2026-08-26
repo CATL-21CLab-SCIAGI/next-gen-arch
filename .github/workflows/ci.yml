@@ -27,13 +27,13 @@ jobs:
       - name: Install CPU environment
         run: uv sync --extra cpu --group dev
       - name: Lint
-        run: uv run ruff check src/next_gen_arch tests
+        run: uv run ruff check src/archlab tests
       - name: Compile source
-        run: uv run python -m compileall -q src/next_gen_arch
+        run: uv run python -m compileall -q src/archlab
       - name: Verify frozen artifacts
         run: |
           uv run next-gen-arch verify
-          uv run python -c "from next_gen_arch.results import verify_metrics; print(verify_metrics())"
+          uv run python -c "from archlab.results import verify_metrics; print(verify_metrics())"
           uv run next-gen-arch doctor --backend megatron
       - name: Verify portable launch plans
         env:
@@ -44,8 +44,8 @@ jobs:
           NGA_TOKENIZER: /tmp/tokenizer
           NGA_OUTPUT_DIR: /tmp/megatron-output
         run: |
-          uv run next-gen-arch render --config configs/experiments/speedrun_qwen_gdn_100m_seed42.yaml
-          uv run next-gen-arch render --config configs/experiments/megatron_baseline_1b_seed42.yaml --json
+          uv run next-gen-arch render --config recipes/experiments/speedrun_qwen_gdn_100m_seed42.yaml
+          uv run next-gen-arch render --config recipes/experiments/megatron_baseline_1b_seed42.yaml --json
       - name: Test
         env:
           NANOCHAT_ATTENTION_BACKEND: sdpa

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from next_gen_arch.registry import find_run, load_runs, verify_manifest
-from next_gen_arch.results import verify_metrics
+from archlab.registry import find_run, load_runs, verify_manifest
+from archlab.results import verify_metrics
 
 
 def test_frozen_manifest_is_complete_cartesian_grid():

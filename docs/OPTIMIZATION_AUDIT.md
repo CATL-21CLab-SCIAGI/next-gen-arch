@@ -105,7 +105,7 @@ hide. Overlap remains available as an explicit scale profile, but is not the def
 
 ## Portable recipes
 
-The recipe registry lives in `training/optimization_recipes.py`. Each result records the
+The recipe registry lives in `archlab.optimizers.recipes`. Each result records the
 resolved recipe, backend profile, source commit/diff digest, Megatron submodule commit,
 CUDA/PyTorch versions, and selected `ptxas`.
 

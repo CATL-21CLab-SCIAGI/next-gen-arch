@@ -1,7 +1,7 @@
 import torch
 
-from next_gen_arch.arch.base import GPT, GPTConfig, MHCConnection
-from next_gen_arch.training.models import build_model_from_config_kwargs
+from archlab.architectures.base import GPT, GPTConfig, MHCConnection
+from archlab.speedrun.models import build_model_from_config_kwargs
 
 
 def make_connection():

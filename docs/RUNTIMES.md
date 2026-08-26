@@ -5,21 +5,27 @@ The repository separates an experiment contract from the code that executes it. 
 ## Source layout
 
 ```text
-src/next_gen_arch/
-├── arch/       architecture definitions only, consolidated by family
-├── training/   training, data, optimizer, kernels, evaluation, and runtime
-├── backends/   command renderers and backend safety checks
-├── prompts/    versioned prompt assets shared by train/eval
-├── spec.py     layered portable YAML composition
-├── registry.py frozen campaign registry
-└── results.py  published-result integrity checks
+src/archlab/
+├── architectures/ model and layer composition only
+├── optimizers/    local optimizer extensions and recipes
+├── megatron/      the sole ArchLab → Megatron adaptation boundary
+├── speedrun/      frozen small-scale reference implementation
+├── prompts/       versioned prompt assets shared by train/eval
+├── launch.py      inspectable backend launch plans
+├── spec.py        layered portable YAML composition
+└── registry.py    frozen campaign and result integrity
 ```
 
-The Python import name uses an underscore because package identifiers cannot contain a hyphen. The distribution and repository remain `next-gen-arch`.
+The Python import name is the short, stable `archlab`; the distribution and repository
+remain `next-gen-arch`.
 
 ## Speedrun backend
 
-`speedrun` is the direct descendant of the campaign code. Architecture definitions live only in `next_gen_arch.arch`; Muon/Adam parameter grouping, attention kernels, static-shape compilation, data-order controls, BF16 handling, and execution utilities live in `next_gen_arch.training`. This boundary changes module paths, not the frozen run arguments or model behavior.
+`speedrun` is the direct descendant of the campaign code. Architecture definitions live
+only in `archlab.architectures`; Muon/Adam parameter grouping is exposed through
+`archlab.optimizers`, while the frozen attention kernels, static-shape compilation,
+data-order controls, BF16 handling, and execution utilities live in `archlab.speedrun`.
+This boundary changes module paths, not the frozen run arguments or model behavior.
 
 The optimizer lineage includes the compact Muon work inherited from `KellerJordan/modded-nanogpt` at recorded commit `f411b3d346aa52d3504324ca93c230fd84c6c07f`. The historical nanochat campaign tree remains separately identified in the frozen manifest.
 
@@ -32,7 +38,7 @@ https://github.com/NVIDIA/Megatron-LM.git
 55ac7082517c3878ae653c07c09c534b8aed49f6
 ```
 
-The project never edits files inside the submodule. `next_gen_arch.backends.megatron` validates that the checkout exists, matches the lock, and is clean before rendering a command. All project-specific adapters belong in `src/next_gen_arch`, following the same read-only-upstream boundary used by the `llm-arch-lab` reference design.
+The project never edits files inside the submodule. `archlab.megatron.backend` validates that the checkout exists, matches the lock, and is clean before rendering a command. All project-specific adapters belong in `src/archlab`, following the same read-only-upstream boundary used by the `llm-arch-lab` reference design.
 
 Release wheels and source archives intentionally exclude the Megatron-LM working tree. Use a recursive Git checkout for the Megatron backend; packaged installations contain the portable specifications and adapters, not a vendored copy of upstream code.
 
@@ -57,8 +63,8 @@ general “Marin backend” is not currently justified.
 
 There are two intentionally distinct Megatron integration levels:
 
-1. `next_gen_arch.backends.megatron` is the portable scaling renderer. It currently exposes only the upstream MCore baseline and can render tensor, pipeline, and context parallel topology. A custom variant remains capability-gated until it receives a native parallel adapter, checkpoint semantics, initialization alignment, and distributed numerical tests.
-2. `next_gen_arch.training.megatron_train` is the controlled architecture-comparison wrapper. It keeps architecture math and the historical Muon/Adam grouping in this repository while delegating initialization, DDP accumulation, the pretrain lifecycle, scheduling, finite checks, and reporting to pinned Megatron. All 16 variants completed the approximately 10M, three-seed comparison through this path at `TP=PP=CP=1`.
+1. `archlab.megatron.backend` is the portable scaling renderer. It currently exposes only the upstream MCore baseline and can render tensor, pipeline, and context parallel topology. A custom variant remains capability-gated until it receives a native parallel adapter, checkpoint semantics, initialization alignment, and distributed numerical tests.
+2. `archlab.megatron.train` is the controlled architecture-comparison wrapper. It keeps architecture math and the historical Muon/Adam grouping in this repository while delegating initialization, DDP accumulation, the pretrain lifecycle, scheduling, finite checks, and reporting to pinned Megatron. All 16 variants completed the approximately 10M, three-seed comparison through this path at `TP=PP=CP=1`.
 
 The 100M baseline subsequently completed one real 15-way data-parallel run over three
 B300 nodes through the same wrapper, with NCCL RoCE/GDRDMA and exact 192-sequence batch
@@ -66,8 +72,8 @@ replay. This validates multi-node data parallelism for the baseline. It does not
 the first layer's scale-readiness gate or show that every custom attention or recurrent
 mechanism shards correctly across tensor or context parallel ranks.
 
-The frozen small-model campaign is defined in `training/campaigns.py`.
-`training/campaign_runner.py` distributes its Cartesian run set across nodes and accepts
+The frozen small-model campaign is defined in `archlab.speedrun.campaigns`.
+`archlab.speedrun.campaign_runner` distributes its Cartesian run set across nodes and accepts
 only an explicit physical-GPU allowlist. It records queue state durably and rechecks
 each allowlisted GPU's UUID immediately before every launch, refusing to start if a
 pre-existing process occupies that card. `--partition-strategy seed` preserves
@@ -108,7 +114,7 @@ For multi-node commands, the rendered launch plan leaves `NODE_RANK`, `MASTER_AD
 
 ## Prompt portability
 
-Training and evaluation load the same schema-versioned prompt set. The default is `src/next_gen_arch/prompts/smoke.yaml`; `--prompt-file` selects a different YAML file. Prompt text is no longer duplicated inside training and evaluation code, so moving a run between backends or machines does not silently change qualitative probes.
+Training and evaluation load the same schema-versioned prompt set. The default is `src/archlab/prompts/smoke.yaml`; `--prompt-file` selects a different YAML file. Prompt text is no longer duplicated inside training and evaluation code, so moving a run between backends or machines does not silently change qualitative probes.
 
 ## What is and is not guaranteed
 

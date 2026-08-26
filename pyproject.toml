@@ -39,7 +39,7 @@ Homepage = "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch"
 Issues = "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/issues"
 
 [project.scripts]
-next-gen-arch = "next_gen_arch.cli:main"
+next-gen-arch = "archlab.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27.0"]
@@ -57,15 +57,15 @@ cpu = ["torch==2.9.1"]
 gpu = ["torch==2.9.1"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/next_gen_arch"]
+packages = ["src/archlab"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"results/parameter-scale-100m-1b-v1-manifest.json" = "src/next_gen_arch/data/parameter-scale-100m-1b-v1-manifest.json"
-"results/key-metrics.csv" = "src/next_gen_arch/data/key-metrics.csv"
-"results/speedrun-10m-reference.csv" = "src/next_gen_arch/data/speedrun-10m-reference.csv"
-"results/backend-10m-comparison.csv" = "src/next_gen_arch/data/backend-10m-comparison.csv"
-"results/backend-10m-runs.csv" = "src/next_gen_arch/data/backend-10m-runs.csv"
-"results/backend-10m-comparison.json" = "src/next_gen_arch/data/backend-10m-comparison.json"
+"results/parameter-scale-100m-1b-v1-manifest.json" = "src/archlab/data/parameter-scale-100m-1b-v1-manifest.json"
+"results/key-metrics.csv" = "src/archlab/data/key-metrics.csv"
+"results/speedrun-10m-reference.csv" = "src/archlab/data/speedrun-10m-reference.csv"
+"results/backend-10m-comparison.csv" = "src/archlab/data/backend-10m-comparison.csv"
+"results/backend-10m-runs.csv" = "src/archlab/data/backend-10m-runs.csv"
+"results/backend-10m-comparison.json" = "src/archlab/data/backend-10m-comparison.json"
 
 [tool.hatch.build.targets.sdist]
 exclude = [
@@ -91,9 +91,9 @@ select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/next_gen_arch/training/base_train.py" = ["E402"]
-"src/next_gen_arch/training/tok_train.py" = ["E402"]
-"src/next_gen_arch/training/tokenizer.py" = ["B019", "E402"]
+"src/archlab/speedrun/base_train.py" = ["E402"]
+"src/archlab/speedrun/tok_train.py" = ["E402"]
+"src/archlab/speedrun/tokenizer.py" = ["B019", "E402"]
 
 [tool.uv]
 default-groups = []

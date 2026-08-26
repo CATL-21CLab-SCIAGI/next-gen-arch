@@ -17,9 +17,9 @@ Note on test structure:
 import pytest
 import torch
 
-import next_gen_arch.training.attention as fa_module
-from next_gen_arch.training.attention import ATTENTION_BACKEND, HAS_FA3, HAS_FA4, flash_attn
-from next_gen_arch.training.engine import KVCache
+import archlab.speedrun.attention as fa_module
+from archlab.speedrun.attention import ATTENTION_BACKEND, HAS_FA3, HAS_FA4, flash_attn
+from archlab.speedrun.engine import KVCache
 
 
 def set_impl(impl):

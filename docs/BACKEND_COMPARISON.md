@@ -150,7 +150,7 @@ Run the primary campaign and any correction campaign into separate durable direc
 then aggregate them explicitly:
 
 ```bash
-python -m next_gen_arch.training.campaign_compare \
+python -m archlab.speedrun.campaign_compare \
   --megatron-root /path/to/primary-campaign \
   --override-root /path/to/dsa-correction \
   --reference results/speedrun-10m-reference.csv \

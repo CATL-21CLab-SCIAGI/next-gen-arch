@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from next_gen_arch.training.campaign_compare import (
+from archlab.optimizers.recipes import OPTIMIZATION_RECIPES
+from archlab.speedrun.campaign_compare import (
     DEFAULT_REFERENCE,
     RunResult,
     campaign_provenance,
@@ -17,15 +18,14 @@ from next_gen_arch.training.campaign_compare import (
     summarize,
     validate_results,
 )
-from next_gen_arch.training.campaigns import (
+from archlab.speedrun.campaigns import (
     TEN_M_VARIANTS,
     campaign_model_config_kwargs,
     get_campaign_variant,
     ten_m_model_config_kwargs,
     verify_ten_m_contract,
 )
-from next_gen_arch.training.models import build_model_config, instantiate_model
-from next_gen_arch.training.optimization_recipes import OPTIMIZATION_RECIPES
+from archlab.speedrun.models import build_model_config, instantiate_model
 
 PUBLISHED_RUNS = DEFAULT_REFERENCE.with_name("backend-10m-runs.csv")
 PUBLISHED_COMPARISON = DEFAULT_REFERENCE.with_name("backend-10m-comparison.json")

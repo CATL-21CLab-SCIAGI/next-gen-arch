@@ -2,13 +2,13 @@ import json
 
 import pytest
 
-from next_gen_arch.training.campaign_runner import (
+from archlab.speedrun.campaign_runner import (
     Task,
     _cache_directory,
     _is_matching_complete_run,
     _task_queues,
 )
-from next_gen_arch.training.campaigns import TEN_M_SEEDS, TEN_M_VARIANTS
+from archlab.speedrun.campaigns import TEN_M_SEEDS, TEN_M_VARIANTS
 
 
 def _flatten(queues):

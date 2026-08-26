@@ -3,8 +3,8 @@ import math
 import pytest
 import torch
 
-from next_gen_arch.arch.base import GPT, GPTConfig, norm
-from next_gen_arch.arch.sota import (
+from archlab.architectures.base import GPT, GPTConfig, norm
+from archlab.architectures.sota import (
     SOTA_VARIANTS,
     XIELU,
     CausalDepthwiseConv,
@@ -12,9 +12,9 @@ from next_gen_arch.arch.sota import (
     SotaPoolConfig,
     SotaPoolGPT,
 )
-from next_gen_arch.training.models import build_model_from_config_kwargs, model_config_to_dict
-from next_gen_arch.training.optim import setup_model_optimizer
-from next_gen_arch.training.optimization_recipes import get_optimization_recipe
+from archlab.optimizers.recipes import get_optimization_recipe
+from archlab.optimizers.speedrun import setup_model_optimizer
+from archlab.speedrun.models import build_model_from_config_kwargs, model_config_to_dict
 
 
 def tiny_config(variant="baseline", **kwargs):

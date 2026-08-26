@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from next_gen_arch.arch.frontier import (
+from archlab.architectures.frontier import (
     FRONTIER_VARIANTS,
     DeepSeekCompressedAttention,
     FrontierPoolConfig,
@@ -16,8 +16,8 @@ from next_gen_arch.arch.frontier import (
     QwenGatedDeltaAttention,
     ZeroCenteredRMSNorm,
 )
-from next_gen_arch.training.models import build_model_from_config_kwargs
-from next_gen_arch.training.optim import setup_model_optimizer
+from archlab.optimizers.speedrun import setup_model_optimizer
+from archlab.speedrun.models import build_model_from_config_kwargs
 
 
 def config(variant: str, *, n_layer: int = 2) -> FrontierPoolConfig:

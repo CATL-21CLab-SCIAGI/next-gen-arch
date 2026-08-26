@@ -162,12 +162,12 @@ uv run next-gen-arch show --size 300m --variant engram --seed 42
 uv run next-gen-arch command --size 300m --variant engram --seed 42 --run-name my-run
 ```
 
-`command` preserves the historical frozen-command interface. The maintained module path is `next_gen_arch.training.base_train`. Set up the data and tokenizer before executing it:
+`command` preserves the historical frozen-command interface. The maintained module path is `archlab.speedrun.base_train`. Set up the data and tokenizer before executing it:
 
 ```bash
 export NANOCHAT_BASE_DIR=/path/to/next-gen-arch-data
-uv run python -m next_gen_arch.training.dataset -n 170
-uv run python -m next_gen_arch.training.tok_train --vocab-size 32768
+uv run python -m archlab.speedrun.dataset -n 170
+uv run python -m archlab.speedrun.tok_train --vocab-size 32768
 ```
 
 Render the same frozen Qwen-GDN arm through the portable speedrun spec:
@@ -175,7 +175,7 @@ Render the same frozen Qwen-GDN arm through the portable speedrun spec:
 ```bash
 export NGA_DATA_ROOT=/path/to/next-gen-arch-data
 uv run next-gen-arch render \
-  --config configs/experiments/speedrun_qwen_gdn_100m_seed42.yaml
+  --config recipes/experiments/speedrun_qwen_gdn_100m_seed42.yaml
 ```
 
 Render an eight-rank Megatron baseline without embedding cluster paths in Git:
@@ -187,13 +187,13 @@ export NGA_DATA_CACHE=/data/cache
 export NGA_TOKENIZER=/models/tokenizer
 export NGA_OUTPUT_DIR=/runs/megatron-baseline-1b-seed42
 uv run next-gen-arch render \
-  --config configs/experiments/megatron_baseline_1b_seed42.yaml --json
+  --config recipes/experiments/megatron_baseline_1b_seed42.yaml --json
 ```
 
 Aggregate a matched 10M Megatron campaign against the frozen speedrun reference:
 
 ```bash
-uv run python -m next_gen_arch.training.campaign_compare \
+uv run python -m archlab.speedrun.campaign_compare \
   --megatron-root /path/to/megatron-results \
   --reference results/speedrun-10m-reference.csv \
   --output-dir /path/to/comparison
@@ -204,8 +204,8 @@ For comparison-grade reproduction, verify the dataset and tokenizer fingerprints
 Run the local quality gate:
 
 ```bash
-uv run ruff check src/next_gen_arch tests
-uv run python -m compileall -q src/next_gen_arch
+uv run ruff check src/archlab tests
+uv run python -m compileall -q src/archlab
 uv run pytest -m "not slow" -q
 uv build
 ```
@@ -219,16 +219,15 @@ Gradient scans run every step by default. They can be made less frequent with `-
 ## Repository layout
 
 ```text
-src/next_gen_arch/arch/       architecture definitions only, consolidated by family
-src/next_gen_arch/training/   training, data, optimizer, kernels, evaluation, and runtime
-src/next_gen_arch/backends/   speedrun and Megatron launch adapters
-src/next_gen_arch/prompts/    versioned backend-neutral prompt sets
-configs/                      layered portable experiment contracts
-third_party/Megatron-LM/      pinned read-only Git submodule
-results/                      frozen contract and machine-readable evidence
-docs/                         architecture, result, and reproduction notes
-tests/                        CPU-safe unit and integrity tests
-.github/workflows/            CI and tag-based release automation
+src/archlab/architectures/  model and layer composition only
+src/archlab/optimizers/     optimizer extensions absent from pinned Megatron
+src/archlab/megatron/       the only ArchLab → Megatron integration boundary
+src/archlab/speedrun/       frozen small-scale reference backend
+src/archlab/prompts/        versioned backend-neutral prompt sets
+recipes/                    portable smoke and pretraining contracts
+third_party/Megatron-LM/    pinned read-only Git submodule
+results/                    frozen contracts and machine-readable evidence
+tests/                      unit, integration, and distributed regressions
 ```
 
 Engram and mHC used separate experimental forks during the live campaign. They are integrated here behind the same `GPTConfig` and model factory, so the public codebase has one training entry point and one checkpoint schema.
