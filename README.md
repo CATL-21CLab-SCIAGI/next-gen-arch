@@ -59,6 +59,24 @@ Max-autotune was unsafe for KDA, Kimi K3 KDA, and Qwen GDN, so those nine accept
 use default `torch.compile`; all other rows use max-autotune. See the
 [complete table and numerical-safety audit](docs/BACKEND_COMPARISON.md).
 
+### 100M baseline on one three-node process group
+
+A seed-42 baseline used one `3 nodes × 5 B300 GPUs = 15 ranks` job, with NVLink within
+nodes and verified RoCE/GDRDMA between nodes. Exact replay kept 192 active sequences
+despite the non-divisible world size.
+
+| Backend | Final BPB | Curve agreement | Median steady tok/s |
+| --- | ---: | ---: | ---: |
+| speedrun | **0.91615027** | `r=0.99999787` vs historical | 1,906,064 |
+| Megatron | 0.91756084 | `r=0.99983861` vs speedrun | **1,940,137** |
+
+The reproduced speedrun final differs from the historical seed-42 result by only
+`-0.00021621 BPB`. Megatron follows the same learning curve with mean absolute gap
+`0.00122598 BPB` and finishes `+0.00141057 BPB` higher. Its median warmed step is
+`1.018×` speedrun, while lifecycle-inclusive aggregate throughput is only `0.892×`;
+the backends are therefore essentially tied in steady kernels but not in operational
+overhead. See the [full 100M artifacts](results/100m-multinode-b300/).
+
 ### Parameter-scaling campaign: about 12 training tokens per parameter
 
 | Scale | Variant | Mean BPB | Paired Δ BPB | Throughput | Valid seeds |
@@ -96,6 +114,8 @@ The full dated tables and limitations are in [docs/RESULTS.md](docs/RESULTS.md).
 Machine-readable values live in [results/key-metrics.csv](results/key-metrics.csv); the
 optimized 10M comparison is in
 [results/megatron-10m-safe-autotune-b300](results/megatron-10m-safe-autotune-b300/), and
+[results/100m-multinode-b300](results/100m-multinode-b300/) contains the matched
+three-node baseline curves, while
 [results/campaign-status-2026-08-24.json](results/campaign-status-2026-08-24.json)
 preserves the 1B audit snapshot.
 
@@ -236,7 +256,7 @@ Engram and mHC used separate experimental forks during the live campaign. They a
 ## Scope and limitations
 
 - The architecture modules are research adaptations, not official implementations from the cited authors.
-- All 16 mechanisms have a validated single-rank MCore training wrapper at approximately 10M parameters. This is not evidence that every mechanism already supports Megatron tensor, pipeline, expert, or context parallelism.
+- All 16 mechanisms have a validated single-rank MCore training wrapper at approximately 10M parameters; the 100M baseline also completed 15-way data parallelism over three nodes. This is not evidence that every mechanism already supports Megatron tensor, pipeline, expert, or context parallelism.
 - BPB comparisons are valid only inside a matched training regime. Hardware throughput is also environment-specific.
 - Three seeds reduce noise but do not eliminate it.
 - The 2,048-token context can understate the value of long-context or sparse mechanisms.

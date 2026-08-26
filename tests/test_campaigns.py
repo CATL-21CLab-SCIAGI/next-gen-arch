@@ -35,6 +35,9 @@ OPTIMIZATION_RUNS = (
 SAFE_AUTOTUNE_RESULTS = (
     Path(__file__).resolve().parents[1] / "results" / "megatron-10m-safe-autotune-b300"
 )
+MULTINODE_100M_RESULTS = (
+    Path(__file__).resolve().parents[1] / "results" / "100m-multinode-b300"
+)
 
 
 def test_ten_m_grid_is_complete_and_parameter_counts_are_frozen():
@@ -234,3 +237,46 @@ def test_published_safe_autotune_comparison_is_complete_and_provenanced() -> Non
     assert campaign["contract"]["accepted_megatron_runs"] == 48
     assert campaign["contract"]["primary_fail_fast_runs"] == 5
     assert campaign["contract"]["recovery_finite_runs"] == 9
+
+
+def test_published_100m_multinode_result_matches_frozen_contract() -> None:
+    campaign = json.loads((MULTINODE_100M_RESULTS / "campaign.json").read_text())
+    comparison = json.loads((MULTINODE_100M_RESULTS / "comparison.json").read_text())
+    with (MULTINODE_100M_RESULTS / "learning_curve.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        curve = list(csv.DictReader(handle))
+
+    assert campaign["status"] == "complete"
+    assert campaign["hardware"] == {
+        "accelerator": "NVIDIA B300",
+        "nodes": 3,
+        "gpus_per_node": 5,
+        "world_size": 15,
+        "intra_node_transport": "NVLink",
+        "inter_node_transport": "RoCE with GPU Direct RDMA",
+        "physical_gpu_allowlist_per_node": [0, 2, 4, 5, 7],
+    }
+    assert campaign["source"]["repository_commit"] == (
+        "ebb2fc2c8d74d8dd13256231b372b139a91abfbd"
+    )
+    assert campaign["source"]["megatron_submodule_commit"] == (
+        "55ac7082517c3878ae653c07c09c534b8aed49f6"
+    )
+    assert campaign["contract"]["effective_global_batch_sequences"] == 192
+    assert campaign["contract"]["active_rows_by_rank"] == [13] * 12 + [12] * 3
+    assert campaign["collective_probe"]["status"] == "pass"
+    assert campaign["collective_probe"]["all_reduce_rank_sum"] == 105
+
+    assert len(curve) == 14
+    assert curve[0]["step"] == "0"
+    assert curve[0]["megatron_bpb"] == ""
+    assert curve[-1]["step"] == "3228"
+    assert float(curve[-1]["current_speedrun_bpb"]) == pytest.approx(
+        comparison["historical_reproduction"]["current_speedrun_final_bpb"]
+    )
+    assert float(curve[-1]["megatron_bpb"]) == pytest.approx(
+        comparison["megatron_vs_current_speedrun"]["megatron_final_bpb"]
+    )
+    assert comparison["historical_reproduction"]["gate"]["status"] == "pass"
+    assert comparison["historical_reproduction"]["pearson"] >= 0.999

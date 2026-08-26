@@ -1,0 +1,55 @@
+{
+  "metric": "validation bits per byte",
+  "lower_is_better": true,
+  "historical_reproduction": {
+    "historical_final_bpb": 0.916366477465154,
+    "current_speedrun_final_bpb": 0.9161502695513793,
+    "final_delta": -0.00021620791377463533,
+    "shared_validation_points": 14,
+    "pearson": 0.9999978654109383,
+    "mean_absolute_delta": 0.0006914568317404572,
+    "maximum_absolute_delta": 0.003092665424590635,
+    "gate": {
+      "final_absolute_delta_max": 0.001,
+      "pearson_min": 0.999,
+      "mean_absolute_delta_max": 0.01,
+      "status": "pass"
+    }
+  },
+  "megatron_vs_current_speedrun": {
+    "shared_validation_points": 13,
+    "speedrun_final_bpb": 0.9161502695513793,
+    "megatron_final_bpb": 0.9175608372974364,
+    "final_delta": 0.0014105677460570787,
+    "pearson": 0.9998386114777804,
+    "mean_absolute_delta": 0.0012259753311056032,
+    "mean_signed_delta": -0.0003376912535361355,
+    "maximum_absolute_delta": 0.0023787011594205154
+  },
+  "megatron_vs_historical_speedrun": {
+    "shared_validation_points": 13,
+    "final_delta": 0.0011943598322824434,
+    "pearson": 0.9998258790797755,
+    "mean_absolute_delta": 0.0011339662647170679,
+    "mean_signed_delta": -0.00011079059186333776,
+    "maximum_absolute_delta": 0.0028927297566851973
+  },
+  "throughput": {
+    "speedrun_post_warmup_aggregate_tokens_per_second": 1887555,
+    "speedrun_sampled_median_step_seconds": 0.2062973976135254,
+    "speedrun_sampled_steady_tokens_per_second": 1906063.7921213396,
+    "megatron_transition_inclusive_post_warmup_tokens_per_second": 1682942.0896457294,
+    "megatron_median_step_seconds": 0.20267437648726627,
+    "megatron_steady_tokens_per_second": 1940136.719871469,
+    "megatron_over_speedrun_aggregate_ratio": 0.8915989677894045,
+    "megatron_over_speedrun_steady_ratio": 1.0178760689390192,
+    "megatron_process_wall_seconds": 781.9969607969979,
+    "interpretation": "Megatron has a slightly faster median steady step, but slower transition-inclusive aggregate throughput. The aggregate counters are backend-native and include different amounts of evaluation and lifecycle overhead; use the steady median for kernel-step comparison and process wall time for operational planning."
+  },
+  "limitations": [
+    "This is one seed and one baseline architecture, so the small final quality gap is not evidence that either backend is intrinsically better.",
+    "TP=PP=CP=1; the experiment validates 15-way multi-node data parallelism, not native tensor, pipeline, or context parallelism for custom architectures.",
+    "Megatron does not emit a step-zero validation point in this pretrain lifecycle, so cross-backend curve statistics use steps 250 through 3228.",
+    "The three ignored rows preserve a static 13-row local shape while keeping exactly 192 active global sequences."
+  ]
+}

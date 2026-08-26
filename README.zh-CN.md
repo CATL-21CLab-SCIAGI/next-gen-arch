@@ -50,6 +50,23 @@ KDA、Kimi K3 KDA、Qwen GDN 不安全，这 9 个采纳 run 使用默认
 `torch.compile`，其余 39 个使用 max-autotune。完整表格和数值安全审计见
 [后端对比报告](docs/BACKEND_COMPARISON.md)。
 
+### 单个三节点进程组上的 100M baseline
+
+seed 42 baseline 使用一个 `3 节点 × 每节点 5 张 B300 = 15 ranks` 作业；节点内
+使用 NVLink，节点间已从 NCCL 日志确认 RoCE/GDRDMA。即使 192 不能整除 15，
+exact replay 仍保持每步恰好 192 条有效序列。
+
+| 后端 | 最终 BPB | 曲线一致性 | 稳态中位吞吐 |
+| --- | ---: | ---: | ---: |
+| speedrun | **0.91615027** | 相对历史 `r=0.99999787` | 1,906,064 tok/s |
+| Megatron | 0.91756084 | 相对 speedrun `r=0.99983861` | **1,940,137 tok/s** |
+
+speedrun 最终值与历史 seed-42 结果仅差 `-0.00021621 BPB`。Megatron 与当前
+speedrun 曲线的平均绝对差为 `0.00122598 BPB`，最终高 `0.00141057 BPB`。
+Megatron 稳态 step 中位数为 speedrun 的 `1.018×`，但含生命周期过渡的聚合
+吞吐只有 `0.892×`；两者稳态 kernel 基本打平，运行开销仍不相同。完整结果见
+[100M 三节点结果目录](results/100m-multinode-b300/)。
+
 ### 参数缩放实验：约 12 个训练 token / 参数
 
 | 规模 | 方案 | 平均 BPB | Δ BPB | 相对吞吐 | 有效 seed |
@@ -87,7 +104,8 @@ KDA、Kimi K3 KDA、Qwen GDN 不安全，这 9 个采纳 run 使用默认
 
 完整数据见 [docs/RESULTS.md](docs/RESULTS.md)、
 [results/key-metrics.csv](results/key-metrics.csv) 与
-[B300 safe-autotune 结果目录](results/megatron-10m-safe-autotune-b300/)。
+[B300 safe-autotune 结果目录](results/megatron-10m-safe-autotune-b300/)；
+[100M 三节点结果目录](results/100m-multinode-b300/) 保存了本次学习曲线与来源审计。
 
 ## 实验合同
 
@@ -188,4 +206,4 @@ uv build
 - 所有组合实验保留 baseline 与各单组件对照；
 - 发布更完整的训练曲线和硬件归一化效率数据。
 
-所有 Python 代码集中在 `src/next_gen_arch`：`arch/` 只保留按架构族合并的模型定义，`training/` 统一承载训练、数据、优化器、kernel、评测和运行时，`backends/` 是执行适配，`prompts/` 是可移植 prompt。当前 16 种机制已验证单 rank MCore wrapper，但尚不能据此声称全部支持 Megatron tensor、pipeline、expert 或 context parallelism。项目以 [MIT License](LICENSE) 发布；各架构名称和论文归原作者所有，详见 [NOTICE.md](NOTICE.md)。
+所有 Python 代码集中在 `src/next_gen_arch`：`arch/` 只保留按架构族合并的模型定义，`training/` 统一承载训练、数据、优化器、kernel、评测和运行时，`backends/` 是执行适配，`prompts/` 是可移植 prompt。当前 16 种机制已验证单 rank MCore wrapper，100M baseline 也已完成三节点 15-way data parallel；但尚不能据此声称全部机制支持 Megatron tensor、pipeline、expert 或 context parallelism。项目以 [MIT License](LICENSE) 发布；各架构名称和论文归原作者所有，详见 [NOTICE.md](NOTICE.md)。

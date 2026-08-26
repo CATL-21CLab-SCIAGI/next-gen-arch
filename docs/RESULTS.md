@@ -2,8 +2,9 @@
 
 Historical scaling values in this document are frozen as of 2026-08-24 (UTC+8). The
 original matched 10M backend comparison completed on 2026-08-25; the B300 optimized
-follow-up completed on 2026-08-26. Validation BPB is lower-is-better. `Δ` is the mean
-paired difference from the same-scale, same-backend baseline over matching seeds.
+follow-up and 100M three-node baseline comparison completed on 2026-08-26. Validation
+BPB is lower-is-better. `Δ` is the mean paired difference from the same-scale,
+same-backend baseline over matching seeds.
 
 ## Read the regimes separately
 
@@ -49,6 +50,34 @@ for 13 variants and default compile for KDA, Kimi K3 KDA, and Qwen GDN. See the
 The original regular-compile comparison remains published as a causal reference. It
 completed 48/48 finite runs plus the three-seed DSA correction and reached correlation
 `0.975948`; its Megatron baseline was materially slower (`752,144 tok/s`).
+
+## 100M multi-node baseline reproduction
+
+The 100M baseline ran once per backend as one `3 nodes × 5 B300 GPUs = 15 ranks`
+process group. It used NVLink within each node and verified NCCL RoCE/GDRDMA between
+nodes. Both backends consumed exactly 192 active sequences per optimizer step; three
+ignored rows supplied the static 13-row local shape required because 192 is not
+divisible by 15.
+
+| Run | Final BPB | Δ vs current speedrun | Steady tok/s |
+| --- | ---: | ---: | ---: |
+| Historical single-GPU speedrun | 0.91636648 | +0.00021621 | 999,897* |
+| Current 15-rank speedrun | **0.91615027** | — | 1,906,064† |
+| Current 15-rank Megatron | 0.91756084 | +0.00141057 | 1,940,137† |
+
+`*` Historical post-warmup aggregate. `†` Sampled or exact median steady step.
+
+The speedrun reproduction passes its pre-registered gate: 14-point Pearson
+`0.99999787`, curve MAE `0.00069146 BPB`, and final delta `-0.00021621 BPB`. Megatron
+versus current speedrun has 13-point Pearson `0.99983861` and mean absolute gap
+`0.00122598 BPB`. The single Megatron seed is slightly better through much of
+warmdown, then ends `0.00141057 BPB` worse; this is not enough evidence to rank backend
+quality.
+
+Megatron's median steady step is `1.018×` speedrun, but its transition-inclusive
+post-warm aggregate is only `0.892×`, and the complete process takes 782.0 seconds.
+This distinction is why cold/lifecycle and warmed-step throughput remain separate
+metrics. See the [full curve and provenance artifacts](../results/100m-multinode-b300/).
 
 ## Completed 100M and 300M controls
 

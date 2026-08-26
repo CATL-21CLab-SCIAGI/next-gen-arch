@@ -60,7 +60,11 @@ There are two intentionally distinct Megatron integration levels:
 1. `next_gen_arch.backends.megatron` is the portable scaling renderer. It currently exposes only the upstream MCore baseline and can render tensor, pipeline, and context parallel topology. A custom variant remains capability-gated until it receives a native parallel adapter, checkpoint semantics, initialization alignment, and distributed numerical tests.
 2. `next_gen_arch.training.megatron_train` is the controlled architecture-comparison wrapper. It keeps architecture math and the historical Muon/Adam grouping in this repository while delegating initialization, DDP accumulation, the pretrain lifecycle, scheduling, finite checks, and reporting to pinned Megatron. All 16 variants completed the approximately 10M, three-seed comparison through this path at `TP=PP=CP=1`.
 
-The second result validates construction and training under the MCore lifecycle; it does not bypass the first layer's scale-readiness gate. In particular, it is not evidence that every custom attention or recurrent mechanism already shards correctly across tensor or context parallel ranks.
+The 100M baseline subsequently completed one real 15-way data-parallel run over three
+B300 nodes through the same wrapper, with NCCL RoCE/GDRDMA and exact 192-sequence batch
+replay. This validates multi-node data parallelism for the baseline. It does not bypass
+the first layer's scale-readiness gate or show that every custom attention or recurrent
+mechanism shards correctly across tensor or context parallel ranks.
 
 The frozen small-model campaign is defined in `training/campaigns.py`.
 `training/campaign_runner.py` distributes its Cartesian run set across nodes and accepts
@@ -111,6 +115,7 @@ Training and evaluation load the same schema-versioned prompt set. The default i
 - A frozen speedrun spec reproduces the original command fields, with only the Python module path updated for the `src` layout.
 - A Megatron spec guarantees pinned upstream source, explicit model/data/parallelism arguments, portable paths, and an inspectable launch plan.
 - The 10M comparison wrapper guarantees a frozen 16-variant contract, three matched seeds, per-run source provenance, and single-rank MCore lifecycle coverage.
+- The 100M baseline has separate evidence for 15-way, three-node MCore data parallelism with exact non-divisible-batch handling; it remains `TP=PP=CP=1`.
 - The two backends do not promise bitwise, optimizer, throughput, or checkpoint equivalence.
 - Cross-backend quality claims require a separately frozen paired contract and backend-specific validation evidence.
 
