@@ -9,12 +9,30 @@ The repository separates three levels of reproduction:
 ## 1. Install
 
 ```bash
-git submodule update --init --recursive
 uv sync --extra cpu --group dev
+uv run next-gen-arch verify
+```
+
+The CPU extra is only for artifact integrity and tests. GPU execution uses the
+system stack from the validated `nemo-26.06` container instead of resolving a project
+CUDA wheel:
+
+```bash
+uv venv --system-site-packages
+uv sync --group dev
 uv run next-gen-arch doctor --backend megatron
 ```
 
-Use `--extra gpu` for the CUDA 12.8 wheel index. The frozen campaign used Python 3.10.12, PyTorch 2.9.1+cu128, CUDA 12.8, BF16, and NVIDIA B300 GPUs (`sm_103a`). The host's `nvidia-smi` product string was incorrect; PyTorch capability and the physical fleet identity are the authoritative hardware provenance. CPU tests are not a throughput reproduction.
+The doctor output must be retained with a run. It reports the actual Megatron
+distribution and package path; the container digest and the rest of the CUDA stack
+belong in the run environment record. Do not infer exact versions from the profile
+name alone or let project setup replace the container's PyTorch/TE/Megatron packages.
+
+The frozen campaign used Python 3.10.12, PyTorch 2.9.1+cu128, CUDA 12.8, BF16, and
+NVIDIA B300 GPUs (`sm_103a`). The host's `nvidia-smi` product string was incorrect;
+PyTorch capability and the physical fleet identity are the authoritative hardware
+provenance. CPU tests are not a throughput reproduction, and new container-backed runs
+must be labeled as a new runtime rather than silently merged with those rows.
 
 ## 2. Validate published artifacts
 
@@ -188,7 +206,7 @@ See [BACKEND_COMPARISON.md](BACKEND_COMPARISON.md) for the bug audit and interpr
 
 - nanochat upstream commit recorded by the campaign: `b9f5025652d51470e2c31117100d9ff48717b911`
 - modded-nanogpt speedrun lineage commit: `f411b3d346aa52d3504324ca93c230fd84c6c07f`
-- Megatron-LM submodule commit: `55ac7082517c3878ae653c07c09c534b8aed49f6`
+- historical Megatron-LM commit: `55ac7082517c3878ae653c07c09c534b8aed49f6`
 - B300 safe-autotune training source commit (all 48 accepted rows): `f8bc91df1aa10a2e4fd193cb9acdc4df3cdba975`
 - B300 safe-autotune policy commit: `f79d77c8f81f953666e58d6dcb4f1b52194bba2c`
 - B300 safe-autotune source worktree SHA-256: `33c2da2f369cc6a117055a71d327f41de48fe448131a6a62c936189bf2d3e4c3`

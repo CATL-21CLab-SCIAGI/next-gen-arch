@@ -39,16 +39,27 @@ The optimizer lineage includes the compact Muon work inherited from `KellerJorda
 
 ## Megatron backend
 
-Megatron-LM is a real Git submodule at `third_party/Megatron-LM`, pinned to:
+Megatron Core is provided by the execution environment, not by a Git submodule or a
+project dependency. The validated PAI container profile is `nemo-26.06`. That profile
+owns the mutually compatible PyTorch, CUDA, NCCL, Transformer Engine, NeMo, and
+Megatron versions; project installation must not resolve or replace them.
 
-```text
-https://github.com/NVIDIA/Megatron-LM.git
-55ac7082517c3878ae653c07c09c534b8aed49f6
-```
+`archlab.megatron.backend` locates `megatron` through Python's installed-package
+mechanism and records its distribution version and package path. The portable native
+renderer launches `python -m archlab.megatron.backend` under `torchrun`; that stable
+module delegates to the system `pretrain_gpt.py`. A nonstandard container may point to
+its entrypoint with `NGA_MEGATRON_PRETRAIN`. The controlled architecture wrapper needs
+only the installed MCore package and therefore does not require that script.
 
-The project never edits files inside the submodule. `archlab.megatron.backend` validates that the checkout exists, matches the lock, and is clean before rendering a command. All project-specific adapters belong in `src/archlab`, following the same read-only-upstream boundary used by the `llm-arch-lab` reference design.
+Run `next-gen-arch doctor --backend megatron` inside the target container before
+training. A rendered plan is intentionally inspectable on CPU systems without
+Megatron installed, while execution fails closed when the package, distribution
+metadata, or native entrypoint is absent. Release wheels and source archives contain
+only project adapters; they never contain Megatron or NeMo source.
 
-Release wheels and source archives intentionally exclude the Megatron-LM working tree. Use a recursive Git checkout for the Megatron backend; packaged installations contain the portable specifications and adapters, not a vendored copy of upstream code.
+Historical benchmark artifacts remain tied to Megatron-LM commit
+`55ac7082517c3878ae653c07c09c534b8aed49f6`. That commit is provenance for those runs,
+not a source checkout in the current repository.
 
 ## Why Marin is a source, not a third backend
 
@@ -72,7 +83,7 @@ general “Marin backend” is not currently justified.
 There are two intentionally distinct Megatron integration levels:
 
 1. `archlab.megatron.backend` is the portable scaling renderer. It currently exposes only the upstream MCore baseline and can render tensor, pipeline, and context parallel topology. A custom variant remains capability-gated until it receives a native parallel adapter, checkpoint semantics, initialization alignment, and distributed numerical tests.
-2. `archlab.megatron.train` is the controlled architecture-comparison wrapper. It keeps architecture math and the historical Muon/Adam grouping in this repository while delegating initialization, DDP accumulation, the pretrain lifecycle, scheduling, finite checks, and reporting to pinned Megatron. All 16 variants completed the approximately 10M, three-seed comparison through this path at `TP=PP=CP=1`.
+2. `archlab.megatron.train` is the controlled architecture-comparison wrapper. It keeps architecture math and the historical Muon/Adam grouping in this repository while delegating initialization, DDP accumulation, the pretrain lifecycle, scheduling, finite checks, and reporting to the validated system Megatron. All 16 variants completed the approximately 10M, three-seed comparison through this path at `TP=PP=CP=1`.
 
 The 100M baseline subsequently completed one real 15-way data-parallel run over three
 B300 nodes through the same wrapper, with NCCL RoCE/GDRDMA and exact 192-sequence batch

@@ -31,7 +31,7 @@ The goal is not to declare a universal architecture winner. It is to produce sma
 ## Two execution backends, one experiment contract
 
 - **`speedrun`** preserves the compact Muon, compilation, data-order, and kernel optimizations inherited from [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) and the campaign's nanochat fork. It remains the comparison-grade backend for the published 100M–1B results.
-- **`megatron`** uses the MCore training lifecycle from a pinned, read-only [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) Git submodule. All 16 mechanisms have now passed the matched 10M three-seed comparison through the repository's model wrapper. Megatron is the scaling substrate; no upstream file is copied into or patched by this project.
+- **`megatron`** uses the system-provided MCore training lifecycle from the validated `nemo-26.06` container profile. All 16 mechanisms have passed the matched 10M three-seed comparison through the repository's model wrapper. Megatron is the scaling substrate; no upstream source tree is copied into, patched by, or shipped with this project.
 
 The YAML contract is backend-neutral and uses layered `base + backend + scale + experiment` configuration. Paths are `env:NAME` references or CLI overrides, and sampling prompts are versioned package assets. A variant is rejected if it has not received a backend-specific adapter; the project does not claim numerical equivalence merely because two commands share an architecture name. The 10M validation used `TP=PP=CP=1`, so it validates the MCore wrapper and architecture signal, not yet native tensor/pipeline/context parallelism for every mechanism. See [docs/RUNTIMES.md](docs/RUNTIMES.md).
 
@@ -164,14 +164,16 @@ The 100M study was repeated independently. Variant-minus-baseline deltas correla
 The project uses [uv](https://docs.astral.sh/uv/) and Python 3.10 or newer.
 
 ```bash
-git clone --recurse-submodules https://github.com/CATL-21CLab-SCIAGI/next-gen-arch.git
+git clone https://github.com/CATL-21CLab-SCIAGI/next-gen-arch.git
 cd next-gen-arch
 uv sync --extra cpu --group dev
 uv run next-gen-arch verify
-uv run next-gen-arch doctor --backend megatron
 ```
 
-For a CUDA 12.8 environment, replace `--extra cpu` with `--extra gpu`.
+The CPU extra is for artifact inspection and unit tests. For GPU training, use the
+validated NeMo container, create the environment with `--system-site-packages`, and run
+`next-gen-arch doctor --backend megatron` before launch. The project deliberately does
+not resolve or replace the container's PyTorch, Transformer Engine, or Megatron packages.
 
 Inspect the frozen experiment axes and reconstruct any exact run command:
 
@@ -239,12 +241,11 @@ Gradient scans run every step by default. They can be made less frequent with `-
 
 ```text
 src/archlab/architectures/  model and layer composition only
-src/archlab/optimizers/     optimizer extensions absent from pinned Megatron
+src/archlab/optimizers/     optimizer extensions absent from system Megatron
 src/archlab/megatron/       the only ArchLab → Megatron integration boundary
 src/archlab/speedrun/       frozen small-scale reference backend
 src/archlab/prompts/        versioned backend-neutral prompt sets
 recipes/                    portable smoke and pretraining contracts
-third_party/Megatron-LM/    pinned read-only Git submodule
 results/                    frozen contracts and machine-readable evidence
 tests/                      unit, integration, and distributed regressions
 ```

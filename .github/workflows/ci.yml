@@ -18,8 +18,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-        with:
-          submodules: true
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
@@ -34,7 +32,6 @@ jobs:
         run: |
           uv run next-gen-arch verify
           uv run python -c "from archlab.results import verify_metrics; print(verify_metrics())"
-          uv run next-gen-arch doctor --backend megatron
       - name: Verify portable launch plans
         env:
           NGA_DATA_ROOT: /tmp/next-gen-arch-data
@@ -52,13 +49,13 @@ jobs:
         run: uv run pytest -m "not slow" -q
       - name: Build distributions
         run: uv build
-      - name: Verify upstream is not vendored
+      - name: Verify runtime frameworks are not vendored
         run: |
-          if tar -tzf dist/*.tar.gz | grep '/third_party/' > /dev/null; then
-            echo 'source archive unexpectedly contains third_party content'
+          if tar -tzf dist/*.tar.gz | grep -E '/(Megatron-LM|NeMo)(/|$)' > /dev/null; then
+            echo 'source archive unexpectedly contains a runtime framework'
             exit 1
           fi
-          if unzip -Z1 dist/*.whl | grep '^third_party/' > /dev/null; then
-            echo 'wheel unexpectedly contains third_party content'
+          if unzip -Z1 dist/*.whl | grep -E '^(megatron|nemo)/' > /dev/null; then
+            echo 'wheel unexpectedly contains a runtime framework'
             exit 1
           fi

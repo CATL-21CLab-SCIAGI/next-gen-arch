@@ -1,8 +1,13 @@
-"""Megatron-LM command renderer with a strict read-only submodule boundary."""
+"""Megatron-LM command renderer for a system-provided runtime."""
 
 from __future__ import annotations
 
-import subprocess
+import os
+import platform
+import runpy
+import sys
+from importlib.metadata import PackageNotFoundError, version
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -10,37 +15,88 @@ from archlab.capabilities import require_backend_support
 from archlab.launch import LaunchPlan
 from archlab.spec import ExperimentSpec, SpecError
 
-MEGATRON_URL = "https://github.com/NVIDIA/Megatron-LM.git"
-MEGATRON_COMMIT = "55ac7082517c3878ae653c07c09c534b8aed49f6"
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-MEGATRON_ROOT = REPOSITORY_ROOT / "third_party" / "Megatron-LM"
+MEGATRON_DISTRIBUTION = "megatron-core"
+MEGATRON_CONTAINER_PROFILE = "nemo-26.06"
+MEGATRON_MODULE_ENTRYPOINT = "archlab.megatron.backend"
 
 
-def _git_output(*args: str) -> str:
-    return subprocess.run(
-        ["git", "-c", f"safe.directory={MEGATRON_ROOT}", *args],
-        cwd=MEGATRON_ROOT,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    ).stdout.strip()
-
-
-def validate_submodule() -> dict[str, str]:
-    """Verify that the submodule exists, is pinned, and has no local patches."""
-    if not (MEGATRON_ROOT / "megatron" / "core").is_dir():
+def _megatron_package_path() -> Path:
+    package = find_spec("megatron")
+    core = find_spec("megatron.core") if package is not None else None
+    if package is None or core is None:
         raise RuntimeError(
-            "Megatron-LM submodule is not initialized; run "
-            "`git submodule update --init --recursive`"
+            "system Megatron Core is unavailable; run inside the validated NeMo container "
+            "or install a compatible megatron-core distribution"
         )
-    actual = _git_output("rev-parse", "HEAD")
-    if actual != MEGATRON_COMMIT:
-        raise RuntimeError(f"Megatron-LM commit {actual} != locked {MEGATRON_COMMIT}")
-    dirty = _git_output("status", "--porcelain")
-    if dirty:
-        raise RuntimeError(f"read-only Megatron-LM submodule has local changes:\n{dirty}")
-    return {"url": MEGATRON_URL, "commit": actual, "path": str(MEGATRON_ROOT)}
+    if package.submodule_search_locations:
+        return Path(next(iter(package.submodule_search_locations))).resolve()
+    if package.origin:
+        return Path(package.origin).resolve().parent
+    raise RuntimeError("could not resolve the system Megatron package path")
+
+
+def _resolve_pretrain_script(package_path: Path) -> Path:
+    override = os.environ.get("NGA_MEGATRON_PRETRAIN")
+    if override:
+        candidate = Path(override).expanduser().resolve()
+        if not candidate.is_file():
+            raise RuntimeError(f"NGA_MEGATRON_PRETRAIN is not a file: {candidate}")
+        return candidate
+
+    candidates = (
+        package_path.parent / "pretrain_gpt.py",
+        package_path.parent.parent / "pretrain_gpt.py",
+        Path("/opt/Megatron-LM/pretrain_gpt.py"),
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    raise RuntimeError(
+        "system Megatron Core is importable, but pretrain_gpt.py was not found; "
+        "set NGA_MEGATRON_PRETRAIN to the container-provided entrypoint"
+    )
+
+
+def validate_runtime(*, require_pretrain: bool = True) -> dict[str, str]:
+    """Validate and describe the system-owned Megatron runtime."""
+    package_path = _megatron_package_path()
+    try:
+        distribution_version = version(MEGATRON_DISTRIBUTION)
+    except PackageNotFoundError as error:
+        raise RuntimeError(
+            f"{MEGATRON_DISTRIBUTION} has no installed distribution metadata"
+        ) from error
+
+    runtime = {
+        "provider": "system",
+        "distribution": MEGATRON_DISTRIBUTION,
+        "version": distribution_version,
+        "package_path": str(package_path),
+        "validated_container_profile": MEGATRON_CONTAINER_PROFILE,
+        "python": platform.python_version(),
+    }
+    for key, distribution in (
+        ("torch", "torch"),
+        ("transformer_engine", "transformer-engine"),
+        ("nemo_toolkit", "nemo-toolkit"),
+    ):
+        try:
+            runtime[key] = version(distribution)
+        except PackageNotFoundError:
+            runtime[key] = "not-installed"
+    if container_digest := os.environ.get("NGA_CONTAINER_DIGEST"):
+        runtime["container_digest"] = container_digest
+    if require_pretrain:
+        runtime["pretrain_script"] = str(_resolve_pretrain_script(package_path))
+    return runtime
+
+
+def run_system_pretrain() -> None:
+    """Execute the system Megatron pretrain script without adding upstream to this repo."""
+    runtime = validate_runtime(require_pretrain=True)
+    pretrain_script = Path(runtime["pretrain_script"])
+    sys.path.insert(0, str(pretrain_script.parent))
+    runpy.run_path(str(pretrain_script), run_name="__main__")
 
 
 def _required(mapping: dict[str, Any], *keys: str, section: str) -> None:
@@ -53,7 +109,7 @@ class MegatronBackend:
     name = "megatron"
 
     def doctor(self) -> dict[str, str]:
-        return validate_submodule()
+        return validate_runtime()
 
     def render(
         self,
@@ -62,7 +118,6 @@ class MegatronBackend:
         path_overrides: dict[str, str] | None = None,
     ) -> LaunchPlan:
         require_backend_support(spec.variant, self.name)
-        submodule = validate_submodule()
         paths = spec.resolve_paths(path_overrides)
         _required(paths, "train_data", "valid_data", "tokenizer", "output_dir", section="paths")
 
@@ -182,7 +237,8 @@ class MegatronBackend:
         output = Path(paths["output_dir"])
         argv = [
             *launcher,
-            str(MEGATRON_ROOT / "pretrain_gpt.py"),
+            "--module",
+            MEGATRON_MODULE_ENTRYPOINT,
             "--use-mcore-models",
             "--num-layers",
             str(num_layers),
@@ -341,9 +397,18 @@ class MegatronBackend:
                 "target_training_tokens": target_tokens,
                 "effective_training_tokens": effective_tokens,
                 "prompt_file": spec.resolve_reference(spec.prompts),
-                "submodule": submodule,
+                "runtime": {
+                    "provider": "system",
+                    "distribution": MEGATRON_DISTRIBUTION,
+                    "validated_container_profile": MEGATRON_CONTAINER_PROFILE,
+                    "module_entrypoint": MEGATRON_MODULE_ENTRYPOINT,
+                },
                 "semantic_equivalence": (
                     "scaling backend only; speedrun optimizer/kernel equivalence is not claimed"
                 ),
             },
         )
+
+
+if __name__ == "__main__":
+    run_system_pretrain()

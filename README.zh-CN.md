@@ -23,7 +23,7 @@
 ## 双后端边界
 
 - `speedrun` 保留继承自 [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) 和 campaign nanochat fork 的 Muon、编译、数据顺序及 kernel 优化，是已发布 100M–1B 结果的对照后端。
-- `megatron` 使用固定 commit、只读的 Megatron-LM Git submodule 与 MCore 训练生命周期。16 种机制均已通过约 10M、三 seed 的匹配对照；它负责后续扩缩，项目不复制或修改 Megatron 源码。
+- `megatron` 使用已验证 `nemo-26.06` 容器提供的系统 MCore 训练生命周期。16 种机制均已通过约 10M、三 seed 的匹配对照；它负责后续扩缩，项目不复制、不修改、也不随包分发 Megatron 源码树。
 
 配置按 `base + backend + scale + experiment` 分层合并。路径使用 `env:NAME` 或 CLI override，sampling prompt 是带版本的包内资产。未完成 Megatron adapter 的变体会明确拒绝运行，不会把同名架构当作数值等价实现。10M 对比采用 `TP=PP=CP=1`，验证的是 MCore wrapper 与架构信号，并不代表每种机制已经原生支持 tensor/pipeline/context parallelism。
 
@@ -148,14 +148,16 @@ LM loss 不能与 ClimbMix/nanochat BPB campaign 合并比较。完整报告与�
 需要 Python 3.10+ 和 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
-git clone --recurse-submodules https://github.com/CATL-21CLab-SCIAGI/next-gen-arch.git
+git clone https://github.com/CATL-21CLab-SCIAGI/next-gen-arch.git
 cd next-gen-arch
 uv sync --extra cpu --group dev
 uv run next-gen-arch verify
-uv run next-gen-arch doctor --backend megatron
 ```
 
-CUDA 12.8 环境可将 `--extra cpu` 换成 `--extra gpu`。查看实验轴与重建冻结命令：
+CPU extra 仅用于结果检查和单元测试。GPU 训练使用已验证的 NeMo 容器，以
+`--system-site-packages` 创建环境，并在启动前运行
+`next-gen-arch doctor --backend megatron`。项目不会解析或替换容器内的 PyTorch、
+Transformer Engine 与 Megatron 包。查看实验轴与重建冻结命令：
 
 ```bash
 uv run next-gen-arch list
@@ -225,4 +227,4 @@ uv build
 - 所有组合实验保留 baseline 与各单组件对照；
 - 发布更完整的训练曲线和硬件归一化效率数据。
 
-所有 Python 代码集中在 `src/archlab`：`architectures/` 只保留按架构族合并的模型定义，`megatron/` 是唯一的 MCore 适配边界，`optimizers/` 放置新增优化器，`speedrun/` 冻结继承自 modded-nanogpt 的轻量训练路径，`prompts/` 保持 prompt 可移植。实验参数统一放在 `recipes/`，Megatron 固定为只读 submodule。当前 16 种机制已验证单 rank MCore wrapper，100M baseline 也已完成三节点 15-way data parallel；但尚不能据此声称全部机制支持 Megatron tensor、pipeline、expert 或 context parallelism。项目以 [MIT License](LICENSE) 发布；各架构名称和论文归原作者所有，详见 [NOTICE.md](NOTICE.md)。
+所有 Python 代码集中在 `src/archlab`：`architectures/` 只保留按架构族合并的模型定义，`megatron/` 是唯一的 MCore 适配边界，`optimizers/` 放置新增优化器，`speedrun/` 冻结继承自 modded-nanogpt 的轻量训练路径，`prompts/` 保持 prompt 可移植。实验参数统一放在 `recipes/`，Megatron 由容器作为系统依赖提供。当前 16 种机制已验证单 rank MCore wrapper，100M baseline 也已完成三节点 15-way data parallel；但尚不能据此声称全部机制支持 Megatron tensor、pipeline、expert 或 context parallelism。项目以 [MIT License](LICENSE) 发布；各架构名称和论文归原作者所有，详见 [NOTICE.md](NOTICE.md)。

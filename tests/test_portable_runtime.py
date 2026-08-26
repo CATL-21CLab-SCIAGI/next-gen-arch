@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import pytest
 
 from archlab.capabilities import require_backend_support
 from archlab.launch import get_backend
-from archlab.megatron.backend import MEGATRON_COMMIT, validate_submodule
+from archlab.megatron import backend as megatron_backend
 from archlab.prompts import load_prompts
 from archlab.spec import SpecError, load_experiment
 
@@ -40,9 +41,11 @@ def test_megatron_spec_renders_eight_rank_scaling_plan(monkeypatch, tmp_path):
     plan = get_backend(spec.backend).render(spec)
 
     assert plan.argv[:3] == ("torchrun", "--standalone", "--nproc-per-node=8")
+    assert plan.argv[3:5] == ("--module", "archlab.megatron.backend")
     assert "--use-mcore-models" in plan.argv
     assert plan.metadata["world_size"] == 8
-    assert plan.metadata["submodule"]["commit"] == MEGATRON_COMMIT
+    assert plan.metadata["runtime"]["provider"] == "system"
+    assert plan.metadata["runtime"]["validated_container_profile"] == "nemo-26.06"
     assert plan.metadata["effective_training_tokens"] <= 12_000_000_000
 
 
@@ -89,6 +92,7 @@ def test_native_parallelism_campaign_renders_frozen_12_rank_contract(
         "--master-port",
         "env:MASTER_PORT",
     )
+    assert plan.argv[9:11] == ("--module", "archlab.megatron.backend")
     assert plan.metadata["world_size"] == 12
     assert plan.metadata["model_parallel_size"] == model_parallel
     assert plan.metadata["data_parallel_size"] == data_parallel
@@ -117,8 +121,40 @@ def test_native_parallelism_campaign_renders_frozen_12_rank_contract(
         assert "--moe-permute-fusion" in plan.argv
 
 
-def test_megatron_submodule_is_pinned_and_clean():
-    assert validate_submodule()["commit"] == MEGATRON_COMMIT
+def test_megatron_runtime_resolves_system_package(monkeypatch, tmp_path):
+    package_path = tmp_path / "site-packages" / "megatron"
+    package_path.mkdir(parents=True)
+    pretrain_script = package_path.parent / "pretrain_gpt.py"
+    pretrain_script.write_text("pass\n", encoding="utf-8")
+
+    def fake_find_spec(name):
+        spec = ModuleSpec(name, loader=None, is_package=True)
+        spec.submodule_search_locations = [str(package_path)]
+        return spec
+
+    monkeypatch.setattr(megatron_backend, "find_spec", fake_find_spec)
+    versions = {
+        "megatron-core": "0.13.0",
+        "torch": "2.9.1",
+        "transformer-engine": "2.11.0",
+        "nemo-toolkit": "2.5.0",
+    }
+    monkeypatch.setattr(megatron_backend, "version", versions.__getitem__)
+    monkeypatch.setattr(megatron_backend.platform, "python_version", lambda: "3.12.0")
+
+    runtime = megatron_backend.validate_runtime()
+    assert runtime == {
+        "provider": "system",
+        "distribution": "megatron-core",
+        "version": "0.13.0",
+        "package_path": str(package_path),
+        "validated_container_profile": "nemo-26.06",
+        "python": "3.12.0",
+        "torch": "2.9.1",
+        "transformer_engine": "2.11.0",
+        "nemo_toolkit": "2.5.0",
+        "pretrain_script": str(pretrain_script),
+    }
 
 
 def test_backend_capabilities_do_not_claim_unported_equivalence():

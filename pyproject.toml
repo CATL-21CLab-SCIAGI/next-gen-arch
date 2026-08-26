@@ -30,7 +30,6 @@ dependencies = [
     "rustbpe>=0.1.0",
     "tiktoken>=0.11.0",
     "tokenizers>=0.22.0",
-    "torch==2.9.1",
     "wandb>=0.21.3",
 ]
 
@@ -54,7 +53,6 @@ dev = [
 
 [project.optional-dependencies]
 cpu = ["torch==2.9.1"]
-gpu = ["torch==2.9.1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/archlab"]
@@ -69,7 +67,6 @@ packages = ["src/archlab"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
-    "/third_party",
     "/.venv",
     "/dist",
     "/build",
@@ -97,25 +94,13 @@ ignore = ["E501"]
 
 [tool.uv]
 default-groups = []
-conflicts = [
-    [
-        {extra = "cpu"},
-        {extra = "gpu"},
-    ],
-]
 
 [tool.uv.sources]
 torch = [
     {index = "pytorch-cpu", extra = "cpu"},
-    {index = "pytorch-cu128", extra = "gpu"},
 ]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
 explicit = true

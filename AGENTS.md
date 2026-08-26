@@ -9,8 +9,9 @@
 - Consolidate genuinely shared model primitives, but do not optimize for a fixed file
   count. A leaf mechanism deserves its own module when it has an independent interface,
   numerical oracle, or distributed implementation.
-- Treat `third_party/Megatron-LM` as a read-only submodule. Pin upgrades explicitly and
-  record the commit in tests and runtime documentation; never patch upstream in place.
+- Treat Megatron Core, PyTorch, Transformer Engine, CUDA, and NCCL as a container-owned
+  runtime contract. Never vendor or patch them in this repository; record the container
+  identity and resolved package versions with every run.
 - Put portable experiment contracts under `recipes`. Inject machine paths through
   `env:NAME`, `package:relative/path`, or launch-time overrides.
 - Preserve frozen speedrun arguments and data-order semantics. Intentional behavior

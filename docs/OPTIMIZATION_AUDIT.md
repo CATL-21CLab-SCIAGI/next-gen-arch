@@ -14,7 +14,7 @@ The source snapshots are fixed for this audit:
 - `marin-community/marin` at `299c7f3245e2e6998345980cadad75f45088f63f`
 - `KellerJordan/modded-nanogpt` at `ecbb586296d3dac36fd206211f25d63bad4a6b35`
 - `marin-community/marin-speedrun` at `31fe8028f8caa6e47082c02de095b1fed4f517a8`
-- this repository's Megatron-LM submodule at
+- the historical Megatron-LM runtime used by this repository at
   `55ac7082517c3878ae653c07c09c534b8aed49f6`
 
 The complete Modded short-track history through record 89 and the complete Marin
@@ -106,7 +106,8 @@ hide. Overlap remains available as an explicit scale profile, but is not the def
 ## Portable recipes
 
 The recipe registry lives in `archlab.optimizers.recipes`. Each result records the
-resolved recipe, backend profile, source commit/diff digest, Megatron submodule commit,
+resolved recipe, backend profile, source commit/diff digest, Megatron runtime identity
+(historical runs record the submodule commit),
 CUDA/PyTorch versions, and selected `ptxas`.
 
 | Recipe | Upstream idea | Implementation status |
@@ -253,7 +254,7 @@ introduced the mechanism rather than copied into 89 independent flags.
 | Records | Mechanisms | Disposition here |
 |---|---|---|
 | 1–5 | modern GPT, RoPE, QK norm, ReLU², padding, zero projections, Muon | retained |
-| 6–10 | distributed Muon, PyTorch upgrade, untied head, value/x0 paths, BF16 | retained or delegated to pinned Megatron/PyTorch |
+| 6–10 | distributed Muon, PyTorch upgrade, untied head, value/x0 paths, BF16 | retained or delegated to container-owned Megatron/PyTorch |
 | 11–21 | U-Net skips, attention/window tuning, value embeddings, softcap, FP8 head, fused QKV, batch tuning | retained where contract-compatible; FP8 head is a B300 capability probe |
 | 22–24 | faster all-reduce, overlap, reduce-scatter | delegated to Megatron distributed optimizer/DDP; requires a multi-rank scale probe |
 | 25–33 | runtime upgrade, BOS alignment, transposed MLP kernel, attention gate, FA3, layer dropping, YaRN, BF16 cleanup, async data | BOS/BF16/gates retained; FA3 is Hopper-only; shape/schedule changes stay explicit |

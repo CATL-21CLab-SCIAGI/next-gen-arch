@@ -3,8 +3,8 @@
 This adapter deliberately keeps the architecture math and historical mixed
 Muon/Adam policy in this package while delegating distributed initialization,
 DDP gradient accumulation, pipeline scheduling, finite checks, and reporting to
-the pinned Megatron-LM submodule. It is a comparison adapter, not a claim that
-every mechanism has a tensor-parallel-native MCore layer implementation.
+the system-provided Megatron Core runtime. It is a comparison adapter, not a claim
+that every mechanism has a tensor-parallel-native MCore layer implementation.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from typing import Any
 
 import torch
 
-from archlab.megatron.backend import MEGATRON_COMMIT, MEGATRON_ROOT, validate_submodule
+from archlab.megatron.backend import validate_runtime
 from archlab.optimizers.recipes import (
     OPTIMIZATION_RECIPES,
     OptimizationRecipe,
@@ -728,7 +728,6 @@ def _run_megatron(
     _TRAIN_LOSS_SUM = 0.0
     _TRAIN_TOKENS = 0
     _TRAIN_METRICS_ENABLED = metrics_path is not None
-    sys.path.insert(0, str(MEGATRON_ROOT))
     sys.argv = _megatron_arguments(
         variant,
         profile,
@@ -978,7 +977,6 @@ def _environment(
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
         **_source_provenance(repository),
-        "megatron_commit": MEGATRON_COMMIT,
         "data_root": os.environ.get("NANOCHAT_BASE_DIR"),
         "triton_ptxas_path": os.environ.get("TRITON_PTXAS_PATH"),
         "semantic_equivalence": (
@@ -1044,7 +1042,7 @@ def main() -> None:
                 raise RuntimeError(
                     f"refusing to overwrite existing metrics file: {metrics_path}"
                 ) from error
-        submodule = validate_submodule()
+        runtime = validate_runtime(require_pretrain=False)
         environment = _environment(
             variant,
             args.seed,
@@ -1054,7 +1052,7 @@ def main() -> None:
             scale=args.scale,
             exact_global_batch_replay=args.exact_global_batch_replay,
         )
-        environment["submodule"] = submodule
+        environment["runtime"] = runtime
         if primary:
             _write_json(run_dir / "resolved_run.json", environment)
         tokenizer = get_tokenizer()
