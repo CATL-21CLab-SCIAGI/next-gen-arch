@@ -2,7 +2,7 @@
 
 The surrounding GPT stays identical to the base architecture. KDA replaces only
 the configured token mixers, while AttnRes changes only depth-wise residual reads. CUDA uses the KDA
-operator from fla-core 0.4.0; the PyTorch recurrence is a correctness reference
+operator from the supported fla-core 0.4 releases; the PyTorch recurrence is a correctness reference
 and a CPU test path, never a CUDA fallback.
 """
 
@@ -33,6 +33,7 @@ KDA_PATTERN = "KKKG"
 KDA_CHUNK_SIZE = 64
 KDA_CONV_SIZE = 4
 FLA_CORE_VERSION = "0.4.0"
+SUPPORTED_FLA_CORE_VERSIONS = (FLA_CORE_VERSION, "0.4.2")
 FLA_CORE_WHEEL_SHA256 = "5396f36a9838c99f9e45c70e88e2e0b26688f719d07d2ddd61be16d29327f4ea"
 
 
@@ -126,6 +127,30 @@ def kda_gate_reference(
     return -a_log.float().exp().view(*([1] * (raw.ndim - 2)), -1, 1) * F.softplus(raw.float())
 
 
+def _call_fused_kda_gate(
+    fused_kda_gate,
+    version: str,
+    raw_gate: torch.Tensor,
+    a_log: torch.Tensor,
+    dt_bias: torch.Tensor,
+    n_head: int,
+    head_dim: int,
+) -> torch.Tensor:
+    """Bridge the fla-core 0.4.0 and 0.4.2 KDA gate APIs without changing math."""
+    if version == "0.4.0":
+        return fused_kda_gate(raw_gate, a_log, head_dim, g_bias=dt_bias)
+    if version == "0.4.2":
+        shaped = raw_gate.view(*raw_gate.shape[:-1], n_head, head_dim)
+        return fused_kda_gate(
+            shaped,
+            a_log,
+            dt_bias=dt_bias,
+            output_dtype=raw_gate.dtype,
+        )
+    supported = ", ".join(SUPPORTED_FLA_CORE_VERSIONS)
+    raise RuntimeError(f"Expected fla-core in ({supported}), found {version}")
+
+
 def kda_recurrent_reference(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -214,12 +239,22 @@ class KimiDeltaAttention(nn.Module):
             return (-5.0 * torch.sigmoid(scale * shaped.float())).to(raw_gate.dtype)
         if raw_gate.device.type == "cuda":
             try:
+                import fla
                 from fla.ops.kda.gate import fused_kda_gate
             except ImportError as exc:  # pragma: no cover - exercised by remote preflight
                 raise RuntimeError(
-                    f"CUDA KDA requires fla-core=={FLA_CORE_VERSION}; no fallback is allowed"
+                    "CUDA KDA requires a supported fla-core 0.4 release; no fallback is allowed"
                 ) from exc
-            return fused_kda_gate(raw_gate, self.a_log, self.head_dim, g_bias=self.dt_bias)
+            version = getattr(fla, "__version__", FLA_CORE_VERSION)
+            return _call_fused_kda_gate(
+                fused_kda_gate,
+                version,
+                raw_gate,
+                self.a_log,
+                self.dt_bias,
+                self.n_head,
+                self.head_dim,
+            )
         return kda_gate_reference(raw_gate, self.a_log, self.dt_bias, self.head_dim)
 
     def _mix(self, q, k, v, g, beta):
@@ -229,11 +264,12 @@ class KimiDeltaAttention(nn.Module):
                 from fla.ops.kda import chunk_kda
             except ImportError as exc:  # pragma: no cover - exercised by remote preflight
                 raise RuntimeError(
-                    f"CUDA KDA requires fla-core=={FLA_CORE_VERSION}; no fallback is allowed"
+                    "CUDA KDA requires a supported fla-core 0.4 release; no fallback is allowed"
                 ) from exc
             version = getattr(fla, "__version__", FLA_CORE_VERSION)
-            if version != FLA_CORE_VERSION:
-                raise RuntimeError(f"Expected fla-core {FLA_CORE_VERSION}, found {version}")
+            if version not in SUPPORTED_FLA_CORE_VERSIONS:
+                supported = ", ".join(SUPPORTED_FLA_CORE_VERSIONS)
+                raise RuntimeError(f"Expected fla-core in ({supported}), found {version}")
             kernel_head_dim = max(16, self.head_dim)
             padding = kernel_head_dim - self.head_dim
             kernel_q = F.pad(q, (0, padding)) if padding else q

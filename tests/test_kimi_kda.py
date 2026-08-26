@@ -11,6 +11,7 @@ from archlab.architectures.kimi import (
     KimiKDA,
     KimiKDAConfig,
     NoPEGatedBlock,
+    _call_fused_kda_gate,
     kda_gate_reference,
     kda_layer_map,
     kda_recurrent_reference,
@@ -79,6 +80,43 @@ def test_gate_reference_matches_kda_parameterization():
     assert gate.shape == (1, 2, 2, 4)
     torch.testing.assert_close(gate[..., 0, :], torch.full((1, 2, 4), -math.log(2)))
     torch.testing.assert_close(gate[..., 1, :], torch.full((1, 2, 4), -2 * math.log(2)))
+
+
+def test_fla_042_gate_adapter_reshapes_and_preserves_dtype():
+    raw = torch.zeros(1, 2, 8, dtype=torch.bfloat16)
+    a_log = torch.zeros(2)
+    bias = torch.zeros(8)
+    call = {}
+
+    def fused(g, A_log, *, dt_bias, output_dtype):
+        call.update(g=g, A_log=A_log, dt_bias=dt_bias, output_dtype=output_dtype)
+        return g
+
+    result = _call_fused_kda_gate(fused, "0.4.2", raw, a_log, bias, 2, 4)
+
+    assert result.shape == (1, 2, 2, 4)
+    assert call == {
+        "g": result,
+        "A_log": a_log,
+        "dt_bias": bias,
+        "output_dtype": torch.bfloat16,
+    }
+
+
+def test_fla_040_gate_adapter_preserves_legacy_call_contract():
+    raw = torch.zeros(1, 2, 8)
+    a_log = torch.zeros(2)
+    bias = torch.zeros(8)
+    call = {}
+
+    def fused(g, A_log, head_dim, *, g_bias):
+        call.update(g=g, A_log=A_log, head_dim=head_dim, g_bias=g_bias)
+        return g.view(1, 2, 2, 4)
+
+    result = _call_fused_kda_gate(fused, "0.4.0", raw, a_log, bias, 2, 4)
+
+    assert result.shape == (1, 2, 2, 4)
+    assert call == {"g": raw, "A_log": a_log, "head_dim": 4, "g_bias": bias}
 
 
 @pytest.mark.parametrize("variant", ["kimi_k3", "solar_negative"])
