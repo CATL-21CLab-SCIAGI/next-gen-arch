@@ -16,11 +16,170 @@ Fallback to the original if you have very limited data AND long documents:
 https://github.com/karpathy/nanochat/blob/3c3a3d7/nanochat/dataloader.py#L78-L117
 """
 
-import pyarrow.parquet as pq
+from pathlib import Path
+
+import numpy as np
 import torch
 
-from archlab.speedrun.dataset import list_parquet_files
 from archlab.speedrun.runtime import get_dist_info
+
+FINEWEB_HEADER_INTS = 256
+FINEWEB_HEADER_BYTES = FINEWEB_HEADER_INTS * 4
+FINEWEB_MAGIC = 20_240_520
+FINEWEB_VERSION = 1
+
+
+def inspect_fineweb_shard(path: Path) -> int:
+    """Validate one modded-nanogpt/llm.c token shard and return its token count."""
+    with path.open("rb") as handle:
+        raw_header = handle.read(FINEWEB_HEADER_BYTES)
+    if len(raw_header) != FINEWEB_HEADER_BYTES:
+        raise ValueError(f"truncated FineWeb header: {path}")
+    header = np.frombuffer(raw_header, dtype=np.int32)
+    if int(header[0]) != FINEWEB_MAGIC:
+        raise ValueError(f"FineWeb magic mismatch in {path}")
+    if int(header[1]) != FINEWEB_VERSION:
+        raise ValueError(f"unsupported FineWeb shard version in {path}: {int(header[1])}")
+    token_count = int(header[2])
+    expected_bytes = FINEWEB_HEADER_BYTES + 2 * token_count
+    actual_bytes = path.stat().st_size
+    if actual_bytes != expected_bytes:
+        raise ValueError(
+            f"FineWeb shard length mismatch in {path}: {actual_bytes} != {expected_bytes}"
+        )
+    return token_count
+
+
+def inspect_fineweb_dataset(
+    root: str | Path,
+    *,
+    expected_train_shards: int = 103,
+) -> dict[str, int]:
+    """Validate the complete public FineWeb10B binary inventory."""
+    root = Path(root)
+    train = sorted(root.glob("fineweb_train_*.bin"))
+    validation = sorted(root.glob("fineweb_val_*.bin"))
+    expected_train = [
+        root / f"fineweb_train_{index:06d}.bin"
+        for index in range(1, expected_train_shards + 1)
+    ]
+    expected_validation = [root / "fineweb_val_000000.bin"]
+    if len(train) != expected_train_shards or train != expected_train:
+        raise ValueError(
+            f"FineWeb10B requires train shards 000001..000103; found {len(train)}"
+        )
+    if validation != expected_validation:
+        raise ValueError("FineWeb10B requires exactly fineweb_val_000000.bin")
+    train_tokens = sum(inspect_fineweb_shard(path) for path in train)
+    validation_tokens = sum(inspect_fineweb_shard(path) for path in validation)
+    return {
+        "train_shards": len(train),
+        "validation_shards": len(validation),
+        "train_tokens": train_tokens,
+        "validation_tokens": validation_tokens,
+        "total_tokens": train_tokens + validation_tokens,
+    }
+
+
+class FineWebBinaryLoader:
+    """Deterministic rank slices over the public GPT-2 FineWeb10B shards.
+
+    All ranks advance one shared logical cursor.  A global batch is one
+    contiguous token range, split into equal rank-local ranges; the trailing
+    target token overlaps the next range exactly as in modded-nanogpt.
+    """
+
+    def __init__(
+        self,
+        root: str | Path,
+        split: str,
+        local_batch_size: int,
+        sequence_length: int,
+        *,
+        rank: int,
+        world_size: int,
+        device: str | torch.device = "cuda",
+    ) -> None:
+        if split not in {"train", "val"}:
+            raise ValueError("split must be 'train' or 'val'")
+        if local_batch_size <= 0 or sequence_length <= 0:
+            raise ValueError("batch size and sequence length must be positive")
+        if world_size <= 0 or not 0 <= rank < world_size:
+            raise ValueError("rank must be inside a positive world size")
+        self.files = sorted(Path(root).glob(f"fineweb_{split}_*.bin"))
+        if not self.files:
+            raise FileNotFoundError(f"no FineWeb {split} shards under {Path(root)}")
+        self.local_batch_size = local_batch_size
+        self.sequence_length = sequence_length
+        self.local_tokens = local_batch_size * sequence_length
+        self.global_tokens = self.local_tokens * world_size
+        self.rank = rank
+        self.world_size = world_size
+        self.device = torch.device(device)
+        self.shard_index = 0
+        self.global_position = 0
+        self.tokens: np.memmap | None = None
+        self.token_count = 0
+        self._open_shard()
+
+    def _open_shard(self) -> None:
+        path = self.files[self.shard_index]
+        self.token_count = inspect_fineweb_shard(path)
+        self.tokens = np.memmap(
+            path,
+            dtype=np.uint16,
+            mode="r",
+            offset=FINEWEB_HEADER_BYTES,
+            shape=(self.token_count,),
+        )
+        self.global_position = 0
+
+    def _advance_shard(self) -> None:
+        self.shard_index = (self.shard_index + 1) % len(self.files)
+        self._open_shard()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> tuple[torch.Tensor, torch.Tensor]:
+        while self.global_position + self.global_tokens + 1 > self.token_count:
+            self._advance_shard()
+        start = self.global_position + self.rank * self.local_tokens
+        stop = start + self.local_tokens + 1
+        assert self.tokens is not None
+        # np.array makes a writable, aligned owner before the asynchronous H2D copy.
+        buffer = torch.from_numpy(np.array(self.tokens[start:stop], dtype=np.int64, copy=True))
+        inputs = buffer[:-1].view(self.local_batch_size, self.sequence_length)
+        labels = buffer[1:].view(self.local_batch_size, self.sequence_length)
+        self.global_position += self.global_tokens
+        if self.device.type == "cuda":
+            inputs = inputs.pin_memory().to(self.device, non_blocking=True)
+            labels = labels.pin_memory().to(self.device, non_blocking=True)
+        else:
+            inputs = inputs.to(self.device)
+            labels = labels.to(self.device)
+        return inputs, labels
+
+
+def fineweb_distributed_data_loader(
+    root: str | Path,
+    split: str,
+    local_batch_size: int,
+    sequence_length: int,
+    *,
+    device: str | torch.device = "cuda",
+):
+    """Yield rank-local FineWeb batches using the initialized torchrun topology."""
+    _ddp, rank, _local_rank, world_size = get_dist_info()
+    yield from FineWebBinaryLoader(
+        root,
+        split,
+        local_batch_size,
+        sequence_length,
+        rank=rank,
+        world_size=world_size,
+        device=device,
+    )
 
 
 def _document_batches(split, resume_state_dict, tokenizer_batch_size, *, distributed=True):
@@ -31,6 +190,10 @@ def _document_batches(split, resume_state_dict, tokenizer_batch_size, *, distrib
     where text_batch is a list of document strings, indices track position for resumption,
     and epoch counts how many times we've cycled through the dataset (starts at 1).
     """
+    import pyarrow.parquet as pq
+
+    from archlab.speedrun.dataset import list_parquet_files
+
     _ddp, ddp_rank, _ddp_local_rank, ddp_world_size = get_dist_info()
     if not distributed:
         # Reconstruct the canonical single-rank document stream on every rank.

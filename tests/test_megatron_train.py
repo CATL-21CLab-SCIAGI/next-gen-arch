@@ -12,6 +12,7 @@ from archlab.megatron.train import (
     _megatron_arguments,
     _source_provenance,
     get_megatron_backend_profile,
+    resolve_fineweb_variant,
 )
 from archlab.optimizers.recipes import get_optimization_recipe
 from archlab.speedrun.campaigns import (
@@ -124,6 +125,27 @@ def test_100m_exact_replay_keeps_192_active_sequences_on_world_15(monkeypatch):
     assert arguments[arguments.index("--global-batch-size") + 1] == "195"
     assert arguments[arguments.index("--eval-interval") + 1] == "250"
     assert "--calculate-per-token-loss" in arguments
+
+
+def test_fineweb_100m_contract_uses_24_way_dp_and_gpt2_vocabulary(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "24")
+    variant = resolve_fineweb_variant("100m", "baseline")
+    arguments = _megatron_arguments(
+        variant,
+        get_megatron_backend_profile("compile-safe-autotune"),
+        get_optimization_recipe("baseline"),
+        dataset="fineweb10b",
+        scale="100m",
+    )
+
+    assert variant.parameter_count == 98_009_374
+    assert variant.steps == 2_991
+    assert arguments[arguments.index("--micro-batch-size") + 1] == "8"
+    assert arguments[arguments.index("--global-batch-size") + 1] == "192"
+    assert arguments[arguments.index("--vocab-size") + 1] == "50304"
+    assert arguments[arguments.index("--tensor-model-parallel-size") + 1] == "1"
+    assert arguments[arguments.index("--pipeline-model-parallel-size") + 1] == "1"
+    assert arguments[arguments.index("--context-parallel-size") + 1] == "1"
 
 
 def test_masked_padding_is_excluded_from_megatron_loss_and_bpb(monkeypatch):

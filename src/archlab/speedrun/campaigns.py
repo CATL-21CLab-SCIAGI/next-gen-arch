@@ -11,6 +11,8 @@ HISTORICAL_MICRO_BATCH_SIZE = 16
 COMPARISON_GLOBAL_BATCH_SIZE = 192
 COMPARISON_BATCH_TOKENS = COMPARISON_SEQUENCE_LENGTH * COMPARISON_GLOBAL_BATCH_SIZE
 COMPARISON_EVAL_TOKENS = 3_932_160
+FINEWEB_VOCAB_SIZE = 50_304
+FINEWEB_TOKENS_PER_PARAMETER = 12.0
 
 # Public compatibility aliases for the original 10M campaign API.
 TEN_M_SEEDS = COMPARISON_SEEDS
@@ -243,6 +245,109 @@ CAMPAIGN_VARIANTS = {
     "100m": HUNDRED_M_VARIANTS_BY_NAME,
 }
 
+
+# FineWeb10B is a new scaling campaign, not an extension of the frozen
+# ClimbMix comparison above.  Keep its templates parameter-free here: the
+# exact count depends on the 50,304-token GPT-2 vocabulary and is resolved on
+# the meta device before Megatron initializes.  This avoids copying 17 nearly
+# identical mechanism definitions for each model size.
+FINEWEB_CAMPAIGN_GEOMETRIES = {
+    "1m": {"depth": 2, "aspect_ratio": 4, "head_dim": 8},
+    # GPT-2's larger vocabulary also expands nanochat's value-embedding bank.
+    # These widths keep baseline scaling parameters near the nominal labels.
+    "10m": {"depth": 5, "aspect_ratio": 7, "head_dim": 8},
+    "100m": {"depth": 10, "aspect_ratio": 20, "head_dim": 64},
+    "300m": {"depth": 16, "aspect_ratio": 29, "head_dim": 64},
+}
+
+_FINEWEB_SCALE_CONTROLS = {
+    "1m": {
+        "engram_layers": (0,),
+        "engram_num_heads": 1,
+        "engram_dim": 2,
+        "dsa_index_heads": 1,
+        "dsa_index_head_dim": 8,
+        "dsa_index_rope_dim": 4,
+        "relative_dim": 4,
+    },
+    "10m": {
+        "engram_layers": (2,),
+        "engram_num_heads": 2,
+        "engram_dim": 20,
+        "dsa_index_heads": 2,
+        "dsa_index_head_dim": 32,
+        "dsa_index_rope_dim": 8,
+        "relative_dim": 8,
+    },
+    "100m": {
+        "engram_layers": (1, 4),
+        "engram_num_heads": 4,
+        "engram_dim": 128,
+        "dsa_index_heads": 4,
+        "dsa_index_head_dim": 64,
+        "dsa_index_rope_dim": 32,
+        "relative_dim": 16,
+    },
+    "300m": {
+        "engram_layers": (3, 9),
+        "engram_num_heads": 8,
+        "engram_dim": 256,
+        "dsa_index_heads": 8,
+        "dsa_index_head_dim": 64,
+        "dsa_index_rope_dim": 32,
+        "relative_dim": 32,
+    },
+}
+
+
+def _fineweb_template(scale: str, base: CampaignVariant) -> CampaignVariant:
+    overrides = base.model_kwargs()
+    controls = _FINEWEB_SCALE_CONTROLS[scale]
+    if base.name == "engram":
+        overrides.update(
+            {
+                key: controls[key]
+                for key in ("engram_layers", "engram_num_heads", "engram_dim")
+            }
+        )
+    if base.name == "dsa":
+        overrides.update(
+            {
+                key: controls[key]
+                for key in ("dsa_index_heads", "dsa_index_head_dim", "dsa_index_rope_dim")
+            }
+        )
+    if base.name in {
+        "situ-glu",
+        "inkling-relative-attention",
+        "glm-mla",
+        "qwen-gdn",
+        "inkling-sconv-kv",
+        "inkling-sconv-residual",
+        "partial-rope-25",
+    }:
+        overrides["relative_dim"] = controls["relative_dim"]
+    return _variant(base.name, 0, 0, 0, **overrides)
+
+
+_COLU_TEMPLATE = _variant(
+    "colu",
+    0,
+    0,
+    0,
+    arch_family="combo_search",
+    search_mlp="colu",
+    colu_dim=4,
+)
+
+FINEWEB_CAMPAIGN_VARIANTS = {
+    scale: {
+        variant.name: variant
+        for variant in (*(_fineweb_template(scale, base) for base in TEN_M_VARIANTS), _COLU_TEMPLATE)
+    }
+    for scale in FINEWEB_CAMPAIGN_GEOMETRIES
+}
+
 # Kept as an alias so downstream imports do not break while the generalized
 # name is used by new scale-aware code.
 TenMVariant = CampaignVariant
@@ -268,6 +373,21 @@ def get_campaign_variant(scale: str, name: str) -> CampaignVariant:
         choices = ", ".join(variants)
         raise ValueError(
             f"unknown {scale} variant {name!r}; choose one of: {choices}"
+        ) from error
+
+
+def get_fineweb_variant_template(scale: str, name: str) -> CampaignVariant:
+    try:
+        variants = FINEWEB_CAMPAIGN_VARIANTS[scale]
+    except KeyError as error:
+        choices = ", ".join(FINEWEB_CAMPAIGN_VARIANTS)
+        raise ValueError(f"unknown FineWeb scale {scale!r}; choose one of: {choices}") from error
+    try:
+        return variants[name]
+    except KeyError as error:
+        choices = ", ".join(variants)
+        raise ValueError(
+            f"unknown FineWeb {scale} variant {name!r}; choose one of: {choices}"
         ) from error
 
 
@@ -297,6 +417,24 @@ def campaign_model_config_kwargs(scale: str, variant: CampaignVariant) -> dict[s
         **geometry,
         "max_seq_len": COMPARISON_SEQUENCE_LENGTH,
         "vocab_size": 32_768,
+        "window_pattern": "L",
+        "fog_variant": "flash",
+        "per_head_muon": True,
+        **variant.model_kwargs(),
+    }
+
+
+def fineweb_model_config_kwargs(scale: str, variant: CampaignVariant) -> dict[str, Any]:
+    """Return the FineWeb/GPT-2 geometry plus one architecture mechanism."""
+    try:
+        geometry = FINEWEB_CAMPAIGN_GEOMETRIES[scale]
+    except KeyError as error:
+        choices = ", ".join(FINEWEB_CAMPAIGN_GEOMETRIES)
+        raise ValueError(f"unknown FineWeb scale {scale!r}; choose one of: {choices}") from error
+    return {
+        **geometry,
+        "max_seq_len": COMPARISON_SEQUENCE_LENGTH,
+        "vocab_size": FINEWEB_VOCAB_SIZE,
         "window_pattern": "L",
         "fog_variant": "flash",
         "per_head_muon": True,

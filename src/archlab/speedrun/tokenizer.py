@@ -164,8 +164,12 @@ class HuggingFaceTokenizer:
 # Tokenizer based on rustbpe + tiktoken combo
 import pickle
 
-import rustbpe
 import tiktoken
+
+try:
+    import rustbpe
+except ImportError:  # Pretokenized GPT-2 corpora only require tiktoken.
+    rustbpe = None
 
 
 class RustBPETokenizer:
@@ -178,6 +182,8 @@ class RustBPETokenizer:
     @classmethod
     def train_from_iterator(cls, text_iterator, vocab_size):
         # 1) train using rustbpe
+        if rustbpe is None:
+            raise RuntimeError("training a tokenizer requires the optional rustbpe package")
         tokenizer = rustbpe.Tokenizer()
         # the special tokens are inserted later in __init__, we don't train them here
         vocab_size_no_special = vocab_size - len(SPECIAL_TOKENS)
@@ -422,6 +428,35 @@ def get_tokenizer():
     tokenizer_dir = os.path.join(base_dir, "tokenizer")
     # return HuggingFaceTokenizer.from_directory(tokenizer_dir)
     return RustBPETokenizer.from_directory(tokenizer_dir)
+
+
+def get_pretrained_tokenizer(name: str):
+    """Return a tiktoken-backed public tokenizer for pretokenized corpora."""
+    return RustBPETokenizer.from_pretrained(name)
+
+
+def token_bytes_for_tokenizer(tokenizer, vocab_size: int, device="cpu"):
+    """Build byte lengths, leaving aligned vocabulary padding at zero bytes."""
+    import torch
+
+    if vocab_size < tokenizer.get_vocab_size():
+        raise ValueError(
+            f"model vocabulary {vocab_size} is smaller than tokenizer vocabulary "
+            f"{tokenizer.get_vocab_size()}"
+        )
+    token_bytes = torch.zeros(vocab_size, dtype=torch.int64, device=device)
+    if isinstance(tokenizer, RustBPETokenizer):
+        lengths = [
+            len(tokenizer.enc.decode_single_token_bytes(token_id))
+            for token_id in range(tokenizer.get_vocab_size())
+        ]
+    else:
+        lengths = [
+            len(tokenizer.decode([token_id]).encode("utf-8"))
+            for token_id in range(tokenizer.get_vocab_size())
+        ]
+    token_bytes[: len(lengths)] = torch.tensor(lengths, dtype=torch.int64, device=device)
+    return token_bytes
 
 
 def get_token_bytes(device="cpu"):

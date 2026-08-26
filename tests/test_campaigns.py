@@ -19,6 +19,7 @@ from archlab.speedrun.campaign_compare import (
     validate_results,
 )
 from archlab.speedrun.campaigns import (
+    FINEWEB_CAMPAIGN_VARIANTS,
     TEN_M_VARIANTS,
     campaign_model_config_kwargs,
     get_campaign_variant,
@@ -60,6 +61,13 @@ def test_100m_baseline_geometry_and_parameter_count_are_frozen():
     assert config.n_head == 6
     assert variant.steps == 3_228
     assert model.num_scaling_params()["total"] == 105_775_510
+
+
+def test_fineweb_wave_has_four_scales_and_sixteen_arms_plus_colu():
+    assert tuple(FINEWEB_CAMPAIGN_VARIANTS) == ("1m", "10m", "100m", "300m")
+    for variants in FINEWEB_CAMPAIGN_VARIANTS.values():
+        assert len(variants) == 17
+        assert set(variants) == {variant.name for variant in TEN_M_VARIANTS} | {"colu"}
 
 
 def test_speedrun_10m_reference_matches_frozen_contract():

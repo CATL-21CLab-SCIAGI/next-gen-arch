@@ -41,12 +41,19 @@ from archlab.speedrun.campaigns import (
     COMPARISON_GLOBAL_BATCH_SIZE,
     COMPARISON_SEEDS,
     COMPARISON_SEQUENCE_LENGTH,
+    FINEWEB_CAMPAIGN_VARIANTS,
+    FINEWEB_TOKENS_PER_PARAMETER,
+    FINEWEB_VOCAB_SIZE,
     HISTORICAL_MICRO_BATCH_SIZE,
     CampaignVariant,
     campaign_model_config_kwargs,
+    fineweb_model_config_kwargs,
     get_campaign_variant,
+    get_fineweb_variant_template,
 )
 from archlab.speedrun.dataloader import (
+    fineweb_distributed_data_loader,
+    inspect_fineweb_dataset,
     tokenizing_distributed_data_loader_bos_bestfit,
     tokenizing_distributed_data_loader_with_state_bos_bestfit,
     tokenizing_replicated_global_batch_loader_with_state_bos_bestfit,
@@ -56,7 +63,12 @@ from archlab.speedrun.models import (
     build_model_config,
     instantiate_model,
 )
-from archlab.speedrun.tokenizer import get_token_bytes, get_tokenizer
+from archlab.speedrun.tokenizer import (
+    get_pretrained_tokenizer,
+    get_token_bytes,
+    get_tokenizer,
+    token_bytes_for_tokenizer,
+)
 
 _EVAL_NATS = 0.0
 _EVAL_BYTES = 0
@@ -64,6 +76,7 @@ _TRAIN_LOSS_SUM = 0.0
 _TRAIN_TOKENS = 0
 _TRAIN_METRICS_ENABLED = False
 _TOKEN_BYTES: torch.Tensor | None = None
+DATASETS = ("climbmix", "fineweb10b")
 
 
 def _world_size() -> int:
@@ -169,6 +182,36 @@ def get_megatron_backend_profile(name: str) -> MegatronBackendProfile:
         raise ValueError(
             f"unknown Megatron backend profile {name!r}; choose one of: {choices}"
         ) from error
+
+
+def _model_config_kwargs(
+    dataset: str,
+    scale: str,
+    variant: CampaignVariant,
+) -> dict[str, Any]:
+    if dataset == "fineweb10b":
+        return fineweb_model_config_kwargs(scale, variant)
+    return campaign_model_config_kwargs(scale, variant)
+
+
+def resolve_fineweb_variant(scale: str, name: str) -> CampaignVariant:
+    """Resolve exact GPT-2-vocabulary parameters and the 12-token/parameter budget."""
+    template = get_fineweb_variant_template(scale, name)
+    config = build_model_config(**fineweb_model_config_kwargs(scale, template))
+    with torch.device("meta"):
+        model = instantiate_model(config)
+    parameter_count = int(model.num_scaling_params()["total"])
+    steps = max(
+        1,
+        round(FINEWEB_TOKENS_PER_PARAMETER * parameter_count / COMPARISON_BATCH_TOKENS),
+    )
+    warmup_steps = min(40, max(1, round(0.05 * steps)))
+    return replace(
+        template,
+        parameter_count=parameter_count,
+        steps=steps,
+        warmup_steps=warmup_steps,
+    )
 
 
 def _current_training_iteration(args) -> int:
@@ -292,10 +335,11 @@ def _megatron_arguments(
     profile: MegatronBackendProfile,
     recipe: OptimizationRecipe,
     *,
+    dataset: str = "climbmix",
     scale: str = "10m",
     exact_global_batch_replay: bool = False,
 ) -> list[str]:
-    model_kwargs = campaign_model_config_kwargs(scale, variant)
+    model_kwargs = _model_config_kwargs(dataset, scale, variant)
     head_dim = int(model_kwargs["head_dim"])
     hidden_size = (
         (int(model_kwargs["depth"]) * int(model_kwargs["aspect_ratio"]) + head_dim - 1)
@@ -303,7 +347,14 @@ def _megatron_arguments(
         * head_dim
     )
     num_attention_heads = hidden_size // head_dim
-    if exact_global_batch_replay:
+    if dataset == "fineweb10b":
+        if COMPARISON_GLOBAL_BATCH_SIZE % _world_size():
+            raise ValueError(
+                "FineWeb DP requires the 192-sequence global batch to be divisible by world size"
+            )
+        micro_batch_size = COMPARISON_GLOBAL_BATCH_SIZE // _world_size()
+        scheduled_global_batch_size = COMPARISON_GLOBAL_BATCH_SIZE
+    elif exact_global_batch_replay:
         micro_batch_size = math.ceil(COMPARISON_GLOBAL_BATCH_SIZE / _world_size())
         scheduled_global_batch_size = micro_batch_size * _world_size()
         if profile.ddp_average_in_collective:
@@ -314,7 +365,9 @@ def _megatron_arguments(
         micro_batch_size = HISTORICAL_MICRO_BATCH_SIZE
         scheduled_global_batch_size = COMPARISON_GLOBAL_BATCH_SIZE
     eval_iters = COMPARISON_EVAL_TOKENS // COMPARISON_BATCH_TOKENS
-    eval_interval = 250 if scale == "100m" else variant.steps
+    eval_interval = min(250, variant.steps) if dataset == "fineweb10b" else (
+        250 if scale == "100m" else variant.steps
+    )
     arguments = [
         "next-gen-arch-megatron",
         "--use-mcore-models",
@@ -371,7 +424,7 @@ def _megatron_arguments(
         "--tokenizer-type",
         "NullTokenizer",
         "--vocab-size",
-        "32768",
+        str(model_kwargs["vocab_size"]),
         "--dataloader-type",
         "external",
         "--num-workers",
@@ -613,8 +666,26 @@ def _external_batch_loader(
     tokenizer,
     split: str,
     *,
+    dataset: str = "climbmix",
+    data_root: Path | None = None,
     exact_global_batch_replay: bool = False,
 ):
+    if dataset == "fineweb10b":
+        if data_root is None:
+            raise ValueError("FineWeb requires an explicit data root")
+        if COMPARISON_GLOBAL_BATCH_SIZE % _world_size():
+            raise ValueError("FineWeb global batch is not divisible by DP world size")
+        source = fineweb_distributed_data_loader(
+            data_root,
+            split,
+            COMPARISON_GLOBAL_BATCH_SIZE // _world_size(),
+            COMPARISON_SEQUENCE_LENGTH,
+            device="cuda",
+        )
+        for tokens, labels in source:
+            yield {"tokens": tokens, "labels": labels}
+        return
+
     if exact_global_batch_replay:
         if split == "train":
             source = tokenizing_replicated_global_batch_loader_with_state_bos_bestfit(
@@ -672,8 +743,10 @@ def _loss_func(labels: torch.Tensor, training: bool, output_tensor: torch.Tensor
     valid = labels >= 0
     loss_sum = (losses * valid).sum()
     token_count = valid.sum(dtype=torch.int64)
-    if _TOKEN_BYTES is None or _TOKEN_BYTES.device != labels.device:
+    if _TOKEN_BYTES is None:
         _TOKEN_BYTES = get_token_bytes(device=labels.device)
+    elif _TOKEN_BYTES.device != labels.device:
+        _TOKEN_BYTES = _TOKEN_BYTES.to(labels.device)
     safe_labels = torch.where(valid, labels, torch.zeros_like(labels))
     byte_counts = torch.where(valid, _TOKEN_BYTES[safe_labels], 0)
     nats = (losses * (byte_counts > 0)).sum()
@@ -717,21 +790,30 @@ def _run_megatron(
     profile: MegatronBackendProfile,
     recipe: OptimizationRecipe,
     *,
+    dataset: str,
+    data_root: Path | None,
     scale: str,
     exact_global_batch_replay: bool,
     metrics_path: Path | None,
     metrics_every: int,
 ):
-    global _EVAL_BYTES, _EVAL_NATS, _TRAIN_LOSS_SUM, _TRAIN_METRICS_ENABLED, _TRAIN_TOKENS
+    global _EVAL_BYTES, _EVAL_NATS, _TOKEN_BYTES, _TRAIN_LOSS_SUM
+    global _TRAIN_METRICS_ENABLED, _TRAIN_TOKENS
     _EVAL_NATS = 0.0
     _EVAL_BYTES = 0
     _TRAIN_LOSS_SUM = 0.0
     _TRAIN_TOKENS = 0
     _TRAIN_METRICS_ENABLED = metrics_path is not None
+    _TOKEN_BYTES = (
+        token_bytes_for_tokenizer(tokenizer, FINEWEB_VOCAB_SIZE)
+        if dataset == "fineweb10b"
+        else None
+    )
     sys.argv = _megatron_arguments(
         variant,
         profile,
         recipe,
+        dataset=dataset,
         scale=scale,
         exact_global_batch_replay=exact_global_batch_replay,
     ) + ["--seed", str(seed)]
@@ -745,11 +827,11 @@ def _run_megatron(
     from megatron.training.arguments import core_transformer_config_from_args
 
     def skip_unused_dataset_helper_build() -> None:
-        print_rank_0("> external ClimbMix loader: skipping unused dataset-index helper build")
+        print_rank_0(f"> external {dataset} loader: skipping unused dataset-index helper build")
 
     dataset_utils.compile_helpers = skip_unused_dataset_helper_build
 
-    model_kwargs = campaign_model_config_kwargs(scale, variant)
+    model_kwargs = _model_config_kwargs(dataset, scale, variant)
     model_kwargs.update(recipe.model_overrides)
 
     class ArchitectureMegatronModel(MegatronModule):
@@ -782,7 +864,9 @@ def _run_megatron(
                     + ", ".join(nonfinite_parameters[:5])
                 )
             if variant.name == "engram":
-                token_map, compressed_vocab_size = build_engram_token_map(tokenizer, 32_768)
+                token_map, compressed_vocab_size = build_engram_token_map(
+                    tokenizer, int(model_kwargs["vocab_size"])
+                )
                 architecture.configure_engram_token_map(token_map, tokenizer.get_bos_token_id())
                 print_rank_0(f"Engram compressed vocabulary: {compressed_vocab_size}")
             actual_parameters = architecture.num_scaling_params()["total"]
@@ -859,11 +943,15 @@ def _run_megatron(
             _external_batch_loader(
                 tokenizer,
                 "train",
+                dataset=dataset,
+                data_root=data_root,
                 exact_global_batch_replay=exact_global_batch_replay,
             ),
             _external_batch_loader(
                 tokenizer,
                 "val",
+                dataset=dataset,
+                data_root=data_root,
                 exact_global_batch_replay=exact_global_batch_replay,
             ),
             None,
@@ -948,6 +1036,8 @@ def _environment(
     profile: MegatronBackendProfile,
     recipe: OptimizationRecipe,
     *,
+    dataset: str,
+    data_root: Path | None,
     scale: str,
     exact_global_batch_replay: bool,
 ) -> dict[str, Any]:
@@ -961,6 +1051,7 @@ def _environment(
         "scale": scale,
         "seed": seed,
         "mode": mode,
+        "dataset": dataset,
         "exact_global_batch_replay": exact_global_batch_replay,
         "effective_global_batch_sequences": COMPARISON_GLOBAL_BATCH_SIZE,
         "scheduled_global_batch_sequences": (
@@ -977,10 +1068,14 @@ def _environment(
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
         **_source_provenance(repository),
-        "data_root": os.environ.get("NANOCHAT_BASE_DIR"),
+        "data_root": (
+            str(data_root)
+            if data_root is not None
+            else os.environ.get("NANOCHAT_BASE_DIR")
+        ),
         "triton_ptxas_path": os.environ.get("TRITON_PTXAS_PATH"),
         "semantic_equivalence": (
-            "same architecture, ClimbMix packing, tokenizer, seed, batch budget, and "
+            f"same architecture, {dataset} data order, tokenizer, seed, batch budget, and "
             "mixed matrix/Adam schedule; the named optimization recipe is the only experimental "
             "delta; compilation changes execution only; native-master "
             "profiles preserve the speedrun mixed-storage policy without detached FP32 "
@@ -992,7 +1087,10 @@ def _environment(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scale", choices=tuple(CAMPAIGN_VARIANTS), default="10m")
+    scales = tuple(dict.fromkeys((*CAMPAIGN_VARIANTS, *FINEWEB_CAMPAIGN_VARIANTS)))
+    parser.add_argument("--dataset", choices=DATASETS, default="climbmix")
+    parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--scale", choices=scales, default="10m")
     parser.add_argument("--variant", required=True)
     parser.add_argument("--seed", required=True, type=int, choices=COMPARISON_SEEDS)
     parser.add_argument("--run-dir", required=True, type=Path)
@@ -1021,7 +1119,22 @@ def main() -> None:
         parser.error("--probe-steps must be non-negative")
     if args.metrics_every < 1:
         parser.error("--metrics-every must be positive")
-    contract_variant = get_campaign_variant(args.scale, args.variant)
+    if args.dataset == "fineweb10b":
+        if args.scale not in FINEWEB_CAMPAIGN_VARIANTS:
+            parser.error(f"--scale={args.scale} is not available for FineWeb")
+        if args.data_root is None:
+            parser.error("--data-root is required for FineWeb")
+        contract_variant = resolve_fineweb_variant(args.scale, args.variant)
+        data_root = args.data_root.expanduser().resolve()
+        data_summary = inspect_fineweb_dataset(data_root)
+    else:
+        if args.scale not in CAMPAIGN_VARIANTS:
+            parser.error(f"--scale={args.scale} is not available for ClimbMix")
+        if args.data_root is not None:
+            parser.error("--data-root is only valid with --dataset=fineweb10b")
+        contract_variant = get_campaign_variant(args.scale, args.variant)
+        data_root = None
+        data_summary = None
     variant = (
         replace(contract_variant, steps=args.probe_steps) if args.probe_steps else contract_variant
     )
@@ -1049,13 +1162,21 @@ def main() -> None:
             mode,
             profile,
             recipe,
+            dataset=args.dataset,
+            data_root=data_root,
             scale=args.scale,
             exact_global_batch_replay=args.exact_global_batch_replay,
         )
         environment["runtime"] = runtime
+        if data_summary is not None:
+            environment["data"] = data_summary
         if primary:
             _write_json(run_dir / "resolved_run.json", environment)
-        tokenizer = get_tokenizer()
+        tokenizer = (
+            get_pretrained_tokenizer("gpt2")
+            if args.dataset == "fineweb10b"
+            else get_tokenizer()
+        )
         started = time.perf_counter()
         schedule, parameter_count, final_bpb = _run_megatron(
             variant,
@@ -1063,6 +1184,8 @@ def main() -> None:
             tokenizer,
             profile,
             recipe,
+            dataset=args.dataset,
+            data_root=data_root,
             scale=args.scale,
             exact_global_batch_replay=args.exact_global_batch_replay,
             metrics_path=metrics_path,
@@ -1101,6 +1224,7 @@ def main() -> None:
                     "failed_at_unix": time.time(),
                 },
             )
+            marker.unlink(missing_ok=True)
         raise
     finally:
         if torch.distributed.is_available() and torch.distributed.is_initialized():

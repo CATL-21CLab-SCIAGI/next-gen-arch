@@ -1,6 +1,9 @@
 import sys
 import types
+from pathlib import Path
 
+import numpy as np
+import pytest
 import torch
 
 if "pyarrow.parquet" not in sys.modules:
@@ -14,6 +17,14 @@ if "archlab.speedrun.dataset" not in sys.modules:
     sys.modules["archlab.speedrun.dataset"] = dataset
 
 import archlab.speedrun.dataloader as dataloader
+
+
+def _write_fineweb_shard(path: Path, tokens: list[int]) -> None:
+    header = np.zeros(dataloader.FINEWEB_HEADER_INTS, dtype=np.int32)
+    header[:3] = (dataloader.FINEWEB_MAGIC, dataloader.FINEWEB_VERSION, len(tokens))
+    with path.open("wb") as handle:
+        handle.write(header.tobytes())
+        handle.write(np.asarray(tokens, dtype=np.uint16).tobytes())
 
 
 class TinyTokenizer:
@@ -123,3 +134,33 @@ def test_balanced_replicated_slice_keeps_exact_192_sequences_on_15_ranks():
         168,
         180,
     ]
+
+
+def test_fineweb_binary_loader_partitions_one_contiguous_global_batch(tmp_path):
+    shard = tmp_path / "fineweb_train_000001.bin"
+    _write_fineweb_shard(shard, list(range(100)))
+
+    rank0 = dataloader.FineWebBinaryLoader(
+        tmp_path, "train", 2, 4, rank=0, world_size=2, device="cpu"
+    )
+    rank1 = dataloader.FineWebBinaryLoader(
+        tmp_path, "train", 2, 4, rank=1, world_size=2, device="cpu"
+    )
+    inputs0, labels0 = next(rank0)
+    inputs1, labels1 = next(rank1)
+
+    assert inputs0.flatten().tolist() == list(range(8))
+    assert labels0.flatten().tolist() == list(range(1, 9))
+    assert inputs1.flatten().tolist() == list(range(8, 16))
+    assert labels1.flatten().tolist() == list(range(9, 17))
+    assert next(rank0)[0].flatten().tolist() == list(range(16, 24))
+
+
+def test_fineweb_shard_validation_rejects_truncated_payload(tmp_path):
+    shard = tmp_path / "fineweb_val_000000.bin"
+    _write_fineweb_shard(shard, [1, 2, 3])
+    with shard.open("ab") as handle:
+        handle.write(b"x")
+
+    with pytest.raises(ValueError, match="length mismatch"):
+        dataloader.inspect_fineweb_shard(shard)

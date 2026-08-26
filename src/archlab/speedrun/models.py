@@ -39,8 +39,15 @@ def build_engram_token_map(tokenizer, vocab_size: int) -> tuple[torch.Tensor, in
     mapping: list[int] = []
     key_to_id: dict[str, int] = {}
     whitespace = re.compile(r"[ \t\r\n]+")
+    tokenizer_vocab_size = tokenizer.get_vocab_size()
     for token_id in range(vocab_size):
-        text = tokenizer.id_to_token(token_id)
+        # The FineWeb model pads GPT-2's 50,257 entries to 50,304 for aligned
+        # kernels.  Padding entries never occur in data, but Engram still needs
+        # a total map, so keep each synthetic entry distinct.
+        if token_id >= tokenizer_vocab_size:
+            text = f"<padded-token-{token_id}>"
+        else:
+            text = tokenizer.id_to_token(token_id)
         if "�" in text:
             key = f"<raw-token-{token_id}>"
         else:
