@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -783,6 +784,39 @@ def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
     return output_tensor, partial(_loss_func, labels, bool(model.training))
 
 
+def _invoke_megatron_pretrain(
+    training_module,
+    datasets_provider,
+    model_provider,
+    model_type,
+) -> None:
+    """Call both the legacy CLI API and the config-container API from MCore 0.18+."""
+    parameters = inspect.signature(training_module.pretrain).parameters
+    if "cfg_container" in parameters:
+        from megatron.training.argument_utils import (
+            parse_and_validate_args,
+            pretrain_cfg_container_from_args,
+        )
+
+        args = parse_and_validate_args(args_defaults={"tokenizer_type": "NullTokenizer"})
+        config = pretrain_cfg_container_from_args(args)
+        training_module.pretrain(
+            config,
+            datasets_provider,
+            model_provider,
+            model_type,
+            _forward_step,
+        )
+        return
+    training_module.pretrain(
+        datasets_provider,
+        model_provider,
+        model_type,
+        _forward_step,
+        args_defaults={"tokenizer_type": "NullTokenizer"},
+    )
+
+
 def _run_megatron(
     variant: CampaignVariant,
     seed: int,
@@ -1010,12 +1044,11 @@ def _run_megatron(
 
     training_module.evaluate_and_print_results = record_evaluate_and_print
     try:
-        training_module.pretrain(
+        _invoke_megatron_pretrain(
+            training_module,
             datasets_provider,
             model_provider,
             ModelType.encoder_or_decoder,
-            _forward_step,
-            args_defaults={"tokenizer_type": "NullTokenizer"},
         )
     finally:
         training_module.evaluate_and_print_results = original_evaluate_and_print

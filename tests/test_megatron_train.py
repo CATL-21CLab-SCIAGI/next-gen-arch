@@ -1,4 +1,5 @@
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -8,6 +9,7 @@ from archlab.megatron.train import (
     SpeedrunSchedule,
     _current_training_iteration,
     _global_rank,
+    _invoke_megatron_pretrain,
     _loss_func,
     _megatron_arguments,
     _source_provenance,
@@ -39,6 +41,33 @@ def test_global_rank_defaults_to_single_process_and_honors_torchrun(monkeypatch)
     assert _global_rank() == 0
     monkeypatch.setenv("RANK", "3")
     assert _global_rank() == 3
+
+
+def test_pretrain_adapter_supports_config_container_api(monkeypatch):
+    calls = []
+    argument_utils = ModuleType("megatron.training.argument_utils")
+    argument_utils.parse_and_validate_args = lambda **kwargs: ("args", kwargs)
+    argument_utils.pretrain_cfg_container_from_args = lambda args: ("config", args)
+    monkeypatch.setitem(sys.modules, "megatron.training.argument_utils", argument_utils)
+
+    def pretrain(cfg_container, datasets, model, model_type, forward):
+        calls.append((cfg_container, datasets, model, model_type, forward))
+
+    _invoke_megatron_pretrain(SimpleNamespace(pretrain=pretrain), "data", "model", "type")
+
+    assert calls[0][:4] == (("config", ("args", {"args_defaults": {"tokenizer_type": "NullTokenizer"}})), "data", "model", "type")
+
+
+def test_pretrain_adapter_supports_legacy_cli_api():
+    calls = []
+
+    def pretrain(datasets, model, model_type, forward, *, args_defaults):
+        calls.append((datasets, model, model_type, forward, args_defaults))
+
+    _invoke_megatron_pretrain(SimpleNamespace(pretrain=pretrain), "data", "model", "type")
+
+    assert calls[0][:3] == ("data", "model", "type")
+    assert calls[0][-1] == {"tokenizer_type": "NullTokenizer"}
 
 
 @pytest.mark.parametrize(
