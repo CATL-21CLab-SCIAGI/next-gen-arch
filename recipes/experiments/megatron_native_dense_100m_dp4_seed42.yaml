@@ -1,0 +1,5 @@
+extends:
+  - megatron_native_dense_100m_dp5_seed42.yaml
+name: megatron-native-dense-100m-dp4-seed42
+parallelism:
+  gpus_per_node: 4

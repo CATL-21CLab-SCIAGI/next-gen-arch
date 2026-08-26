@@ -50,6 +50,6 @@ Large binaries, checkpoints, datasets, credentials, internal hostnames, and mach
 
 ## Code style
 
-Prefer a small readable implementation over a framework abstraction used by only one variant. Keep model math in `src/archlab/architectures`, local optimizer extensions in `src/archlab/optimizers`, and all Megatron-specific adaptation in `src/archlab/megatron`. The frozen reference runner lives in `src/archlab/speedrun`. Never edit `third_party/Megatron-LM`.
+Prefer a small readable implementation over a framework abstraction used by only one variant. Keep model math in `src/archlab/architectures`, local optimizer extensions in `src/archlab/optimizers`, and all Megatron-specific adaptation in `src/archlab/megatron`. The frozen reference runner lives in `src/archlab/speedrun`. Consolidate shared primitives, but do not merge unrelated mechanisms merely to reduce the file count. Import concrete submodules directly rather than building re-export registries in package initializers. Never edit `third_party/Megatron-LM`.
 
 By contributing, you agree that your contribution is licensed under the repository's MIT License.

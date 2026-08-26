@@ -3,6 +3,12 @@
 - Keep project-owned Python under `src/archlab`. `architectures` defines models,
   `optimizers` owns local optimizer extensions, `megatron` is the only Megatron
   integration boundary, and `speedrun` is the frozen small-scale reference backend.
+- Keep dependencies pointed from execution adapters toward architecture definitions,
+  never from `architectures` back into a trainer or optimizer. Import concrete modules
+  directly; package `__init__.py` files should not become public registries.
+- Consolidate genuinely shared model primitives, but do not optimize for a fixed file
+  count. A leaf mechanism deserves its own module when it has an independent interface,
+  numerical oracle, or distributed implementation.
 - Treat `third_party/Megatron-LM` as a read-only submodule. Pin upgrades explicitly and
   record the commit in tests and runtime documentation; never patch upstream in place.
 - Put portable experiment contracts under `recipes`. Inject machine paths through

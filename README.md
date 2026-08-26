@@ -77,6 +77,25 @@ The reproduced speedrun final differs from the historical seed-42 result by only
 the backends are therefore essentially tied in steady kernels but not in operational
 overhead. See the [full 100M artifacts](results/100m-multinode-b300/).
 
+### 100M-class native parallelism on one B300 node
+
+Eight sequential seed-42 Megatron runs trained for 73.7M tokens each. DP5/PP5 used
+five GPUs; factor-two TP/CP/EP used four GPUs so the six heads and six experts stayed
+unchanged. Median throughput excludes the first ten steps.
+
+| Comparison | Steady throughput ratio | Peak-memory effect | Outcome |
+| --- | ---: | ---: | --- |
+| PP5 / DP5 | 0.617× | -44.6% | capacity path, not a 100M default |
+| TP2+DP2 / DP4 | 0.389× | -48.6% | capacity path, not a 100M default |
+| fused DP4 / unfused DP4 | **1.274×** | -26.9% | useful B300 optimization |
+| CP2+DP2 / fused DP4 | 0.366× | -22.7% | reserve for long context |
+| MoE EP2+DP2 / EP1+DP4 | 0.980× | -7.1% | no throughput gain at six experts |
+
+All eight runs completed 200/200 steps with zero skipped or non-finite iterations.
+This harness used an indexed FineWeb-Edu control and matching DeepSeek-V3 tokenizer,
+so its validation LM loss is not comparable with the ClimbMix/nanochat BPB campaign.
+See the [native-parallelism report and machine-readable curves](results/100m-native-parallelism-b300-1n/).
+
 ### Parameter-scaling campaign: about 12 training tokens per parameter
 
 | Scale | Variant | Mean BPB | Paired Δ BPB | Throughput | Valid seeds |

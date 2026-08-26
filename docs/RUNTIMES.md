@@ -19,6 +19,14 @@ src/archlab/
 The Python import name is the short, stable `archlab`; the distribution and repository
 remain `next-gen-arch`.
 
+The layout deliberately optimizes dependency direction, not a fixed file count. A
+review of Marin at commit `0a0b91977c6fed61d6495ed1ac54ed1f813cebd1`
+reinforced that its maintainability comes from owned subsystem boundaries and local
+tests, not from mechanically merging modules. Architecture code cannot import a
+trainer or optimizer, package initializers are not re-export registries, and an
+independent leaf mechanism may keep its own module when it has a numerical or
+distributed contract.
+
 ## Speedrun backend
 
 `speedrun` is the direct descendant of the campaign code. Architecture definitions live
@@ -71,6 +79,16 @@ B300 nodes through the same wrapper, with NCCL RoCE/GDRDMA and exact 192-sequenc
 replay. This validates multi-node data parallelism for the baseline. It does not bypass
 the first layer's scale-readiness gate or show that every custom attention or recurrent
 mechanism shards correctly across tensor or context parallel ranks.
+
+The native Megatron renderer also completed a single-node 100M-class topology matrix:
+DP5, PP5, matched DP4/TP2, matched fused-DP4/CP2, and matched MoE EP1/EP2. All eight
+200-step runs were finite. At this scale PP5, TP2, and CP2 reached only 0.617×, 0.389×,
+and 0.366× their matched data-parallel throughput; EP2 reached 0.980× EP1 while saving
+7.1% peak allocated memory. Transformer Engine fused attention was the useful speed
+result at 1.274× unfused DP4. These are capacity capabilities, not evidence that model
+parallelism should be enabled for a model that already fits comfortably in data
+parallelism. The full contract and curves are in
+[results/100m-native-parallelism-b300-1n](../results/100m-native-parallelism-b300-1n/).
 
 The frozen small-model campaign is defined in `archlab.speedrun.campaigns`.
 `archlab.speedrun.campaign_runner` distributes its Cartesian run set across nodes and accepts

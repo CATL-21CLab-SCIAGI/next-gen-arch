@@ -1,5 +1,5 @@
-"""The only project-owned integration boundary with Megatron Core."""
+"""The only project-owned integration boundary with Megatron Core.
 
-from archlab.megatron.backend import MEGATRON_COMMIT, MegatronBackend
-
-__all__ = ["MEGATRON_COMMIT", "MegatronBackend"]
+Import the concrete adapter from :mod:`archlab.megatron.backend` or the controlled
+comparison entry point from :mod:`archlab.megatron.train`.
+"""

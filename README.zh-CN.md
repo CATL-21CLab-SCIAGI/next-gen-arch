@@ -67,6 +67,25 @@ Megatron 稳态 step 中位数为 speedrun 的 `1.018×`，但含生命周期过
 吞吐只有 `0.892×`；两者稳态 kernel 基本打平，运行开销仍不相同。完整结果见
 [100M 三节点结果目录](results/100m-multinode-b300/)。
 
+### 单节点 B300 上的 100M 级原生并行
+
+8 个 seed-42 Megatron run 依次训练 7,372.8 万 token。DP5/PP5 使用 5 卡；
+TP/CP/EP 的 factor-two 对照使用 4 卡，从而不改变 6 个 attention heads 与
+6 个 experts。稳态吞吐中位数统一去掉前 10 步。
+
+| 对照 | 稳态吞吐比 | 峰值显存变化 | 结论 |
+| --- | ---: | ---: | --- |
+| PP5 / DP5 | 0.617× | -44.6% | 是容量路径，不是 100M 默认配置 |
+| TP2+DP2 / DP4 | 0.389× | -48.6% | 是容量路径，不是 100M 默认配置 |
+| fused DP4 / unfused DP4 | **1.274×** | -26.9% | B300 上有效的性能优化 |
+| CP2+DP2 / fused DP4 | 0.366× | -22.7% | 仅在长上下文需要时启用 |
+| MoE EP2+DP2 / EP1+DP4 | 0.980× | -7.1% | 6 experts 下没有吞吐收益 |
+
+8 个 run 均完成 200/200 steps，skip 与非有限迭代均为 0。本 harness 使用
+indexed FineWeb-Edu 对照数据与匹配的 DeepSeek-V3 tokenizer，因此其 validation
+LM loss 不能与 ClimbMix/nanochat BPB campaign 合并比较。完整报告与机器可读曲线见
+[单节点原生并行结果目录](results/100m-native-parallelism-b300-1n/)。
+
 ### 参数缩放实验：约 12 个训练 token / 参数
 
 | 规模 | 方案 | 平均 BPB | Δ BPB | 相对吞吐 | 有效 seed |

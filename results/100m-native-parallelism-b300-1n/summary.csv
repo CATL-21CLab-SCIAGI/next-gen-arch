@@ -1,0 +1,9 @@
+run,family,world_size,dp,tp,pp,cp,ep,attention,median_step_ms_after_10,steady_tokens_per_second,relative_to_matched_baseline,peak_allocated_mib,lifecycle_seconds,final_validation_set_loss,validation_200,final_router_loss,iterations,skipped_iterations,nan_iterations,returncode
+dp5,dense,5,5,1,1,1,1,unfused-deterministic,2045.75,180197.971404,1.000000,5512.29,479.437098,5.954379,5.944639,,200,0,0,0
+pp5,dense,5,1,1,5,1,1,unfused-deterministic,3314.05,111235.497352,0.617296,3053.26,761.758381,5.971462,5.961976,,200,0,0,0
+dp4-unfused,dense,4,4,1,1,1,1,unfused-deterministic,2510.30,146850.973987,1.000000,5512.29,579.963984,5.973920,5.964185,,200,0,0,0
+tp2-dp2,dense,4,2,2,1,1,1,unfused-deterministic,6453.15,57125.589828,0.389004,2835.15,1417.863780,5.939896,5.931050,,200,0,0,0
+dp4-fused,dense,4,4,1,1,1,1,te-fused-nondeterministic,1970.25,187103.159498,1.000000,4027.58,465.708238,5.978323,5.968424,,200,0,0,0
+cp2-dp2,dense,4,2,1,1,2,1,te-fused-nondeterministic,5386.85,68433.314460,0.365752,3114.29,1210.069402,5.984146,5.974859,,200,0,0,0
+moe-ep1-dp4,moe,4,4,1,1,1,1,unfused-deterministic,5316.55,69338.198644,1.000000,6291.53,1190.379004,5.930279,5.921267,1.005942,200,0,0,0
+moe-ep2-dp2,moe,4,2,1,1,1,2,unfused-deterministic,5424.35,67960.216431,0.980127,5842.68,1252.866106,5.915831,5.907147,1.005130,200,0,0,0

@@ -2,9 +2,9 @@
 
 Historical scaling values in this document are frozen as of 2026-08-24 (UTC+8). The
 original matched 10M backend comparison completed on 2026-08-25; the B300 optimized
-follow-up and 100M three-node baseline comparison completed on 2026-08-26. Validation
-BPB is lower-is-better. `Δ` is the mean paired difference from the same-scale,
-same-backend baseline over matching seeds.
+follow-up, 100M three-node baseline comparison, and single-node native-parallelism
+matrix completed on 2026-08-26. Validation BPB is lower-is-better. `Δ` is the mean
+paired difference from the same-scale, same-backend baseline over matching seeds.
 
 ## Read the regimes separately
 
@@ -78,6 +78,27 @@ Megatron's median steady step is `1.018×` speedrun, but its transition-inclusiv
 post-warm aggregate is only `0.892×`, and the complete process takes 782.0 seconds.
 This distinction is why cold/lifecycle and warmed-step throughput remain separate
 metrics. See the [full curve and provenance artifacts](../results/100m-multinode-b300/).
+
+## 100M-class single-node native parallelism
+
+Eight seed-42 Megatron runs used one B300 node, 2K context, global batch 180, and
+73,728,000 training tokens. The native harness used an indexed FineWeb-Edu control and
+matching DeepSeek-V3 tokenizer, so its validation LM loss is not BPB and is not
+comparable with the ClimbMix campaign above.
+
+| Comparison | Steady tok/s ratio | Peak-memory change | Result |
+| --- | ---: | ---: | --- |
+| PP5 / DP5 | 0.617× | -44.6% | slower capacity path |
+| TP2+DP2 / DP4 | 0.389× | -48.6% | slower capacity path |
+| fused DP4 / unfused DP4 | **1.274×** | -26.9% | useful B300 optimization |
+| CP2+DP2 / fused DP4 | 0.366× | -22.7% | reserve for long context |
+| MoE EP2+DP2 / EP1+DP4 | 0.980× | -7.1% | no speed gain at six experts |
+
+All eight runs completed 200/200 steps with return code 0 and zero skipped or
+non-finite iterations. DP5 scaled from DP4 at 98.2% per-GPU efficiency. PP, TP, CP,
+and EP quality differences are one-seed implementation-path observations rather than
+causal topology effects. The full throughput, memory, lifecycle, and validation curves
+are in the [single-node artifacts](../results/100m-native-parallelism-b300-1n/).
 
 ## Completed 100M and 300M controls
 

@@ -1,0 +1,6 @@
+extends:
+  - megatron_native_dense_100m_dp4_seed42.yaml
+name: megatron-native-dense-100m-cp2-single-seed42
+parallelism:
+  context: 2
+  context_comm_type: p2p

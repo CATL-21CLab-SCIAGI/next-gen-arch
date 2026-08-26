@@ -1,5 +1,4 @@
-"""Optimizers that are not yet available from the pinned Megatron version."""
+"""Optimizers that are not yet available from the pinned Megatron version.
 
-from archlab.optimizers.speedrun import DistMuonAdamW, MuonAdamW
-
-__all__ = ["DistMuonAdamW", "MuonAdamW"]
+Import implementations from their defining modules so ownership remains explicit.
+"""

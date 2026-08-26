@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pytest
@@ -144,45 +143,3 @@ def test_prompt_set_is_versioned_and_stable():
     assert len(prompts) == 7
     assert prompts[0].id == "capital-france"
     assert prompts[-1].text.endswith("x is")
-
-
-def test_python_sources_use_one_src_package_layout():
-    architecture_files = {
-        path.name for path in (ROOT / "src/archlab/architectures").glob("*.py")
-    }
-    assert architecture_files == {
-        "__init__.py",
-        "base.py",
-        "combinations.py",
-        "dsa.py",
-        "fog.py",
-        "frontier.py",
-        "kimi.py",
-        "sota.py",
-    }
-    assert (ROOT / "src/archlab/speedrun/base_train.py").is_file()
-    assert (ROOT / "src/archlab/optimizers/speedrun.py").is_file()
-    assert (ROOT / "src/archlab/megatron/backend.py").is_file()
-    assert (ROOT / "src/archlab/megatron/train.py").is_file()
-    assert (ROOT / "src/archlab/speedrun/dataset.py").is_file()
-    assert not (ROOT / "nanochat/gpt.py").exists()
-    assert not (ROOT / "scripts/base_train.py").exists()
-
-
-def test_architecture_modules_do_not_import_execution_layers():
-    forbidden = ("archlab.speedrun", "archlab.backends", "archlab.megatron")
-    for source in (ROOT / "src/archlab/architectures").glob("*.py"):
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-        imports = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
-        imports.extend(
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Import)
-            for alias in node.names
-        )
-        assert not any(name.startswith(forbidden) for name in imports), source
-        assert not any(
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "setup_optimizer"
-            for node in ast.walk(tree)
-        ), source

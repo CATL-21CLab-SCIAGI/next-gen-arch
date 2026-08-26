@@ -1,0 +1,5 @@
+extends:
+  - megatron_native_moe_100m_ep1_single_seed42.yaml
+name: megatron-native-moe-100m-ep2-single-seed42
+parallelism:
+  expert: 2

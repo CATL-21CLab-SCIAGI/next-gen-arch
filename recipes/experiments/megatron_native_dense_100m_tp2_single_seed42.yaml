@@ -1,0 +1,6 @@
+extends:
+  - megatron_native_dense_100m_dp4_seed42.yaml
+name: megatron-native-dense-100m-tp2-single-seed42
+parallelism:
+  tensor: 2
+  sequence_parallel: true
