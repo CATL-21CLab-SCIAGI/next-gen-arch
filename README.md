@@ -12,7 +12,7 @@ The project asks a deliberately narrow question:
 
 > When data, tokenizer, initialization seed, batch order, training budget, optimizer, and evaluation are held fixed, which architectural change actually improves validation bits per byte?
 
-It packages the code and evidence behind 16 architecture variants, three parameter scales, three matched seeds, a frozen 144-run experiment contract, and earlier fixed-token controls. The repository contains no model weights or private infrastructure configuration.
+It packages the code and evidence behind 16 frozen campaign variants plus an exploratory CoLU arm, three parameter scales, three matched seeds, a frozen 144-run experiment contract, and earlier fixed-token controls. The repository contains no model weights or private infrastructure configuration.
 
 ## Why this repository exists
 
@@ -58,6 +58,26 @@ better cold small-model screen; Megatron wins only after compilation is amortize
 Max-autotune was unsafe for KDA, Kimi K3 KDA, and Qwen GDN, so those nine accepted rows
 use default `torch.compile`; all other rows use max-autotune. See the
 [complete table and numerical-safety audit](docs/BACKEND_COMPARISON.md).
+
+### FineWeb 1M single-B300 screen
+
+A seed-42 Megatron screen ran all 17 arms on FineWeb/GPT-2 with global batch 192,
+implemented as `16 sequences × 12` gradient-accumulation microbatches on one B300.
+All runs came from clean commit `36a6830`; `17/17` completed with finite loss and
+gradients in 1,231 seconds.
+
+| Variant | Final BPB | Δ vs baseline | Steady throughput |
+| --- | ---: | ---: | ---: |
+| Engram | **2.167429** | **-0.334663** | 0.961× |
+| Kimi K3 KDA update | 2.178213 | -0.323880 | 0.301× |
+| GLM MLA | 2.179100 | -0.322992 | 0.968× |
+| Baseline | 2.502092 | — | 1.000× |
+| CoLU | 3.010535 | +0.508443 | 0.968× |
+
+This is a one-seed 1M screen, and its 37-step baseline is highly sensitive to
+microbatch accumulation order. It is useful for runtime compatibility and early
+rejection, not for overriding the multi-seed 100M/300M evidence. See the
+[full 17-arm table and frozen contract](results/fineweb10b-1m-b300-dsw/).
 
 ### 100M baseline on one three-node process group
 

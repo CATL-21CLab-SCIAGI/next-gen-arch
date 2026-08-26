@@ -1,0 +1,49 @@
+{
+  "campaign": "fineweb10b-1m-b300-dsw",
+  "completed_at": "2026-08-27T02:07:08+08:00",
+  "status": "complete",
+  "accepted_runs": 17,
+  "failed_runs": 0,
+  "campaign_elapsed_seconds": 1231.0990228652954,
+  "hardware": {
+    "accelerator": "NVIDIA B300",
+    "gpus": 1,
+    "nodes": 1,
+    "host_profile": "single-node PAI DSW"
+  },
+  "runtime": {
+    "container_profile": "nemo-26.06",
+    "python": "3.12.3",
+    "torch": "2.12.0a0+0291f960b6.nv26.4.48445190",
+    "cuda_runtime": "13.2",
+    "megatron_core": "0.18.2",
+    "transformer_engine": "2.16.0+b9d690e0",
+    "fla_core": "0.4.2"
+  },
+  "source": {
+    "repository_commit": "36a6830ac25a23dc65731bd92bf63a349782157e",
+    "source_dirty": false,
+    "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "source_worktree_sha256": "33c2da2f369cc6a117055a71d327f41de48fe448131a6a62c936189bf2d3e4c3"
+  },
+  "contract": {
+    "dataset": "kjj0/fineweb10B-gpt2",
+    "dataset_root": "env:NGA_DATA_ROOT",
+    "tokenizer": "GPT-2, padded vocabulary 50304",
+    "sequence_length": 2048,
+    "precision": "BF16",
+    "seed": 42,
+    "world_size": 1,
+    "micro_batch_sequences": 16,
+    "gradient_accumulation_microbatches": 12,
+    "global_batch_sequences": 192,
+    "global_batch_tokens": 393216,
+    "budget": "approximately 12 training tokens per parameter",
+    "optimizer": "per-head NorMuon plus Adam parameter groups",
+    "backend_profile": "compile",
+    "finite_checks": true
+  },
+  "artifact_sha256": {
+    "ordered_remote_result_files": "41956e9ab031a4096ff7f99d305a3c9b9f6a8eb031979814c4aa0e15f600345e"
+  }
+}

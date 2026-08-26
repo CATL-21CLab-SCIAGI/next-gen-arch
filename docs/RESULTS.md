@@ -15,6 +15,21 @@ The repository records two training-budget regimes:
 
 Absolute BPB values across these regimes are not directly comparable. Paired deltas inside a row group are the intended comparison.
 
+## FineWeb 1M single-B300 compatibility screen
+
+On 2026-08-27, all 17 seed-42 Megatron arms completed under clean commit `36a6830`
+with FineWeb/GPT-2, BF16, 2K context, and a 192-sequence global batch accumulated from
+12 microbatches of 16. The campaign took 1,231 seconds and had zero failed or
+non-finite runs. Engram was best at `2.167429 BPB` (`-0.334663` versus the matched
+baseline) with `0.961×` baseline steady throughput; CoLU was the only degradation at
+`+0.508443 BPB`.
+
+The baseline is materially sensitive to microbatch accumulation in this 37-step,
+approximately 1M-parameter regime. Treat these values as runtime compatibility and
+early-screen evidence, not as a replacement for the multi-seed mature-scale results.
+The [full table and frozen provenance](../results/fineweb10b-1m-b300-dsw/) are
+machine-readable.
+
 ## Optimized matched 10M Megatron versus speedrun comparison
 
 The 16 variants completed three seeds on both backends under the same approximately

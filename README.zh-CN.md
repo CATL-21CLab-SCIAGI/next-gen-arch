@@ -2,7 +2,7 @@
 
 [English](README.md) · [完整结果](docs/RESULTS.md) · [10M 后端对比](docs/BACKEND_COMPARISON.md) · [优化审计](docs/OPTIMIZATION_AUDIT.md) · [复现指南](docs/REPRODUCIBILITY.md) · [运行后端](docs/RUNTIMES.md) · [架构说明](docs/ARCHITECTURES.md)
 
-这是一个兼顾快速受控实验与 Megatron 扩缩的语言模型架构实验仓库。它把 16 种架构机制放进同一实验合同，在相同数据、tokenizer、seed、数据顺序、训练预算和评测方法下，回答一个具体问题：
+这是一个兼顾快速受控实验与 Megatron 扩缩的语言模型架构实验仓库。它把冻结 campaign 的 16 种架构机制与一个探索性的 CoLU arm 放进统一实验合同，在相同数据、tokenizer、seed、数据顺序、训练预算和评测方法下，回答一个具体问题：
 
 > 当其他变量都被固定后，某个架构改动是否真的降低了验证集 BPB？
 
@@ -49,6 +49,25 @@ run。15 个非 baseline 变体的成对 ΔBPB 跨后端 Pearson 相关系数为
 KDA、Kimi K3 KDA、Qwen GDN 不安全，这 9 个采纳 run 使用默认
 `torch.compile`，其余 39 个使用 max-autotune。完整表格和数值安全审计见
 [后端对比报告](docs/BACKEND_COMPARISON.md)。
+
+### FineWeb 1M 单卡 B300 筛选
+
+seed-42 Megatron 筛选在 FineWeb/GPT-2 上运行全部 17 个 arm；全局 batch 为 192，
+在单张 B300 上拆成 `16 条序列 × 12 个梯度累积 microbatch`。所有 run 均来自
+clean commit `36a6830`，在 1,231 秒内 `17/17` 完成，loss 与 gradient 全部有限。
+
+| 变体 | 最终 BPB | 相对 baseline | 稳态吞吐 |
+| --- | ---: | ---: | ---: |
+| Engram | **2.167429** | **-0.334663** | 0.961× |
+| Kimi K3 KDA update | 2.178213 | -0.323880 | 0.301× |
+| GLM MLA | 2.179100 | -0.322992 | 0.968× |
+| Baseline | 2.502092 | — | 1.000× |
+| CoLU | 3.010535 | +0.508443 | 0.968× |
+
+这是单 seed、仅约 1M 参数的 37-step 筛选，baseline 对 microbatch 累积顺序高度
+敏感；它适合验证 runtime 兼容性和提前淘汰，不应覆盖 100M/300M 的多 seed 证据。
+完整 17-arm 表格与冻结合同见
+[FineWeb 1M 结果目录](results/fineweb10b-1m-b300-dsw/)。
 
 ### 单个三节点进程组上的 100M baseline
 
