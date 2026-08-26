@@ -46,9 +46,11 @@ def test_global_rank_defaults_to_single_process_and_honors_torchrun(monkeypatch)
 def test_pretrain_adapter_supports_config_container_api(monkeypatch):
     calls = []
     argument_utils = ModuleType("megatron.training.argument_utils")
-    argument_utils.parse_and_validate_args = lambda **kwargs: ("args", kwargs)
     argument_utils.pretrain_cfg_container_from_args = lambda args: ("config", args)
+    arguments = ModuleType("megatron.training.arguments")
+    arguments.parse_and_validate_args = lambda **kwargs: ("args", kwargs)
     monkeypatch.setitem(sys.modules, "megatron.training.argument_utils", argument_utils)
+    monkeypatch.setitem(sys.modules, "megatron.training.arguments", arguments)
 
     def pretrain(cfg_container, datasets, model, model_type, forward):
         calls.append((cfg_container, datasets, model, model_type, forward))

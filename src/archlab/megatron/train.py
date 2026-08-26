@@ -793,10 +793,8 @@ def _invoke_megatron_pretrain(
     """Call both the legacy CLI API and the config-container API from MCore 0.18+."""
     parameters = inspect.signature(training_module.pretrain).parameters
     if "cfg_container" in parameters:
-        from megatron.training.argument_utils import (
-            parse_and_validate_args,
-            pretrain_cfg_container_from_args,
-        )
+        from megatron.training.argument_utils import pretrain_cfg_container_from_args
+        from megatron.training.arguments import parse_and_validate_args
 
         args = parse_and_validate_args(args_defaults={"tokenizer_type": "NullTokenizer"})
         config = pretrain_cfg_container_from_args(args)
