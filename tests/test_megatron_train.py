@@ -202,7 +202,7 @@ def test_fineweb_7b_contract_uses_100b_tokens_and_32_way_dp(monkeypatch):
     assert arguments[arguments.index("--micro-batch-size") + 1] == "6"
     assert arguments[arguments.index("--global-batch-size") + 1] == "192"
     assert arguments[arguments.index("--save-interval") + 1] == "10000"
-    assert arguments[arguments.index("--ckpt-format") + 1] == "torch_dist"
+    assert arguments[arguments.index("--ckpt-format") + 1] == "torch"
 
 
 def test_fineweb_single_gpu_microbatch_override_accumulates_to_global_batch(monkeypatch):

@@ -494,7 +494,12 @@ def _megatron_arguments(
                 "--save-interval",
                 str(save_interval),
                 "--ckpt-format",
-                "torch_dist",
+                # Per-head NorMuon stacks same-shaped parameter states. MCore's
+                # torch_dist optimizer serializer assumes one state tensor has
+                # exactly one model-parameter shape; the legacy torch format
+                # preserves the stacked optimizer state without that invalid
+                # assumption. DP stores one full checkpoint copy.
+                "torch",
             )
         )
     elif save_interval is not None:
