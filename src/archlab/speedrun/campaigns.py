@@ -13,6 +13,7 @@ COMPARISON_BATCH_TOKENS = COMPARISON_SEQUENCE_LENGTH * COMPARISON_GLOBAL_BATCH_S
 COMPARISON_EVAL_TOKENS = 3_932_160
 FINEWEB_VOCAB_SIZE = 50_304
 FINEWEB_TOKENS_PER_PARAMETER = 12.0
+FINEWEB_FIXED_TOKEN_TARGETS = {"7b": 100_000_000_000}
 
 # Public compatibility aliases for the original 10M campaign API.
 TEN_M_SEEDS = COMPARISON_SEEDS
@@ -258,6 +259,10 @@ FINEWEB_CAMPAIGN_GEOMETRIES = {
     "10m": {"depth": 5, "aspect_ratio": 7, "head_dim": 8},
     "100m": {"depth": 10, "aspect_ratio": 20, "head_dim": 64},
     "300m": {"depth": 16, "aspect_ratio": 29, "head_dim": 64},
+    # The speedrun baseline has more per-layer matrices than a conventional
+    # Llama block.  This 32 x 3,200 geometry resolves to 6.83B trainable
+    # parameters with the padded GPT-2 vocabulary.
+    "7b": {"depth": 32, "aspect_ratio": 100, "head_dim": 128},
 }
 
 _FINEWEB_SCALE_CONTROLS = {
@@ -296,6 +301,15 @@ _FINEWEB_SCALE_CONTROLS = {
         "dsa_index_head_dim": 64,
         "dsa_index_rope_dim": 32,
         "relative_dim": 32,
+    },
+    "7b": {
+        "engram_layers": (7, 15, 23, 31),
+        "engram_num_heads": 16,
+        "engram_dim": 512,
+        "dsa_index_heads": 16,
+        "dsa_index_head_dim": 128,
+        "dsa_index_rope_dim": 64,
+        "relative_dim": 64,
     },
 }
 

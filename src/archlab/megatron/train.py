@@ -43,6 +43,7 @@ from archlab.speedrun.campaigns import (
     COMPARISON_SEEDS,
     COMPARISON_SEQUENCE_LENGTH,
     FINEWEB_CAMPAIGN_VARIANTS,
+    FINEWEB_FIXED_TOKEN_TARGETS,
     FINEWEB_TOKENS_PER_PARAMETER,
     FINEWEB_VOCAB_SIZE,
     HISTORICAL_MICRO_BATCH_SIZE,
@@ -77,7 +78,13 @@ _TRAIN_LOSS_SUM = 0.0
 _TRAIN_TOKENS = 0
 _TRAIN_METRICS_ENABLED = False
 _TOKEN_BYTES: torch.Tensor | None = None
-DATASETS = ("climbmix", "fineweb10b")
+DATASETS = ("climbmix", "fineweb10b", "fineweb100b")
+FINEWEB_DATASETS = frozenset({"fineweb10b", "fineweb100b"})
+FINEWEB_EXPECTED_TRAIN_SHARDS = {"fineweb10b": 103, "fineweb100b": 1_028}
+
+
+def _is_fineweb(dataset: str) -> bool:
+    return dataset in FINEWEB_DATASETS
 
 
 def _world_size() -> int:
@@ -190,7 +197,7 @@ def _model_config_kwargs(
     scale: str,
     variant: CampaignVariant,
 ) -> dict[str, Any]:
-    if dataset == "fineweb10b":
+    if _is_fineweb(dataset):
         return fineweb_model_config_kwargs(scale, variant)
     return campaign_model_config_kwargs(scale, variant)
 
@@ -202,10 +209,10 @@ def resolve_fineweb_variant(scale: str, name: str) -> CampaignVariant:
     with torch.device("meta"):
         model = instantiate_model(config)
     parameter_count = int(model.num_scaling_params()["total"])
-    steps = max(
-        1,
-        round(FINEWEB_TOKENS_PER_PARAMETER * parameter_count / COMPARISON_BATCH_TOKENS),
+    token_target = FINEWEB_FIXED_TOKEN_TARGETS.get(
+        scale, FINEWEB_TOKENS_PER_PARAMETER * parameter_count
     )
+    steps = max(1, round(token_target / COMPARISON_BATCH_TOKENS))
     warmup_steps = min(40, max(1, round(0.05 * steps)))
     return replace(
         template,
@@ -340,6 +347,8 @@ def _megatron_arguments(
     scale: str = "10m",
     exact_global_batch_replay: bool = False,
     micro_batch_size_override: int | None = None,
+    checkpoint_dir: Path | None = None,
+    save_interval: int | None = None,
 ) -> list[str]:
     model_kwargs = _model_config_kwargs(dataset, scale, variant)
     head_dim = int(model_kwargs["head_dim"])
@@ -349,7 +358,7 @@ def _megatron_arguments(
         * head_dim
     )
     num_attention_heads = hidden_size // head_dim
-    if dataset == "fineweb10b":
+    if _is_fineweb(dataset):
         if COMPARISON_GLOBAL_BATCH_SIZE % _world_size():
             raise ValueError(
                 "FineWeb DP requires the 192-sequence global batch to be divisible by world size"
@@ -380,7 +389,7 @@ def _megatron_arguments(
         micro_batch_size = HISTORICAL_MICRO_BATCH_SIZE
         scheduled_global_batch_size = COMPARISON_GLOBAL_BATCH_SIZE
     eval_iters = COMPARISON_EVAL_TOKENS // COMPARISON_BATCH_TOKENS
-    eval_interval = min(250, variant.steps) if dataset == "fineweb10b" else (
+    eval_interval = min(250, variant.steps) if _is_fineweb(dataset) else (
         250 if scale == "100m" else variant.steps
     )
     arguments = [
@@ -475,6 +484,21 @@ def _megatron_arguments(
     # diagnostic profile needs it; never pass a nonexistent positive flag.
     if not profile.finite_checks:
         arguments.append("--no-check-for-nan-in-loss-and-grad")
+    if checkpoint_dir is not None:
+        if save_interval is None or save_interval < 1:
+            raise ValueError("checkpointing requires a positive save interval")
+        arguments.extend(
+            (
+                "--save",
+                str(checkpoint_dir),
+                "--save-interval",
+                str(save_interval),
+                "--ckpt-format",
+                "torch_dist",
+            )
+        )
+    elif save_interval is not None:
+        raise ValueError("save interval requires a checkpoint directory")
     return arguments
 
 
@@ -686,7 +710,7 @@ def _external_batch_loader(
     exact_global_batch_replay: bool = False,
     micro_batch_size_override: int | None = None,
 ):
-    if dataset == "fineweb10b":
+    if _is_fineweb(dataset):
         if data_root is None:
             raise ValueError("FineWeb requires an explicit data root")
         if COMPARISON_GLOBAL_BATCH_SIZE % _world_size():
@@ -852,6 +876,8 @@ def _run_megatron(
     scale: str,
     exact_global_batch_replay: bool,
     micro_batch_size_override: int | None,
+    checkpoint_dir: Path | None,
+    save_interval: int | None,
     metrics_path: Path | None,
     metrics_every: int,
 ):
@@ -864,7 +890,7 @@ def _run_megatron(
     _TRAIN_METRICS_ENABLED = metrics_path is not None
     _TOKEN_BYTES = (
         token_bytes_for_tokenizer(tokenizer, FINEWEB_VOCAB_SIZE)
-        if dataset == "fineweb10b"
+        if _is_fineweb(dataset)
         else None
     )
     sys.argv = _megatron_arguments(
@@ -875,6 +901,8 @@ def _run_megatron(
         scale=scale,
         exact_global_batch_replay=exact_global_batch_replay,
         micro_batch_size_override=micro_batch_size_override,
+        checkpoint_dir=checkpoint_dir,
+        save_interval=save_interval,
     ) + ["--seed", str(seed)]
 
     import megatron.training.training as training_module
@@ -1101,13 +1129,15 @@ def _environment(
     scale: str,
     exact_global_batch_replay: bool,
     micro_batch_size_override: int | None,
+    checkpoint_dir: Path | None,
+    save_interval: int | None,
 ) -> dict[str, Any]:
     repository = _repository_root()
     profile_payload = asdict(profile)
     profile_payload["resolved_compile_mode"] = profile.resolved_compile_mode(variant.name)
     if micro_batch_size_override is not None:
         micro_batch_size = micro_batch_size_override
-    elif dataset == "fineweb10b":
+    elif _is_fineweb(dataset):
         micro_batch_size = COMPARISON_GLOBAL_BATCH_SIZE // _world_size()
     elif exact_global_batch_replay:
         micro_batch_size = math.ceil(COMPARISON_GLOBAL_BATCH_SIZE / _world_size())
@@ -1134,6 +1164,8 @@ def _environment(
         ),
         "scheduled_global_batch_sequences": scheduled_global_batch_size,
         "world_size": _world_size(),
+        "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else None,
+        "save_interval": save_interval,
         "backend_profile": profile_payload,
         "optimization_recipe": asdict(recipe),
         "host": socket.gethostname(),
@@ -1181,6 +1213,8 @@ def main() -> None:
         help="preserve the 192-sequence canonical stream over non-divisible DP worlds",
     )
     parser.add_argument("--metrics-every", type=int, default=10)
+    parser.add_argument("--checkpoint-dir", type=Path)
+    parser.add_argument("--save-interval", type=int)
     parser.add_argument(
         "--backend-profile",
         choices=tuple(MEGATRON_BACKEND_PROFILES),
@@ -1200,7 +1234,13 @@ def main() -> None:
         parser.error("--metrics-every must be positive")
     if args.micro_batch_size is not None and args.micro_batch_size < 1:
         parser.error("--micro-batch-size must be positive")
-    if args.dataset == "fineweb10b":
+    if args.checkpoint_dir is not None and (
+        args.save_interval is None or args.save_interval < 1
+    ):
+        parser.error("--checkpoint-dir requires a positive --save-interval")
+    if args.checkpoint_dir is None and args.save_interval is not None:
+        parser.error("--save-interval requires --checkpoint-dir")
+    if _is_fineweb(args.dataset):
         if args.scale not in FINEWEB_CAMPAIGN_VARIANTS:
             parser.error(f"--scale={args.scale} is not available for FineWeb")
         if args.data_root is None:
@@ -1215,13 +1255,14 @@ def main() -> None:
         data_root = args.data_root.expanduser().resolve()
         data_summary = inspect_fineweb_dataset(
             data_root,
+            expected_train_shards=FINEWEB_EXPECTED_TRAIN_SHARDS[args.dataset],
             required_train_tokens=contract_variant.training_tokens + 1,
         )
     else:
         if args.scale not in CAMPAIGN_VARIANTS:
             parser.error(f"--scale={args.scale} is not available for ClimbMix")
         if args.data_root is not None:
-            parser.error("--data-root is only valid with --dataset=fineweb10b")
+            parser.error("--data-root is only valid with a FineWeb dataset")
         contract_variant = get_campaign_variant(args.scale, args.variant)
         data_root = None
         data_summary = None
@@ -1232,6 +1273,9 @@ def main() -> None:
     profile = get_megatron_backend_profile(args.backend_profile)
     recipe = get_optimization_recipe(args.optimization_recipe)
     run_dir = args.run_dir.expanduser().resolve()
+    checkpoint_dir = (
+        args.checkpoint_dir.expanduser().resolve() if args.checkpoint_dir is not None else None
+    )
     primary = _global_rank() == 0
     marker = (
         _claim_run_directory(run_dir, variant, args.seed) if primary else run_dir / "RUNNING.json"
@@ -1257,6 +1301,8 @@ def main() -> None:
             scale=args.scale,
             exact_global_batch_replay=args.exact_global_batch_replay,
             micro_batch_size_override=args.micro_batch_size,
+            checkpoint_dir=checkpoint_dir,
+            save_interval=args.save_interval,
         )
         environment["runtime"] = runtime
         if data_summary is not None:
@@ -1265,7 +1311,7 @@ def main() -> None:
             _write_json(run_dir / "resolved_run.json", environment)
         tokenizer = (
             get_pretrained_tokenizer("gpt2")
-            if args.dataset == "fineweb10b"
+            if _is_fineweb(args.dataset)
             else get_tokenizer()
         )
         started = time.perf_counter()
@@ -1280,6 +1326,8 @@ def main() -> None:
             scale=args.scale,
             exact_global_batch_replay=args.exact_global_batch_replay,
             micro_batch_size_override=args.micro_batch_size,
+            checkpoint_dir=checkpoint_dir,
+            save_interval=args.save_interval,
             metrics_path=metrics_path,
             metrics_every=args.metrics_every,
         )

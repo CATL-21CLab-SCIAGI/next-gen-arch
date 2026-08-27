@@ -63,8 +63,8 @@ def test_100m_baseline_geometry_and_parameter_count_are_frozen():
     assert model.num_scaling_params()["total"] == 105_775_510
 
 
-def test_fineweb_wave_has_four_scales_and_sixteen_arms_plus_colu():
-    assert tuple(FINEWEB_CAMPAIGN_VARIANTS) == ("1m", "10m", "100m", "300m")
+def test_fineweb_wave_has_five_scales_and_sixteen_arms_plus_colu():
+    assert tuple(FINEWEB_CAMPAIGN_VARIANTS) == ("1m", "10m", "100m", "300m", "7b")
     for variants in FINEWEB_CAMPAIGN_VARIANTS.values():
         assert len(variants) == 17
         assert set(variants) == {variant.name for variant in TEN_M_VARIANTS} | {"colu"}

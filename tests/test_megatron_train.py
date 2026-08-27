@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -177,6 +178,31 @@ def test_fineweb_100m_contract_uses_24_way_dp_and_gpt2_vocabulary(monkeypatch):
     assert arguments[arguments.index("--tensor-model-parallel-size") + 1] == "1"
     assert arguments[arguments.index("--pipeline-model-parallel-size") + 1] == "1"
     assert arguments[arguments.index("--context-parallel-size") + 1] == "1"
+
+
+def test_fineweb_7b_contract_uses_100b_tokens_and_32_way_dp(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "32")
+    variant = resolve_fineweb_variant("7b", "baseline")
+    arguments = _megatron_arguments(
+        variant,
+        get_megatron_backend_profile("compile-dp-overlap"),
+        get_optimization_recipe("baseline"),
+        dataset="fineweb100b",
+        scale="7b",
+        checkpoint_dir=Path("/checkpoints"),
+        save_interval=10_000,
+    )
+
+    assert variant.parameter_count == 6_829_675_290
+    assert variant.steps == 254_313
+    assert variant.training_tokens == 99_999_940_608
+    assert arguments[arguments.index("--num-layers") + 1] == "32"
+    assert arguments[arguments.index("--hidden-size") + 1] == "3200"
+    assert arguments[arguments.index("--num-attention-heads") + 1] == "25"
+    assert arguments[arguments.index("--micro-batch-size") + 1] == "6"
+    assert arguments[arguments.index("--global-batch-size") + 1] == "192"
+    assert arguments[arguments.index("--save-interval") + 1] == "10000"
+    assert arguments[arguments.index("--ckpt-format") + 1] == "torch_dist"
 
 
 def test_fineweb_single_gpu_microbatch_override_accumulates_to_global_batch(monkeypatch):

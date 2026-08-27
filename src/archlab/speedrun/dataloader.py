@@ -62,12 +62,12 @@ def inspect_fineweb_dataset(
     validation = sorted(root.glob("fineweb_val_*.bin"))
     expected_validation = [root / "fineweb_val_000000.bin"]
     if not train:
-        raise ValueError("FineWeb10B has no visible train shards")
+        raise ValueError("FineWeb has no visible train shards")
     if validation != expected_validation:
-        raise ValueError("FineWeb10B requires exactly fineweb_val_000000.bin")
+        raise ValueError("FineWeb requires exactly fineweb_val_000000.bin")
     if required_train_tokens is None and len(train) != expected_train_shards:
         raise ValueError(
-            f"complete FineWeb10B requires {expected_train_shards} train shards; "
+            f"complete FineWeb inventory requires {expected_train_shards} train shards; "
             f"found {len(train)}"
         )
     required_train_tokens = required_train_tokens or 0
@@ -80,7 +80,7 @@ def inspect_fineweb_dataset(
     )
     for expected_index, path in enumerate(paths_to_validate, start=1):
         if path.name != f"fineweb_train_{expected_index:06d}.bin" or not path.is_file():
-            raise ValueError(f"FineWeb10B is missing required train shard {expected_index:06d}")
+            raise ValueError(f"FineWeb is missing required train shard {expected_index:06d}")
         train_tokens += inspect_fineweb_shard(path)
         validated_train_shards += 1
         if train_tokens >= required_train_tokens and required_train_tokens > 0:
@@ -102,7 +102,7 @@ def inspect_fineweb_dataset(
 
 
 class FineWebBinaryLoader:
-    """Deterministic rank slices over the public GPT-2 FineWeb10B shards.
+    """Deterministic rank slices over public GPT-2 FineWeb binary shards.
 
     All ranks advance one shared logical cursor.  A global batch is one
     contiguous token range, split into equal rank-local ranges; the trailing
