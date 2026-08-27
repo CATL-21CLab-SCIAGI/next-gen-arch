@@ -31,7 +31,13 @@ if [[ "$train_shards" != "1028" || "$validation_shards" != "1" ]]; then
     exit 1
 fi
 
-rsync -a --partial --exclude='.cache/' "$NGA_STAGE_ROOT/" "$NGA_DATA_ROOT/"
+if command -v rsync >/dev/null 2>&1; then
+    rsync -a --partial --exclude='.cache/' "$NGA_STAGE_ROOT/" "$NGA_DATA_ROOT/"
+else
+    # PAI's NeMo image is intentionally minimal. The upstream repository is
+    # flat, so copying only root files avoids its local Hugging Face cache.
+    find "$NGA_STAGE_ROOT" -maxdepth 1 -type f -exec cp -p '{}' "$NGA_DATA_ROOT/" ';'
+fi
 
 NGA_DATA_ROOT="$NGA_DATA_ROOT" \
 NGA_DATASET="$NGA_DATASET" \
