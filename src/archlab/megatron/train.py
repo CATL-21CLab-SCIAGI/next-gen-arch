@@ -363,7 +363,7 @@ def _validate_checkpoint_artifact(checkpoint_dir: Path, expected_iteration: int)
         "payload_files": len(candidates),
         "payload_bytes": sum(path.stat().st_size for path in candidates),
         "payload_paths": [str(path) for path in candidates],
-        "resume_contract": "optimizer-rng-plus-iteration-derived-fineweb-cursor-v1",
+        "resume_contract": "optimizer-rng-plus-iteration-derived-loader-cursor-v2",
     }
 
 
@@ -820,12 +820,14 @@ def _external_batch_loader(
 
     if exact_global_batch_replay:
         if split == "train":
+            resume_iteration = _megatron_resume_iteration()
             source = tokenizing_replicated_global_batch_loader_with_state_bos_bestfit(
                 tokenizer,
                 COMPARISON_GLOBAL_BATCH_SIZE,
                 COMPARISON_SEQUENCE_LENGTH,
                 split="train",
                 device="cuda",
+                resume_state_dict=({"batch_index": resume_iteration} if resume_iteration else None),
             )
             for tokens, labels, _state, _active in source:
                 yield {"tokens": tokens, "labels": labels}
@@ -847,12 +849,24 @@ def _external_batch_loader(
                 yield {"tokens": tokens, "labels": labels}
 
     if split == "train":
+        sequences_per_microbatch = HISTORICAL_MICRO_BATCH_SIZE * _world_size()
+        if COMPARISON_GLOBAL_BATCH_SIZE % sequences_per_microbatch:
+            raise ValueError(
+                "ClimbMix global batch must be divisible by micro batch size times world size"
+            )
+        microbatches_per_step = COMPARISON_GLOBAL_BATCH_SIZE // sequences_per_microbatch
+        resume_iteration = _megatron_resume_iteration()
         source = tokenizing_distributed_data_loader_with_state_bos_bestfit(
             tokenizer,
             HISTORICAL_MICRO_BATCH_SIZE,
             COMPARISON_SEQUENCE_LENGTH,
             split="train",
             device="cuda",
+            resume_state_dict=(
+                {"batch_index": resume_iteration * microbatches_per_step}
+                if resume_iteration
+                else None
+            ),
         )
         for tokens, labels, _state in source:
             yield {"tokens": tokens, "labels": labels}
@@ -1328,7 +1342,7 @@ def _environment(
         "dataloader_resume_contract": (
             "fineweb-distributed-microbatch-cursor-v1"
             if _is_fineweb(dataset)
-            else "historical-climbmix-loader"
+            else "climbmix-exact-microbatch-cursor-v2"
         ),
         "validation_window_contract": (
             "fixed-first-window-v1" if _is_fineweb(dataset) else "historical-climbmix-window"

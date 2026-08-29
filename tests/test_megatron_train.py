@@ -9,6 +9,7 @@ import archlab.megatron.train as megatron_train
 from archlab.megatron.train import (
     SpeedrunSchedule,
     _current_training_iteration,
+    _external_batch_loader,
     _global_rank,
     _invoke_megatron_pretrain,
     _loss_func,
@@ -42,6 +43,49 @@ def test_global_rank_defaults_to_single_process_and_honors_torchrun(monkeypatch)
     assert _global_rank() == 0
     monkeypatch.setenv("RANK", "3")
     assert _global_rank() == 3
+
+
+def test_climbmix_resume_derives_exact_microbatch_cursor(monkeypatch):
+    captured = {}
+
+    def fake_loader(*_args, **kwargs):
+        captured.update(kwargs)
+        yield torch.zeros(1), torch.ones(1), {"batch_index": 36}
+
+    monkeypatch.setattr(
+        megatron_train,
+        "tokenizing_distributed_data_loader_with_state_bos_bestfit",
+        fake_loader,
+    )
+    monkeypatch.setattr(megatron_train, "_megatron_resume_iteration", lambda: 3)
+    monkeypatch.setattr(megatron_train, "_world_size", lambda: 1)
+
+    batch = next(_external_batch_loader(object(), "train"))
+
+    assert captured["resume_state_dict"] == {"batch_index": 36}
+    assert batch["tokens"].item() == 0
+    assert batch["labels"].item() == 1
+
+
+def test_exact_replay_resume_uses_one_packed_batch_per_step(monkeypatch):
+    captured = {}
+
+    def fake_loader(*_args, **kwargs):
+        captured.update(kwargs)
+        yield torch.zeros(1), torch.ones(1), {"batch_index": 7}, 192
+
+    monkeypatch.setattr(
+        megatron_train,
+        "tokenizing_replicated_global_batch_loader_with_state_bos_bestfit",
+        fake_loader,
+    )
+    monkeypatch.setattr(megatron_train, "_megatron_resume_iteration", lambda: 7)
+
+    batch = next(_external_batch_loader(object(), "train", exact_global_batch_replay=True))
+
+    assert captured["resume_state_dict"] == {"batch_index": 7}
+    assert batch["tokens"].item() == 0
+    assert batch["labels"].item() == 1
 
 
 def test_pretrain_adapter_supports_config_container_api(monkeypatch):
