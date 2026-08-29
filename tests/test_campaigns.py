@@ -37,9 +37,7 @@ OPTIMIZATION_RUNS = (
 SAFE_AUTOTUNE_RESULTS = (
     Path(__file__).resolve().parents[1] / "results" / "megatron-10m-safe-autotune-b300"
 )
-MULTINODE_100M_RESULTS = (
-    Path(__file__).resolve().parents[1] / "results" / "100m-multinode-b300"
-)
+MULTINODE_100M_RESULTS = Path(__file__).resolve().parents[1] / "results" / "100m-multinode-b300"
 
 
 def test_ten_m_grid_is_complete_and_parameter_counts_are_frozen():
@@ -272,9 +270,7 @@ def test_published_100m_multinode_result_matches_frozen_contract() -> None:
         "inter_node_transport": "RoCE with GPU Direct RDMA",
         "physical_gpu_allowlist_per_node": [0, 2, 4, 5, 7],
     }
-    assert campaign["source"]["repository_commit"] == (
-        "ebb2fc2c8d74d8dd13256231b372b139a91abfbd"
-    )
+    assert campaign["source"]["repository_commit"] == ("ebb2fc2c8d74d8dd13256231b372b139a91abfbd")
     assert campaign["source"]["megatron_submodule_commit"] == (
         "55ac7082517c3878ae653c07c09c534b8aed49f6"
     )

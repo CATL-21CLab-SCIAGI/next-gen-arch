@@ -336,9 +336,7 @@ def main() -> None:
                 returncode=completed.returncode,
                 log=str(log_path),
                 failure=failure,
-                retry_recommended=bool(
-                    isinstance(failure, dict) and failure.get("retriable")
-                ),
+                retry_recommended=bool(isinstance(failure, dict) and failure.get("retriable")),
                 finished_at_unix=time.time(),
             )
 

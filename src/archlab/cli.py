@@ -127,7 +127,12 @@ def main(argv: list[str] | None = None) -> int:
         baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
         variant = json.loads(args.variant.read_text(encoding="utf-8"))
         assert_paired_controls(baseline, variant)
-        print(json.dumps({"status": "matched", "baseline": str(args.baseline), "variant": str(args.variant)}, indent=2))
+        print(
+            json.dumps(
+                {"status": "matched", "baseline": str(args.baseline), "variant": str(args.variant)},
+                indent=2,
+            )
+        )
         return 0
     if args.action == "render":
         try:

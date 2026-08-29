@@ -440,9 +440,7 @@ def _megatron_arguments(
             )
         rank_batch_size = COMPARISON_GLOBAL_BATCH_SIZE // _world_size()
         micro_batch_size = (
-            micro_batch_size_override
-            if micro_batch_size_override is not None
-            else rank_batch_size
+            micro_batch_size_override if micro_batch_size_override is not None else rank_batch_size
         )
         if micro_batch_size <= 0:
             raise ValueError("micro batch size must be positive")
@@ -464,8 +462,10 @@ def _megatron_arguments(
         micro_batch_size = HISTORICAL_MICRO_BATCH_SIZE
         scheduled_global_batch_size = COMPARISON_GLOBAL_BATCH_SIZE
     eval_iters = COMPARISON_EVAL_TOKENS // COMPARISON_BATCH_TOKENS
-    eval_interval = min(250, variant.steps) if _is_fineweb(dataset) else (
-        250 if scale == "100m" else variant.steps
+    eval_interval = (
+        min(250, variant.steps)
+        if _is_fineweb(dataset)
+        else (250 if scale == "100m" else variant.steps)
     )
     arguments = [
         "next-gen-arch-megatron",
@@ -712,7 +712,9 @@ def _install_optimizer_adapter(
         model = training_module.get_model(model_provider_func, model_type, wrap_with_ddp=True)
         unwrapped = training_module.unwrap_model(model)
         if len(unwrapped) != 1 or not hasattr(unwrapped[0], "architecture"):
-            raise RuntimeError("the comparison adapter requires one non-pipelined architecture model")
+            raise RuntimeError(
+                "the comparison adapter requires one non-pipelined architecture model"
+            )
         architecture = unwrapped[0].architecture
         optimizer_model = getattr(architecture, "_orig_mod", architecture)
         raw_optimizer = setup_model_optimizer(
@@ -784,9 +786,7 @@ def _external_batch_loader(
             raise ValueError("FineWeb global batch is not divisible by DP world size")
         rank_batch_size = COMPARISON_GLOBAL_BATCH_SIZE // _world_size()
         local_batch_size = (
-            micro_batch_size_override
-            if micro_batch_size_override is not None
-            else rank_batch_size
+            micro_batch_size_override if micro_batch_size_override is not None else rank_batch_size
         )
         if COMPARISON_GLOBAL_BATCH_SIZE % (local_batch_size * _world_size()):
             raise ValueError(
@@ -973,9 +973,7 @@ def _run_megatron(
     _TRAIN_TOKENS = 0
     _TRAIN_METRICS_ENABLED = metrics_path is not None
     _TOKEN_BYTES = (
-        token_bytes_for_tokenizer(tokenizer, FINEWEB_VOCAB_SIZE)
-        if _is_fineweb(dataset)
-        else None
+        token_bytes_for_tokenizer(tokenizer, FINEWEB_VOCAB_SIZE) if _is_fineweb(dataset) else None
     )
     sys.argv = _megatron_arguments(
         variant,
@@ -1048,9 +1046,7 @@ def _run_megatron(
                     f"{actual_parameters} != {variant.parameter_count}"
                 )
             schedule_holder["parameter_count"] = actual_parameters
-            schedule_holder["algorithmic_flops_per_token"] = float(
-                architecture.estimate_flops()
-            )
+            schedule_holder["algorithmic_flops_per_token"] = float(architecture.estimate_flops())
             schedule_holder["executed_flops_per_token"] = float(
                 architecture.estimate_executed_flops()
                 if hasattr(architecture, "estimate_executed_flops")
@@ -1067,15 +1063,9 @@ def _run_megatron(
                     baseline_kwargs = _model_config_kwargs(dataset, scale, baseline_template)
                     baseline_kwargs.update(recipe.model_overrides)
                     with torch.device("meta"):
-                        baseline_model = instantiate_model(
-                            build_model_config(**baseline_kwargs)
-                        )
-                    include_names = {
-                        name for name, _parameter in baseline_model.named_parameters()
-                    }
-                    include_names &= {
-                        name for name, _parameter in architecture.named_parameters()
-                    }
+                        baseline_model = instantiate_model(build_model_config(**baseline_kwargs))
+                    include_names = {name for name, _parameter in baseline_model.named_parameters()}
+                    include_names &= {name for name, _parameter in architecture.named_parameters()}
                 selected_count = sum(
                     1
                     for name, _parameter in architecture.named_parameters()
@@ -1352,9 +1342,7 @@ def _environment(
         "cuda": torch.version.cuda,
         **_source_provenance(repository),
         "data_root": (
-            str(data_root)
-            if data_root is not None
-            else os.environ.get("NANOCHAT_BASE_DIR")
+            str(data_root) if data_root is not None else os.environ.get("NANOCHAT_BASE_DIR")
         ),
         "triton_ptxas_path": os.environ.get("TRITON_PTXAS_PATH"),
         "semantic_equivalence": (
@@ -1457,9 +1445,7 @@ def main() -> None:
         parser.error("throughput step counts must be non-negative")
     if args.micro_batch_size is not None and args.micro_batch_size < 1:
         parser.error("--micro-batch-size must be positive")
-    if args.checkpoint_dir is not None and (
-        args.save_interval is None or args.save_interval < 1
-    ):
+    if args.checkpoint_dir is not None and (args.save_interval is None or args.save_interval < 1):
         parser.error("--checkpoint-dir requires a positive --save-interval")
     if args.checkpoint_dir is None and args.save_interval is not None:
         parser.error("--save-interval requires --checkpoint-dir")
@@ -1583,9 +1569,7 @@ def main() -> None:
         if data_summary is not None:
             environment["data"] = data_summary
         tokenizer = (
-            get_pretrained_tokenizer("gpt2")
-            if _is_fineweb(args.dataset)
-            else get_tokenizer()
+            get_pretrained_tokenizer("gpt2") if _is_fineweb(args.dataset) else get_tokenizer()
         )
         padded_vocab_size = int(
             _model_config_kwargs(args.dataset, args.scale, contract_variant)["vocab_size"]
@@ -1656,9 +1640,7 @@ def main() -> None:
         checkpoint_artifact = None
         if args.artifact_policy == "research":
             assert checkpoint_dir is not None
-            checkpoint_artifact = _validate_checkpoint_artifact(
-                checkpoint_dir, variant.steps
-            )
+            checkpoint_artifact = _validate_checkpoint_artifact(checkpoint_dir, variant.steps)
         result = {
             **environment,
             "status": "complete",

@@ -319,10 +319,7 @@ def _fineweb_template(scale: str, base: CampaignVariant) -> CampaignVariant:
     controls = _FINEWEB_SCALE_CONTROLS[scale]
     if base.name == "engram":
         overrides.update(
-            {
-                key: controls[key]
-                for key in ("engram_layers", "engram_num_heads", "engram_dim")
-            }
+            {key: controls[key] for key in ("engram_layers", "engram_num_heads", "engram_dim")}
         )
     if base.name == "dsa":
         overrides.update(
@@ -357,7 +354,10 @@ _COLU_TEMPLATE = _variant(
 FINEWEB_CAMPAIGN_VARIANTS = {
     scale: {
         variant.name: variant
-        for variant in (*(_fineweb_template(scale, base) for base in TEN_M_VARIANTS), _COLU_TEMPLATE)
+        for variant in (
+            *(_fineweb_template(scale, base) for base in TEN_M_VARIANTS),
+            _COLU_TEMPLATE,
+        )
     }
     for scale in FINEWEB_CAMPAIGN_GEOMETRIES
 }
@@ -385,9 +385,7 @@ def get_campaign_variant(scale: str, name: str) -> CampaignVariant:
         return variants[name]
     except KeyError as error:
         choices = ", ".join(variants)
-        raise ValueError(
-            f"unknown {scale} variant {name!r}; choose one of: {choices}"
-        ) from error
+        raise ValueError(f"unknown {scale} variant {name!r}; choose one of: {choices}") from error
 
 
 def get_fineweb_variant_template(scale: str, name: str) -> CampaignVariant:

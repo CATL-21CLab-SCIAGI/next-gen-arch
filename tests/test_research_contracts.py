@@ -167,9 +167,7 @@ def test_throughput_protocol_excludes_warmup_and_limits_window():
         (ValueError("manifest mismatch"), "contract", False),
     ),
 )
-def test_failure_classification_forbids_blind_numerical_retries(
-    error, category, retriable
-):
+def test_failure_classification_forbids_blind_numerical_retries(error, category, retriable):
     classification = classify_failure(error)
     assert classification.category == category
     assert classification.retriable is retriable

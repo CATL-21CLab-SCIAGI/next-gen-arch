@@ -28,6 +28,41 @@ def test_speedrun_spec_composes_and_preserves_frozen_command(monkeypatch, tmp_pa
     assert len(spec.source_files) == 4
 
 
+def test_research_speedrun_plan_requires_durable_artifacts(monkeypatch, tmp_path):
+    for name, value in {
+        "NGA_DATA_ROOT": tmp_path / "data",
+        "NGA_DATA_MANIFEST": tmp_path / "climbmix.manifest.json",
+        "NGA_OUTPUT_DIR": tmp_path / "output",
+    }.items():
+        monkeypatch.setenv(name, str(value))
+    path = tmp_path / "research.yaml"
+    path.write_text(
+        "schema_version: 1\n"
+        "name: research-baseline\n"
+        "backend: speedrun\n"
+        "variant: baseline\n"
+        "seed: 42\n"
+        "selection:\n  size: 100m\n"
+        "comparison:\n  regime: controlled\n"
+        "artifacts:\n  mode: research\n"
+        "paths:\n"
+        "  data_root: env:NGA_DATA_ROOT\n"
+        "  data_manifest: env:NGA_DATA_MANIFEST\n"
+        "  output_dir: env:NGA_OUTPUT_DIR\n",
+        encoding="utf-8",
+    )
+
+    plan = get_backend("speedrun").render(load_experiment(path))
+
+    assert "--no-save-final-checkpoint" not in plan.argv
+    assert "--save-final-checkpoint" in plan.argv
+    assert "--artifact-policy=research" in plan.argv
+    assert "--initialization-hash=shared" in plan.argv
+    assert f"--data-manifest={tmp_path / 'climbmix.manifest.json'}" in plan.argv
+    assert f"--metrics-path={tmp_path / 'output' / 'metrics.jsonl'}" in plan.argv
+    assert f"--checkpoint-dir={tmp_path / 'output' / 'checkpoints'}" in plan.argv
+
+
 def test_megatron_spec_renders_eight_rank_scaling_plan(monkeypatch, tmp_path):
     for name, value in {
         "NGA_TRAIN_DATA": tmp_path / "train_text_document",
@@ -157,6 +192,24 @@ def test_megatron_runtime_resolves_system_package(monkeypatch, tmp_path):
     }
 
 
+def test_generic_megatron_renderer_rejects_unenforced_research_policy(monkeypatch, tmp_path):
+    for name, value in {
+        "NGA_TRAIN_DATA": tmp_path / "train_text_document",
+        "NGA_VALID_DATA": tmp_path / "valid_text_document",
+        "NGA_DATA_CACHE": tmp_path / "cache",
+        "NGA_TOKENIZER": tmp_path / "tokenizer",
+        "NGA_OUTPUT_DIR": tmp_path / "output",
+        "NGA_DATA_MANIFEST": tmp_path / "manifest.json",
+    }.items():
+        monkeypatch.setenv(name, str(value))
+    spec = load_experiment(ROOT / "recipes/experiments/megatron_baseline_1b_seed42.yaml")
+    spec.config["comparison"] = {"regime": "scaling"}
+    spec.config["artifacts"] = {"mode": "research"}
+    spec.config["paths"]["data_manifest"] = "env:NGA_DATA_MANIFEST"
+    with pytest.raises(SpecError, match="cannot yet enforce"):
+        get_backend("megatron").render(spec)
+
+
 def test_backend_capabilities_do_not_claim_unported_equivalence():
     require_backend_support("qwen-gdn", "speedrun")
     with pytest.raises(ValueError, match="no validated megatron adapter"):
@@ -172,6 +225,30 @@ def test_committed_specs_reject_absolute_paths(tmp_path):
     )
     with pytest.raises(SpecError, match="must be portable"):
         load_experiment(path)
+
+
+def test_research_spec_requires_complete_comparison_and_artifact_contract(tmp_path):
+    incomplete = tmp_path / "incomplete.yaml"
+    incomplete.write_text(
+        "schema_version: 1\nname: incomplete\nbackend: speedrun\n"
+        "variant: baseline\nseed: 42\ncomparison:\n  regime: controlled\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SpecError, match="both comparison and artifacts"):
+        load_experiment(incomplete)
+
+    complete = tmp_path / "complete.yaml"
+    complete.write_text(
+        "schema_version: 1\nname: complete\nbackend: speedrun\n"
+        "variant: baseline\nseed: 42\ncomparison:\n  regime: controlled\n"
+        "artifacts:\n  mode: research\n",
+        encoding="utf-8",
+    )
+    spec = load_experiment(complete)
+    assert spec.comparison is not None
+    assert spec.comparison.regime.value == "controlled"
+    assert spec.artifacts is not None
+    assert spec.artifacts.save_final_checkpoint is True
 
 
 def test_prompt_set_is_versioned_and_stable():

@@ -18,7 +18,10 @@ import argparse
 import gc
 import json
 import math
+import sys
 import time
+import traceback
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -27,8 +30,18 @@ import torch.distributed as dist
 import wandb
 
 from archlab.architectures.base import Linear
+from archlab.failures import classify_failure
 from archlab.optimizers.speedrun import setup_model_optimizer
+from archlab.performance import ThroughputProtocol, summarize_step_timestamps
 from archlab.prompts import load_prompt_texts
+from archlab.provenance import (
+    hash_named_tensors,
+    hash_tokenizer_vocabulary,
+    sha256_file,
+    source_provenance,
+    stable_json_sha256,
+    verify_dataset_manifest,
+)
 from archlab.speedrun.attention import (
     ATTENTION_BACKEND,
     ATTENTION_BACKEND_REASON,
@@ -36,7 +49,14 @@ from archlab.speedrun.attention import (
     describe_attention_backend,
 )
 from archlab.speedrun.base_eval import evaluate_core
-from archlab.speedrun.checkpoint import load_checkpoint, save_checkpoint
+from archlab.speedrun.checkpoint import (
+    capture_rng_state,
+    load_checkpoint,
+    load_rng_state,
+    restore_rng_state,
+    save_checkpoint,
+    verify_checkpoint_bundle,
+)
 from archlab.speedrun.dataloader import (
     balanced_replicated_batch_slice,
     tokenizing_distributed_data_loader_bos_bestfit,
@@ -72,6 +92,7 @@ from archlab.speedrun.runtime import (
 from archlab.speedrun.tokenizer import get_token_bytes, get_tokenizer
 
 print_banner()
+lifecycle_started = time.perf_counter()
 
 
 def comma_separated_ints(value: str) -> tuple[int, ...]:
@@ -553,6 +574,12 @@ parser.add_argument(
     "--model-tag", type=str, default=None, help="override model tag for checkpoint directory name"
 )
 parser.add_argument(
+    "--checkpoint-dir",
+    type=Path,
+    default=None,
+    help="override the checkpoint directory (required for portable research runs)",
+)
+parser.add_argument(
     "--max-parameters",
     type=int,
     default=-1,
@@ -582,6 +609,42 @@ parser.add_argument(
     default=10,
     help="write one structured training point every N optimizer steps",
 )
+parser.add_argument(
+    "--throughput-warmup-steps",
+    type=int,
+    default=10,
+    help="optimizer-step intervals excluded from steady-state throughput",
+)
+parser.add_argument(
+    "--throughput-measurement-steps",
+    type=int,
+    default=0,
+    help="steady intervals to measure (0 uses every interval after warmup)",
+)
+parser.add_argument(
+    "--artifact-policy",
+    choices=("metrics_only", "research", "frozen_historical"),
+    default="metrics_only",
+    help="research requires pinned data, raw metrics, initialization identity, and checkpoints",
+)
+parser.add_argument(
+    "--data-manifest",
+    type=Path,
+    default=None,
+    help="content manifest for the exact ClimbMix parquet directory",
+)
+parser.add_argument(
+    "--data-verification",
+    choices=("metadata", "full"),
+    default="metadata",
+    help="metadata checks inventory and sizes; full also rehashes all dataset bytes",
+)
+parser.add_argument(
+    "--initialization-hash",
+    choices=("none", "shared", "full"),
+    default="none",
+    help="hash all parameters or only names shared with the nanochat baseline",
+)
 args = parser.parse_args()
 if args.fp8 and args.arch_family == "fog":
     parser.error("--fp8 is the legacy nanochat path. Use --precision-recipe for --arch-family=fog.")
@@ -609,6 +672,19 @@ if args.finite_check_every < 0:
     parser.error("--finite-check-every must be non-negative")
 if args.metrics_every < 1:
     parser.error("--metrics-every must be positive")
+if args.throughput_warmup_steps < 0 or args.throughput_measurement_steps < 0:
+    parser.error("throughput step counts must be non-negative")
+if args.artifact_policy == "research":
+    if args.data_manifest is None:
+        parser.error("research artifact policy requires --data-manifest")
+    if args.metrics_path is None:
+        parser.error("research artifact policy requires --metrics-path")
+    if not args.save_final_checkpoint:
+        parser.error("research artifact policy requires --save-final-checkpoint")
+    if args.checkpoint_dir is None:
+        parser.error("research artifact policy requires --checkpoint-dir")
+    if args.initialization_hash == "none":
+        parser.error("research artifact policy requires --initialization-hash=shared or full")
 if args.arch_family in {"deepseek_dsa", "frontier_pool", "pareto_combo"}:
     # DSA and several frontier components add legitimate matrix shapes. The
     # fused optimizer helper is fullgraph-compiled once per shape, so PyTorch's
@@ -624,7 +700,9 @@ if (
         f"--precision-recipe={args.precision_recipe} requires full-context FOG attention. "
         f"Use --window-pattern L (or an all-L equivalent), got '{args.window_pattern}'."
     )
-user_config = vars(args).copy()  # for logging
+user_config = {
+    key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
+}  # JSON-safe CLI record for logging and checkpoints
 # -----------------------------------------------------------------------------
 # Compute init and wandb logging
 
@@ -634,20 +712,100 @@ master_process = ddp_rank == 0  # this process will do logging, checkpointing et
 synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
 
+
+def broadcast_from_master(value):
+    payload = [value if master_process else None]
+    if is_ddp_initialized():
+        dist.broadcast_object_list(payload, src=0)
+    return payload[0]
+
+
+def write_json_atomic(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+attempt_id = broadcast_from_master(str(uuid.uuid4()))
+run_id = None
+throughput_protocol = ThroughputProtocol(
+    warmup_steps=args.throughput_warmup_steps,
+    measurement_steps=args.throughput_measurement_steps,
+)
+throughput_protocol.validate()
+
+base_dir = Path(get_base_dir()).expanduser().resolve()
+dataset_root = base_dir / "base_data_climbmix"
+if not dataset_root.is_dir():
+    dataset_root = base_dir / "base_data"
+data_identity = None
+if args.data_manifest is not None:
+    verification = None
+    if master_process:
+        try:
+            verification = {
+                "value": verify_dataset_manifest(
+                    dataset_root,
+                    args.data_manifest,
+                    mode=args.data_verification,
+                ),
+                "error": None,
+            }
+        except Exception as error:  # synchronize a rank-0 contract failure
+            verification = {
+                "value": None,
+                "error": f"{type(error).__name__}: {error}",
+            }
+    verification = broadcast_from_master(verification)
+    if verification["error"] is not None:
+        raise RuntimeError(f"dataset manifest verification failed: {verification['error']}")
+    data_identity = verification["value"]
+
+source_verification = None
+if master_process:
+    try:
+        repository = Path(__file__).resolve().parents[3]
+        source_verification = {
+            "value": source_provenance(repository),
+            "error": None,
+        }
+    except Exception as error:
+        source_verification = {
+            "value": {
+                "source_commit": None,
+                "source_dirty": None,
+                "source_diff_sha256": None,
+                "source_untracked_files": [],
+                "source_untracked_sha256": None,
+                "source_worktree_sha256": None,
+            },
+            "error": f"{type(error).__name__}: {error}",
+        }
+source_verification = broadcast_from_master(source_verification)
+if args.artifact_policy == "research" and source_verification["error"] is not None:
+    raise RuntimeError(f"research source provenance failed: {source_verification['error']}")
+source_identity = source_verification["value"]
+if args.artifact_policy == "research" and source_identity["source_dirty"]:
+    raise RuntimeError("research runs require a clean source worktree")
+
 metrics_path = args.metrics_path.expanduser().resolve() if args.metrics_path is not None else None
 if master_process and metrics_path is not None:
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        metrics_path.touch(exist_ok=False)
-    except FileExistsError as error:
-        raise RuntimeError(f"refusing to overwrite existing metrics file: {metrics_path}") from error
+    if metrics_path.exists() and args.resume_from_step == -1:
+        raise RuntimeError(f"refusing to overwrite existing metrics file: {metrics_path}")
+    metrics_path.touch(exist_ok=True)
 
 
 def append_metric(payload: dict) -> None:
     if not master_process or metrics_path is None:
         return
+    record = {"run_id": run_id, "attempt_id": attempt_id, **payload}
     with metrics_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def any_rank_nonfinite(local_flag: torch.Tensor) -> bool:
@@ -727,7 +885,9 @@ else:
 tokenizer = get_tokenizer()
 token_bytes = get_token_bytes(device=device)
 vocab_size = tokenizer.get_vocab_size()
+tokenizer_sha256 = hash_tokenizer_vocabulary(tokenizer, padded_vocab_size=vocab_size)
 print0(f"Vocab size: {vocab_size:,}")
+print0(f"Tokenizer vocabulary SHA-256: {tokenizer_sha256}")
 
 
 # -----------------------------------------------------------------------------
@@ -751,10 +911,10 @@ def scaled_engram_layers(target_depth: int) -> tuple[int, ...]:
     return tuple(scaled)
 
 
-def build_model_meta(depth):
+def build_model_meta(depth, *, arch_family=None):
     """Build a model on meta device for a given depth (shapes/dtypes only, no data)."""
     config = build_model_config(
-        arch_family=args.arch_family,
+        arch_family=args.arch_family if arch_family is None else arch_family,
         depth=depth,
         aspect_ratio=args.aspect_ratio,
         head_dim=args.head_dim,
@@ -889,6 +1049,24 @@ else:
     )  # 2) All tensors get storage on target device but with uninitialized (garbage) data
     model.init_weights()  # 3) All tensors get initialized
 
+initialization_identity = None
+if args.initialization_hash != "none" and master_process:
+    include_names = None
+    if args.initialization_hash == "shared":
+        baseline_meta = build_model_meta(args.depth, arch_family="nanochat")
+        include_names = {name for name, _parameter in baseline_meta.named_parameters()}
+        include_names &= {name for name, _parameter in model.named_parameters()}
+    initialization_identity = {
+        "mode": args.initialization_hash,
+        "parameter_tensors": sum(
+            1
+            for name, _parameter in model.named_parameters()
+            if include_names is None or name in include_names
+        ),
+        "sha256": hash_named_tensors(model.named_parameters(), include_names=include_names),
+    }
+initialization_identity = broadcast_from_master(initialization_identity)
+
 if args.arch_family == "engram" or (
     args.arch_family == "pareto_combo" and "engram" in model_config.components
 ):
@@ -905,7 +1083,6 @@ if args.arch_family == "engram" or (
         dist.broadcast(model.engram_pad_id, src=0)
 
 # If we are resuming, overwrite the model parameters with those of the checkpoint
-base_dir = get_base_dir()
 if args.arch_family == "nanochat":
     default_model_tag = f"d{args.depth}"
 elif args.arch_family == "fog":
@@ -933,7 +1110,11 @@ elif args.arch_family == "mhc":
 else:
     default_model_tag = f"deepseek_dsa_d{args.depth}"
 output_dirname = args.model_tag if args.model_tag else default_model_tag
-checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
+checkpoint_dir = (
+    str(args.checkpoint_dir.expanduser().resolve())
+    if args.checkpoint_dir is not None
+    else os.path.join(base_dir, "base_checkpoints", output_dirname)
+)
 resuming = args.resume_from_step != -1
 if resuming:
     print0(f"Resuming optimization from step {args.resume_from_step}")
@@ -942,6 +1123,16 @@ if resuming:
     )
     model.load_state_dict(model_data, strict=True, assign=True)
     del model_data  # free up this memory after the copy
+    resumed_rng_state = load_rng_state(
+        checkpoint_dir,
+        args.resume_from_step,
+        device,
+        rank=ddp_rank,
+    )
+    if args.artifact_policy == "research" and resumed_rng_state is None:
+        raise RuntimeError("research resume requires a complete per-rank RNG checkpoint")
+else:
+    resumed_rng_state = None
 
 # -----------------------------------------------------------------------------
 # FP8 training initialization and management (this has to be done before torch.compile)
@@ -1162,12 +1353,10 @@ if args.exact_global_batch_replay:
     if total_batch_size % args.max_seq_len:
         raise ValueError("exact replay requires total batch tokens divisible by sequence length")
     replay_global_sequences = total_batch_size // args.max_seq_len
-    _slice_start, replay_active_sequences, replay_local_sequences = (
-        balanced_replicated_batch_slice(
-            replay_global_sequences,
-            ddp_rank,
-            ddp_world_size,
-        )
+    _slice_start, replay_active_sequences, replay_local_sequences = balanced_replicated_batch_slice(
+        replay_global_sequences,
+        ddp_rank,
+        ddp_world_size,
     )
     if args.device_batch_size != replay_local_sequences:
         raise ValueError(
@@ -1223,6 +1412,12 @@ else:
         train_loader
     )  # kick off load of the very first batch of data
 
+if resumed_rng_state is not None:
+    # Setup and dataloader reconstruction may allocate tensors. Restore only
+    # after both are complete so the next optimization step sees checkpoint RNG.
+    restore_rng_state(resumed_rng_state)
+    del resumed_rng_state
+
 # -----------------------------------------------------------------------------
 # Calculate the number of iterations we will train for and set up the various schedulers
 
@@ -1252,6 +1447,110 @@ print0(
     f"Tokens : Scaling params ratio: {total_batch_size * num_iterations / num_scaling_params:.2f}"
 )  # e.g. Chinchilla was ~20
 print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
+
+data_order_id = stable_json_sha256(
+    {
+        "dataset_manifest_sha256": (
+            data_identity["manifest_identity_sha256"] if data_identity is not None else "unverified"
+        ),
+        "seed": args.seed,
+        "loader": (
+            "climbmix-exact-global-batch-replay-v1"
+            if args.exact_global_batch_replay
+            else "climbmix-distributed-bestfit-v1"
+        ),
+    }
+)
+scientific_args = {
+    key: value
+    for key, value in user_config.items()
+    if key
+    not in {
+        "run",
+        "model_tag",
+        "checkpoint_dir",
+        "metrics_path",
+        "metrics_every",
+        "throughput_warmup_steps",
+        "throughput_measurement_steps",
+        "save_every",
+        "save_final_checkpoint",
+        "resume_from_step",
+        "artifact_policy",
+        "data_manifest",
+        "data_verification",
+        "initialization_hash",
+    }
+}
+run_identity = {
+    "backend": "speedrun",
+    "model_config": model_config_kwargs,
+    "scientific_args": scientific_args,
+    "seed": args.seed,
+    "training_tokens": total_tokens,
+    "dataset_manifest_sha256": (
+        data_identity["manifest_identity_sha256"] if data_identity is not None else None
+    ),
+    "data_order_id": data_order_id,
+    "tokenizer_sha256": tokenizer_sha256,
+    "initialization": initialization_identity,
+    "source_commit": source_identity["source_commit"],
+    "source_worktree_sha256": source_identity["source_worktree_sha256"],
+}
+run_id = stable_json_sha256(run_identity)
+print0(f"Stable run ID: {run_id}")
+append_metric({"kind": "attempt_start", "resume_from_step": args.resume_from_step})
+if resuming:
+    checkpoint_run_id = meta_data.get("run_id")
+    if args.artifact_policy == "research" and checkpoint_run_id is None:
+        raise RuntimeError("research resume requires a checkpoint with a stable run ID")
+    if checkpoint_run_id is not None and checkpoint_run_id != run_id:
+        raise RuntimeError(
+            f"resume checkpoint belongs to run {checkpoint_run_id}, expected {run_id}"
+        )
+
+attempt_dir = None
+if master_process:
+    attempt_dir = Path(checkpoint_dir) / "attempts" / attempt_id
+    attempt_dir.mkdir(parents=True, exist_ok=False)
+    resolved_run_path = attempt_dir / "resolved_run.json"
+    write_json_atomic(
+        resolved_run_path,
+        {
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "run_identity": run_identity,
+            "artifact_policy": args.artifact_policy,
+            "data_identity": data_identity,
+            "source_identity": source_identity,
+            "user_config": user_config,
+        },
+    )
+
+    previous_excepthook = sys.excepthook
+
+    def record_uncaught_failure(exception_type, exception, exception_traceback):
+        classification = classify_failure(exception)
+        write_json_atomic(
+            attempt_dir / "FAILED.json",
+            {
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "failure": classification.to_dict(),
+                "error_type": exception_type.__name__,
+                "error": str(exception),
+                "traceback": "".join(
+                    traceback.format_exception(
+                        exception_type,
+                        exception,
+                        exception_traceback,
+                    )
+                ),
+            },
+        )
+        previous_excepthook(exception_type, exception, exception_traceback)
+
+    sys.excepthook = record_uncaught_failure
 
 
 # Learning rate schedule (linear warmup, constant, linear warmdown)
@@ -1296,6 +1595,8 @@ def get_weight_decay(it):
 # Training loop
 
 # Loop state (variables updated by the training loop)
+checkpoint_bundle = None
+step_timestamps = []
 if not resuming:
     step = 0
     val_bpb = None  # will be set if eval_every > 0
@@ -1344,7 +1645,9 @@ while True:
         val_loader = build_val_loader()
         if args.exact_global_batch_replay:
             if args.eval_tokens % total_batch_size:
-                raise ValueError("exact replay requires eval tokens divisible by total batch tokens")
+                raise ValueError(
+                    "exact replay requires eval tokens divisible by total batch tokens"
+                )
             eval_steps = args.eval_tokens // total_batch_size
         else:
             eval_steps = args.eval_tokens // (
@@ -1435,6 +1738,14 @@ while True:
             optimizer.state_dict(),  # optimizer state
             {  # metadata saved as json
                 "step": step,
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "run_identity": run_identity,
+                "artifact_policy": args.artifact_policy,
+                "data_identity": data_identity,
+                "source_identity": source_identity,
+                "tokenizer_sha256": tokenizer_sha256,
+                "initialization": initialization_identity,
                 "val_bpb": val_bpb,  # loss at last step
                 "model_config": model_config_kwargs,
                 "user_config": user_config,  # inputs to the training script
@@ -1452,7 +1763,34 @@ while True:
                 },
             },
             rank=ddp_rank,
+            rng_data=capture_rng_state(),
         )
+        if is_ddp_initialized():
+            dist.barrier()
+        checkpoint_verification = None
+        if master_process:
+            try:
+                checkpoint_verification = {
+                    "value": verify_checkpoint_bundle(
+                        checkpoint_dir,
+                        step,
+                        world_size=ddp_world_size,
+                        require_optimizer=True,
+                        require_rng=True,
+                    ),
+                    "error": None,
+                }
+            except Exception as error:
+                checkpoint_verification = {
+                    "value": None,
+                    "error": f"{type(error).__name__}: {error}",
+                }
+        checkpoint_verification = broadcast_from_master(checkpoint_verification)
+        if checkpoint_verification["error"] is not None:
+            raise RuntimeError(
+                f"checkpoint verification failed: {checkpoint_verification['error']}"
+            )
+        checkpoint_bundle = checkpoint_verification["value"]
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     if last_step:
@@ -1542,6 +1880,7 @@ while True:
     }
     synchronize()
     t1 = time.time()
+    step_timestamps.append(time.perf_counter())
     dt = t1 - t0
     quant_log_data = {}
     if monitor_this_step and hasattr(orig_model, "consume_quant_metrics"):
@@ -1652,7 +1991,42 @@ avg_step_time = (total_training_time / completed_steps) if completed_steps > 0 e
 avg_tok_per_sec = (
     int(total_batch_size / avg_step_time) if avg_step_time and avg_step_time > 0 else None
 )
+throughput_summary = summarize_step_timestamps(
+    step_timestamps,
+    tokens_per_step=total_batch_size,
+    protocol=throughput_protocol,
+)
+attempt_lifecycle_wall_time = time.perf_counter() - lifecycle_started
+append_metric(
+    {
+        "kind": "attempt_complete",
+        "step": step,
+        "tokens": total_tokens,
+        "lifecycle_wall_time_s": attempt_lifecycle_wall_time,
+        "throughput": throughput_summary,
+    }
+)
+metrics_artifact = None
+if master_process and metrics_path is not None:
+    metrics_artifact = {
+        "path": str(metrics_path),
+        "bytes": metrics_path.stat().st_size,
+        "sha256": sha256_file(metrics_path),
+    }
 summary_data = {
+    "run_id": run_id,
+    "attempt_id": attempt_id,
+    "run_identity": run_identity,
+    "artifact_policy": args.artifact_policy,
+    "data_identity": data_identity,
+    "data_order_id": data_order_id,
+    "source_identity": source_identity,
+    "tokenizer_sha256": tokenizer_sha256,
+    "initialization": initialization_identity,
+    "raw_metrics": metrics_artifact,
+    "final_checkpoint": checkpoint_bundle,
+    "attempt_lifecycle_wall_time_s": attempt_lifecycle_wall_time,
+    "throughput": throughput_summary,
     "arch_family": args.arch_family,
     "fog_variant": args.fog_variant if args.arch_family == "fog" else None,
     "precision_recipe": args.precision_recipe,
@@ -1689,10 +2063,20 @@ summary_data = {
     else {},
 }
 if master_process:
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    summary_path = os.path.join(checkpoint_dir, "training_summary.json")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary_data, f, indent=2)
+    summary_path = Path(checkpoint_dir) / "training_summary.json"
+    write_json_atomic(summary_path, summary_data)
+    write_json_atomic(attempt_dir / "training_summary.json", summary_data)
+    write_json_atomic(
+        attempt_dir / "COMPLETE.json",
+        {
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "step": step,
+            "training_summary": str(attempt_dir / "training_summary.json"),
+            "metrics": metrics_artifact,
+            "checkpoint": checkpoint_bundle,
+        },
+    )
     print0(f"Wrote training summary to {summary_path}")
 
 # Log to report

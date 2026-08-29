@@ -22,7 +22,9 @@ def classify_failure(error: BaseException) -> FailureClassification:
     if any(token in message for token in ("non-finite", "nan", "infinity", "inf gradient")):
         return FailureClassification("numerical", False, "non-finite model state or metric")
     if any(token in message for token in ("out of memory", "cuda oom", "cublas_status_alloc")):
-        return FailureClassification("capacity", False, "the declared configuration exceeds capacity")
+        return FailureClassification(
+            "capacity", False, "the declared configuration exceeds capacity"
+        )
     if any(
         token in message
         for token in (

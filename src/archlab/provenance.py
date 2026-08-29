@@ -78,9 +78,7 @@ class DatasetManifest:
 
     def validate(self) -> None:
         if self.schema_version != DATASET_MANIFEST_SCHEMA:
-            raise ProvenanceError(
-                f"unsupported dataset manifest schema: {self.schema_version}"
-            )
+            raise ProvenanceError(f"unsupported dataset manifest schema: {self.schema_version}")
         if self.kind != "dataset-content-manifest":
             raise ProvenanceError(f"unexpected dataset manifest kind: {self.kind!r}")
         if not self.dataset or not self.revision:
@@ -125,10 +123,7 @@ def create_dataset_manifest(
     if not root.is_dir():
         raise FileNotFoundError(root)
     paths = {
-        path.resolve()
-        for pattern in patterns
-        for path in root.glob(pattern)
-        if path.is_file()
+        path.resolve() for pattern in patterns for path in root.glob(pattern) if path.is_file()
     }
     if not paths:
         raise ProvenanceError(f"no files matched under {root}")
@@ -250,11 +245,7 @@ def verify_dataset_manifest(
             "required files are absent from the dataset manifest: " + ", ".join(sorted(unknown))
         )
     if required_files is None:
-        visible = {
-            path.relative_to(root).as_posix()
-            for path in root.rglob("*")
-            if path.is_file()
-        }
+        visible = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
         extras = visible - set(expected)
         missing = set(expected) - visible
         if extras or missing:
@@ -275,9 +266,7 @@ def verify_dataset_manifest(
         size = path.stat().st_size
         total_bytes += size
         if item.size is not None and size != item.size:
-            raise ProvenanceError(
-                f"dataset size mismatch for {relative}: {size} != {item.size}"
-            )
+            raise ProvenanceError(f"dataset size mismatch for {relative}: {size} != {item.size}")
         if mode == "full":
             observed = sha256_file(path)
             if observed != item.sha256:

@@ -58,7 +58,12 @@ def test_pretrain_adapter_supports_config_container_api(monkeypatch):
 
     _invoke_megatron_pretrain(SimpleNamespace(pretrain=pretrain), "data", "model", "type")
 
-    assert calls[0][:4] == (("config", ("args", {"args_defaults": {"tokenizer_type": "NullTokenizer"}})), "data", "model", "type")
+    assert calls[0][:4] == (
+        ("config", ("args", {"args_defaults": {"tokenizer_type": "NullTokenizer"}})),
+        "data",
+        "model",
+        "type",
+    )
 
 
 def test_pretrain_adapter_supports_legacy_cli_api():

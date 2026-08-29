@@ -6,8 +6,12 @@ import glob
 import json
 import logging
 import os
+import random
 import re
+from pathlib import Path
+from typing import Any
 
+import numpy as np
 import torch
 
 from archlab.speedrun.models import (
@@ -29,24 +33,138 @@ def log0(message):
         logger.info(message)
 
 
-def save_checkpoint(checkpoint_dir, step, model_data, optimizer_data, meta_data, rank=0):
+def _atomic_torch_save(value: Any, path: Path) -> None:
+    """Publish a torch artifact only after serialization completes."""
+
+    temporary = path.with_suffix(path.suffix + f".tmp-rank{os.environ.get('RANK', '0')}")
+    torch.save(value, temporary)
+    temporary.replace(path)
+
+
+def _atomic_json_save(value: Any, path: Path) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2)
+        handle.write("\n")
+    temporary.replace(path)
+
+
+def capture_rng_state() -> dict[str, Any]:
+    """Capture every process-local RNG used by the speedrun backend."""
+
+    numpy_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": {
+            "bit_generator": numpy_state[0],
+            "state": torch.from_numpy(numpy_state[1].copy()),
+            "position": numpy_state[2],
+            "has_gauss": numpy_state[3],
+            "cached_gaussian": numpy_state[4],
+        },
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+    }
+
+
+def restore_rng_state(state: dict[str, Any]) -> None:
+    random.setstate(state["python"])
+    numpy_state = state["numpy"]
+    np.random.set_state(
+        (
+            numpy_state["bit_generator"],
+            numpy_state["state"].cpu().numpy(),
+            numpy_state["position"],
+            numpy_state["has_gauss"],
+            numpy_state["cached_gaussian"],
+        )
+    )
+    torch.set_rng_state(state["torch_cpu"].cpu())
+    if state.get("torch_cuda") is not None:
+        if not torch.cuda.is_available():
+            raise RuntimeError("checkpoint contains a CUDA RNG state but CUDA is unavailable")
+        torch.cuda.set_rng_state(state["torch_cuda"].cpu())
+
+
+def load_rng_state(checkpoint_dir, step, device, rank=0):
+    path = Path(checkpoint_dir) / f"rng_{step:06d}_rank{rank:d}.pt"
+    if not path.is_file():
+        return None
+    return torch.load(path, map_location=device)
+
+
+def save_checkpoint(
+    checkpoint_dir,
+    step,
+    model_data,
+    optimizer_data,
+    meta_data,
+    rank=0,
+    rng_data=None,
+):
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     if rank == 0:
-        os.makedirs(checkpoint_dir, exist_ok=True)
         # Save the model state parameters
-        model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
-        torch.save(model_data, model_path)
+        model_path = checkpoint_dir / f"model_{step:06d}.pt"
+        _atomic_torch_save(model_data, model_path)
         logger.info(f"Saved model parameters to: {model_path}")
         # Save the metadata dict as json
-        meta_path = os.path.join(checkpoint_dir, f"meta_{step:06d}.json")
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta_data, f, indent=2)
+        meta_path = checkpoint_dir / f"meta_{step:06d}.json"
+        _atomic_json_save(meta_data, meta_path)
         logger.info(f"Saved metadata to: {meta_path}")
     # Note that optimizer state is sharded across ranks, so each rank must save its own.
     if optimizer_data is not None:
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        optimizer_path = os.path.join(checkpoint_dir, f"optim_{step:06d}_rank{rank:d}.pt")
-        torch.save(optimizer_data, optimizer_path)
+        optimizer_path = checkpoint_dir / f"optim_{step:06d}_rank{rank:d}.pt"
+        _atomic_torch_save(optimizer_data, optimizer_path)
         logger.info(f"Saved optimizer state to: {optimizer_path}")
+    if rng_data is not None:
+        rng_path = checkpoint_dir / f"rng_{step:06d}_rank{rank:d}.pt"
+        _atomic_torch_save(rng_data, rng_path)
+        logger.info(f"Saved RNG state to: {rng_path}")
+
+
+def verify_checkpoint_bundle(
+    checkpoint_dir: str | Path,
+    step: int,
+    *,
+    world_size: int,
+    require_optimizer: bool = True,
+    require_rng: bool = False,
+) -> dict[str, Any]:
+    """Reject a partially published model/metadata/optimizer checkpoint bundle."""
+
+    if world_size < 1:
+        raise ValueError("world_size must be positive")
+    checkpoint_dir = Path(checkpoint_dir).expanduser().resolve()
+    expected = [
+        checkpoint_dir / f"model_{step:06d}.pt",
+        checkpoint_dir / f"meta_{step:06d}.json",
+    ]
+    if require_optimizer:
+        expected.extend(
+            checkpoint_dir / f"optim_{step:06d}_rank{rank:d}.pt" for rank in range(world_size)
+        )
+    if require_rng:
+        expected.extend(
+            checkpoint_dir / f"rng_{step:06d}_rank{rank:d}.pt" for rank in range(world_size)
+        )
+    missing = [str(path) for path in expected if not path.is_file()]
+    empty = [str(path) for path in expected if path.is_file() and path.stat().st_size == 0]
+    if missing or empty:
+        raise RuntimeError(f"incomplete checkpoint step {step}: missing={missing} empty={empty}")
+    meta_path = checkpoint_dir / f"meta_{step:06d}.json"
+    with meta_path.open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    if int(metadata.get("step", -1)) != step:
+        raise RuntimeError(f"checkpoint metadata step mismatch: {metadata.get('step')} != {step}")
+    return {
+        "step": step,
+        "world_size": world_size,
+        "optimizer_shards": world_size if require_optimizer else 0,
+        "rng_shards": world_size if require_rng else 0,
+        "files": [{"path": path.name, "bytes": path.stat().st_size} for path in expected],
+    }
 
 
 def load_checkpoint(checkpoint_dir, step, device, load_optimizer=False, rank=0):

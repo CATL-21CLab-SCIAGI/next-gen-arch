@@ -90,9 +90,7 @@ def test_repacking_one_global_batch_preserves_historical_row_order(monkeypatch):
         buffer_size=8,
         distributed=False,
     )
-    historical = dataloader.tokenizing_distributed_data_loader_with_state_bos_bestfit(
-        B=4, **kwargs
-    )
+    historical = dataloader.tokenizing_distributed_data_loader_with_state_bos_bestfit(B=4, **kwargs)
     historical_inputs = []
     historical_targets = []
     for _ in range(3):
@@ -110,9 +108,7 @@ def test_repacking_one_global_batch_preserves_historical_row_order(monkeypatch):
 
 
 def test_balanced_replicated_slice_keeps_exact_192_sequences_on_15_ranks():
-    slices = [
-        dataloader.balanced_replicated_batch_slice(192, rank, 15) for rank in range(15)
-    ]
+    slices = [dataloader.balanced_replicated_batch_slice(192, rank, 15) for rank in range(15)]
 
     assert [active for _start, active, _local in slices] == [13] * 12 + [12] * 3
     assert {local for _start, _active, local in slices} == {13}

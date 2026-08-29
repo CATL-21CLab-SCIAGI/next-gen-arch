@@ -321,3 +321,9 @@ only after full-budget seed-42 confirmation, then three seeds under the same tok
 contract. System-only changes must improve steady-state throughput without a material BPB
 shift. Architecture/optimizer changes must report both BPB and throughput; no compound can
 replace its single-component controls.
+
+## Post-audit harness hardening
+
+The audit exposed infrastructure ambiguity that could make a good kernel result hard to reproduce. New runs now have explicit controlled/fixed-compute/scaling budget resolution, content-addressed data and tokenizer identities, shared-parameter initialization hashes, stable run IDs, unique attempt IDs, raw metric hashes, and a predeclared throughput window. FineWeb validation replays one fixed window and resume seeks from the restored optimizer iteration.
+
+Speedrun research checkpoints now atomically publish model, optimizer, dataloader metadata, and per-rank Python/NumPy/PyTorch RNG state. A complete-bundle check runs before success is recorded; numerical and contract failures are non-retryable without a newly named contract. The published historical campaign commands and their no-final-checkpoint behavior remain frozen rather than being silently rewritten.

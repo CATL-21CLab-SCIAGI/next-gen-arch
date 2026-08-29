@@ -62,8 +62,7 @@ class ComparisonContract:
             raise ContractError("comparison.baseline_variant must not be empty")
         if self.shared_initialization not in {"hash", "bit_identical", "not_applicable"}:
             raise ContractError(
-                "comparison.shared_initialization must be hash, bit_identical, or "
-                "not_applicable"
+                "comparison.shared_initialization must be hash, bit_identical, or not_applicable"
             )
         if not self.primary_metric:
             raise ContractError("comparison.primary_metric must not be empty")
@@ -164,12 +163,8 @@ def resolve_training_budget(
             raise ContractError("target_model_flops must be finite for fixed_compute")
         if target_model_flops <= 0:
             raise ContractError("target_model_flops must be positive")
-        if algorithmic_flops_per_token is None or not math.isfinite(
-            algorithmic_flops_per_token
-        ):
-            raise ContractError(
-                "algorithmic_flops_per_token must be finite for fixed_compute"
-            )
+        if algorithmic_flops_per_token is None or not math.isfinite(algorithmic_flops_per_token):
+            raise ContractError("algorithmic_flops_per_token must be finite for fixed_compute")
         if algorithmic_flops_per_token <= 0:
             raise ContractError("algorithmic_flops_per_token must be positive")
         if target_train_tokens is not None or tokens_per_parameter is not None:
@@ -177,9 +172,7 @@ def resolve_training_budget(
                 "fixed_compute comparisons accept only target_model_flops; do not mix budgets"
             )
         requested_flops = float(target_model_flops)
-        steps = math.floor(
-            requested_flops / (float(algorithmic_flops_per_token) * batch_tokens)
-        )
+        steps = math.floor(requested_flops / (float(algorithmic_flops_per_token) * batch_tokens))
     else:
         if tokens_per_parameter is None or not math.isfinite(tokens_per_parameter):
             raise ContractError("tokens_per_parameter must be finite for scaling")

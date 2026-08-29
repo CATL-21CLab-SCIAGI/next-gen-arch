@@ -6,6 +6,7 @@ import os
 import platform
 import runpy
 import sys
+from dataclasses import asdict
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
@@ -124,6 +125,14 @@ class MegatronBackend:
         model = spec.model
         training = spec.training
         parallel = spec.parallelism
+        comparison = spec.comparison
+        artifacts = spec.artifacts
+        if artifacts is not None and artifacts.mode == "research":
+            raise SpecError(
+                "generic Megatron recipes cannot yet enforce the research artifact contract; "
+                "launch archlab.megatron.train with explicit data, budget, initialization, "
+                "checkpoint, and run-directory arguments"
+            )
         _required(
             model,
             "num_layers",
@@ -152,14 +161,17 @@ class MegatronBackend:
         sequence_parallel = bool(parallel.get("sequence_parallel", tensor_parallel > 1))
         world_size = nodes * gpus
         model_parallel = tensor_parallel * pipeline_parallel * context_parallel
-        if min(
-            nodes,
-            gpus,
-            tensor_parallel,
-            pipeline_parallel,
-            context_parallel,
-            expert_parallel,
-        ) < 1:
+        if (
+            min(
+                nodes,
+                gpus,
+                tensor_parallel,
+                pipeline_parallel,
+                context_parallel,
+                expert_parallel,
+            )
+            < 1
+        ):
             raise SpecError("all parallelism values must be positive")
         if world_size % model_parallel:
             raise SpecError(
@@ -197,7 +209,9 @@ class MegatronBackend:
         if num_experts is not None:
             num_experts = int(num_experts)
             if num_experts < 1 or num_experts % expert_parallel:
-                raise SpecError("num_experts must be positive and divisible by expert parallel size")
+                raise SpecError(
+                    "num_experts must be positive and divisible by expert parallel size"
+                )
         if expert_parallel > 1 and tensor_parallel > 1 and not sequence_parallel:
             raise SpecError("combined tensor and expert parallelism requires sequence parallelism")
 
@@ -406,6 +420,9 @@ class MegatronBackend:
                 "semantic_equivalence": (
                     "scaling backend only; speedrun optimizer/kernel equivalence is not claimed"
                 ),
+                "comparison": asdict(comparison) if comparison is not None else None,
+                "artifacts": asdict(artifacts) if artifacts is not None else None,
+                "data_manifest": paths.get("data_manifest"),
             },
         )
 

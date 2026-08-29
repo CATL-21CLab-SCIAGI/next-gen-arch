@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+from pathlib import Path
+
 from archlab.capabilities import require_backend_support
 from archlab.launch import LaunchPlan
 from archlab.registry import find_run
@@ -33,6 +36,24 @@ class SpeedrunBackend:
         command = run.command(run_name=spec.name)
         prompt_file = spec.resolve_reference(spec.prompts)
         command.append(f"--prompt-file={prompt_file}")
+        comparison = spec.comparison
+        artifacts = spec.artifacts
+        if artifacts is not None and artifacts.mode == "research":
+            if "output_dir" not in paths or "data_manifest" not in paths:
+                raise SpecError(
+                    "research speedrun specs require paths.output_dir and paths.data_manifest"
+                )
+            command = [argument for argument in command if argument != "--no-save-final-checkpoint"]
+            command.extend(
+                (
+                    "--save-final-checkpoint",
+                    f"--metrics-path={Path(paths['output_dir']) / 'metrics.jsonl'}",
+                    f"--checkpoint-dir={Path(paths['output_dir']) / 'checkpoints'}",
+                    f"--data-manifest={paths['data_manifest']}",
+                    "--artifact-policy=research",
+                    "--initialization-hash=shared",
+                )
+            )
 
         parallelism = spec.parallelism
         nodes = int(parallelism.get("nodes", 1))
@@ -64,5 +85,8 @@ class SpeedrunBackend:
                 "upstream": SPEEDRUN_UPSTREAM,
                 "provenance_commit": SPEEDRUN_PROVENANCE_COMMIT,
                 "semantic_equivalence": "frozen campaign command with only package-path changes",
+                "comparison": asdict(comparison) if comparison is not None else None,
+                "artifacts": asdict(artifacts) if artifacts is not None else None,
+                "data_manifest": paths.get("data_manifest"),
             },
         )
