@@ -99,6 +99,12 @@ _ATTEMPT_ID = ""
 DATASETS = ("climbmix", "fineweb10b", "fineweb100b")
 FINEWEB_DATASETS = frozenset({"fineweb10b", "fineweb100b"})
 FINEWEB_EXPECTED_TRAIN_SHARDS = {"fineweb10b": 103, "fineweb100b": 1_028}
+_MEGATRON_PARAM_GROUP_ID_KEYS = (
+    "wd_mult",
+    "lr_mult",
+    "is_expert_parallel",
+    "is_decoupled_lr",
+)
 
 
 def _is_fineweb(dataset: str) -> bool:
@@ -734,6 +740,7 @@ def _install_optimizer_adapter(
             is_canonical = group["kind"] in {"muon", "adamh"} and not canonical_group_seen
             group["default_config"] = is_canonical
             canonical_group_seen = canonical_group_seen or is_canonical
+        _tag_megatron_optimizer_groups(raw_optimizer.param_groups)
         optimizer_config, _ = training_module.get_megatron_optimizer_config(args)
         optimizer_config.timers = timers
         optimizer_config.clip_grad = recipe.gradient_clip
@@ -754,6 +761,7 @@ def _install_optimizer_adapter(
                 optimizer_config,
                 init_state_fn=lambda *_args, **_kwargs: None,
             )
+        _install_legacy_optimizer_group_migration(optimizer)
         schedule = SpeedrunSchedule(
             optimizer,
             variant,
@@ -770,10 +778,72 @@ def _install_optimizer_adapter(
             checkpointing_context,
         )
         schedule_holder["restored_iteration"] = restored_iteration
+        schedule_holder["legacy_optimizer_group_metadata_migrated"] = bool(
+            getattr(optimizer, "_archlab_legacy_group_metadata_migrated", False)
+        )
         return model, optimizer, schedule
 
     training_module.setup_model_and_optimizer = setup_model_and_optimizer
     return schedule_holder
+
+
+def _tag_megatron_optimizer_groups(groups: list[dict[str, Any]]) -> None:
+    """Give custom optimizer groups stable IDs understood by MCore checkpoint loading."""
+
+    for index, group in enumerate(groups):
+        group["wd_mult"] = 1.0
+        group["lr_mult"] = float(index + 1)
+        group["is_expert_parallel"] = False
+        group["is_decoupled_lr"] = False
+
+
+def _migrate_legacy_optimizer_groups(
+    loaded_groups: list[dict[str, Any]],
+    current_groups: list[dict[str, Any]],
+) -> bool:
+    """Add missing MCore IDs after proving legacy group order is unchanged."""
+
+    if all(all(key in group for key in _MEGATRON_PARAM_GROUP_ID_KEYS) for group in loaded_groups):
+        return False
+    if len(loaded_groups) != len(current_groups):
+        raise RuntimeError(
+            f"legacy optimizer group count mismatch: {len(loaded_groups)} != {len(current_groups)}"
+        )
+    fingerprint_keys = ("kind", "initial_lr", "default_config")
+    for index, (loaded, current) in enumerate(zip(loaded_groups, current_groups, strict=True)):
+        if len(loaded.get("params", ())) != len(current.get("params", ())):
+            raise RuntimeError(f"legacy optimizer parameter count mismatch in group {index}")
+        for key in fingerprint_keys:
+            if loaded.get(key) != current.get(key):
+                raise RuntimeError(
+                    f"legacy optimizer group {index} changed {key}: "
+                    f"{loaded.get(key)!r} != {current.get(key)!r}"
+                )
+        for key in _MEGATRON_PARAM_GROUP_ID_KEYS:
+            loaded[key] = current[key]
+    return True
+
+
+def _install_legacy_optimizer_group_migration(optimizer) -> None:
+    """Make pre-group-ID checkpoints loadable without rewriting their files."""
+
+    raw_optimizer = getattr(optimizer, "optimizer", None)
+    if raw_optimizer is None:
+        raise RuntimeError("Megatron optimizer wrapper does not expose its base optimizer")
+    original_load_state_dict = optimizer.load_state_dict
+
+    def load_state_dict(state_dict):
+        raw_state = state_dict.get("optimizer") if isinstance(state_dict, dict) else None
+        loaded_groups = raw_state.get("param_groups") if isinstance(raw_state, dict) else None
+        if loaded_groups is not None:
+            migrated = _migrate_legacy_optimizer_groups(
+                loaded_groups,
+                raw_optimizer.param_groups,
+            )
+            optimizer._archlab_legacy_group_metadata_migrated = migrated
+        return original_load_state_dict(state_dict)
+
+    optimizer.load_state_dict = load_state_dict
 
 
 def _restore_megatron_checkpoint(
@@ -1294,6 +1364,9 @@ def _run_megatron(
             "algorithmic_flops_per_token": schedule_holder["algorithmic_flops_per_token"],
             "executed_flops_per_token": schedule_holder["executed_flops_per_token"],
             "restored_iteration": int(schedule_holder.get("restored_iteration", 0)),
+            "legacy_optimizer_group_metadata_migrated": bool(
+                schedule_holder.get("legacy_optimizer_group_metadata_migrated", False)
+            ),
         },
     )
 
@@ -1714,6 +1787,9 @@ def main() -> None:
             "validation_tokens": COMPARISON_EVAL_TOKENS,
             "final_bpb": final_bpb,
             "restored_iteration": model_audit["restored_iteration"],
+            "legacy_optimizer_group_metadata_migrated": model_audit[
+                "legacy_optimizer_group_metadata_migrated"
+            ],
             "wall_seconds": wall_seconds,
             "metrics_sha256": sha256_file(metrics_path),
             "checkpoint_artifact": checkpoint_artifact,

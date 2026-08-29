@@ -14,6 +14,7 @@ from archlab.megatron.train import (
     _invoke_megatron_pretrain,
     _loss_func,
     _megatron_arguments,
+    _migrate_legacy_optimizer_groups,
     _restore_megatron_checkpoint,
     _source_provenance,
     get_megatron_backend_profile,
@@ -169,6 +170,71 @@ def test_megatron_checkpoint_restore_rejects_silent_restart():
             schedule,
             {},
         )
+
+
+def test_legacy_optimizer_group_metadata_is_migrated_only_after_fingerprint_match():
+    loaded = [
+        {
+            "kind": "adamw",
+            "initial_lr": 0.3,
+            "default_config": False,
+            "params": [0, 1],
+        },
+        {
+            "kind": "muon",
+            "initial_lr": 0.02,
+            "default_config": True,
+            "params": [2],
+        },
+    ]
+    current = [
+        {
+            **loaded[0],
+            "params": [object(), object()],
+            "wd_mult": 1.0,
+            "lr_mult": 1.0,
+            "is_expert_parallel": False,
+            "is_decoupled_lr": False,
+        },
+        {
+            **loaded[1],
+            "params": [object()],
+            "wd_mult": 1.0,
+            "lr_mult": 2.0,
+            "is_expert_parallel": False,
+            "is_decoupled_lr": False,
+        },
+    ]
+
+    assert _migrate_legacy_optimizer_groups(loaded, current) is True
+    assert loaded[0]["lr_mult"] == 1.0
+    assert loaded[1]["lr_mult"] == 2.0
+    assert _migrate_legacy_optimizer_groups(loaded, current) is False
+
+
+def test_legacy_optimizer_group_migration_rejects_reordered_groups():
+    loaded = [
+        {
+            "kind": "muon",
+            "initial_lr": 0.02,
+            "default_config": True,
+            "params": [0],
+        }
+    ]
+    current = [
+        {
+            **loaded[0],
+            "kind": "adamw",
+            "params": [object()],
+            "wd_mult": 1.0,
+            "lr_mult": 1.0,
+            "is_expert_parallel": False,
+            "is_decoupled_lr": False,
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="changed kind"):
+        _migrate_legacy_optimizer_groups(loaded, current)
 
 
 def test_pretrain_adapter_supports_config_container_api(monkeypatch):
