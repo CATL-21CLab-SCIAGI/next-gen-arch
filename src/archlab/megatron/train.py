@@ -80,6 +80,7 @@ from archlab.speedrun.models import (
     build_model_config,
     instantiate_model,
 )
+from archlab.speedrun.runtime import resolve_climbmix_data_dir
 from archlab.speedrun.tokenizer import (
     get_pretrained_tokenizer,
     get_token_bytes,
@@ -1500,7 +1501,7 @@ def main() -> None:
     dataset_root_for_manifest = (
         data_root
         if data_root is not None
-        else (Path(climbmix_root).expanduser().resolve() if climbmix_root else None)
+        else (resolve_climbmix_data_dir(climbmix_root) if climbmix_root else None)
     )
     data_identity = None
     if args.data_manifest is not None:

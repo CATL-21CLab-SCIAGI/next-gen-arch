@@ -88,6 +88,7 @@ from archlab.speedrun.runtime import (
     is_ddp_initialized,
     print0,
     print_banner,
+    resolve_climbmix_data_dir,
 )
 from archlab.speedrun.tokenizer import get_token_bytes, get_tokenizer
 
@@ -739,9 +740,7 @@ throughput_protocol = ThroughputProtocol(
 throughput_protocol.validate()
 
 base_dir = Path(get_base_dir()).expanduser().resolve()
-dataset_root = base_dir / "base_data_climbmix"
-if not dataset_root.is_dir():
-    dataset_root = base_dir / "base_data"
+dataset_root = resolve_climbmix_data_dir(base_dir)
 data_identity = None
 if args.data_manifest is not None:
     verification = None
