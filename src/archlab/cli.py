@@ -57,6 +57,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     prompts = subparsers.add_parser("prompts", help="inspect a portable prompt set")
     prompts.add_argument("--file", type=Path)
+
+    manifest = subparsers.add_parser(
+        "data-manifest", help="create or verify a content-addressed dataset manifest"
+    )
+    manifest_actions = manifest.add_subparsers(dest="manifest_action", required=True)
+    create = manifest_actions.add_parser("create")
+    create.add_argument("--root", required=True, type=Path)
+    create.add_argument("--dataset", required=True)
+    create.add_argument("--revision", required=True)
+    create.add_argument("--pattern", action="append", default=[])
+    create.add_argument("--output", required=True, type=Path)
+    check = manifest_actions.add_parser("verify")
+    check.add_argument("--root", required=True, type=Path)
+    check.add_argument("--manifest", required=True, type=Path)
+    check.add_argument("--mode", choices=("metadata", "full"), default="full")
+
+    pair = subparsers.add_parser(
+        "pair-check", help="verify the frozen axes of a controlled baseline/variant pair"
+    )
+    pair.add_argument("--baseline", required=True, type=Path)
+    pair.add_argument("--variant", required=True, type=Path)
     return parser
 
 
@@ -79,6 +100,34 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.action == "prompts":
         print(json.dumps([prompt.__dict__ for prompt in load_prompts(args.file)], indent=2))
+        return 0
+    if args.action == "data-manifest":
+        from archlab.provenance import (
+            create_dataset_manifest,
+            verify_dataset_manifest,
+            write_dataset_manifest,
+        )
+
+        if args.manifest_action == "create":
+            manifest = create_dataset_manifest(
+                args.root,
+                dataset=args.dataset,
+                revision=args.revision,
+                patterns=tuple(args.pattern or ("**/*",)),
+            )
+            write_dataset_manifest(args.output, manifest)
+            print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
+            return 0
+        payload = verify_dataset_manifest(args.root, args.manifest, mode=args.mode)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if args.action == "pair-check":
+        from archlab.contracts import assert_paired_controls
+
+        baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
+        variant = json.loads(args.variant.read_text(encoding="utf-8"))
+        assert_paired_controls(baseline, variant)
+        print(json.dumps({"status": "matched", "baseline": str(args.baseline), "variant": str(args.variant)}, indent=2))
         return 0
     if args.action == "render":
         try:

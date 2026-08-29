@@ -119,6 +119,7 @@ class FineWebBinaryLoader:
         rank: int,
         world_size: int,
         device: str | torch.device = "cuda",
+        start_batch_index: int = 0,
     ) -> None:
         if split not in {"train", "val"}:
             raise ValueError("split must be 'train' or 'val'")
@@ -126,6 +127,8 @@ class FineWebBinaryLoader:
             raise ValueError("batch size and sequence length must be positive")
         if world_size <= 0 or not 0 <= rank < world_size:
             raise ValueError("rank must be inside a positive world size")
+        if start_batch_index < 0:
+            raise ValueError("start batch index must be non-negative")
         self.files = sorted(Path(root).glob(f"fineweb_{split}_*.bin"))
         if not self.files:
             raise FileNotFoundError(f"no FineWeb {split} shards under {Path(root)}")
@@ -140,7 +143,11 @@ class FineWebBinaryLoader:
         self.global_position = 0
         self.tokens: np.memmap | None = None
         self.token_count = 0
+        self.batch_index = 0
         self._open_shard()
+        if not any(inspect_fineweb_shard(path) > self.global_tokens for path in self.files):
+            raise ValueError("no FineWeb shard is large enough for one distributed batch")
+        self.seek_batch(start_batch_index)
 
     def _open_shard(self) -> None:
         path = self.files[self.shard_index]
@@ -158,6 +165,32 @@ class FineWebBinaryLoader:
         self.shard_index = (self.shard_index + 1) % len(self.files)
         self._open_shard()
 
+    def seek_batch(self, batch_index: int) -> None:
+        """Seek to an exact distributed-microbatch cursor without reading payloads."""
+
+        if batch_index < 0:
+            raise ValueError("batch index must be non-negative")
+        self.shard_index = 0
+        self._open_shard()
+        self.batch_index = 0
+        remaining = batch_index
+        while remaining:
+            available = max(0, (self.token_count - self.global_position - 1) // self.global_tokens)
+            if remaining < available:
+                self.global_position += remaining * self.global_tokens
+                self.batch_index += remaining
+                return
+            remaining -= available
+            self.batch_index += available
+            self._advance_shard()
+
+    def state_dict(self) -> dict[str, int]:
+        return {
+            "shard_index": self.shard_index,
+            "global_position": self.global_position,
+            "batch_index": self.batch_index,
+        }
+
     def __iter__(self):
         return self
 
@@ -172,6 +205,7 @@ class FineWebBinaryLoader:
         inputs = buffer[:-1].view(self.local_batch_size, self.sequence_length)
         labels = buffer[1:].view(self.local_batch_size, self.sequence_length)
         self.global_position += self.global_tokens
+        self.batch_index += 1
         if self.device.type == "cuda":
             inputs = inputs.pin_memory().to(self.device, non_blocking=True)
             labels = labels.pin_memory().to(self.device, non_blocking=True)
@@ -188,6 +222,7 @@ def fineweb_distributed_data_loader(
     sequence_length: int,
     *,
     device: str | torch.device = "cuda",
+    start_batch_index: int = 0,
 ):
     """Yield rank-local FineWeb batches using the initialized torchrun topology."""
     _ddp, rank, _local_rank, world_size = get_dist_info()
@@ -199,7 +234,32 @@ def fineweb_distributed_data_loader(
         rank=rank,
         world_size=world_size,
         device=device,
+        start_batch_index=start_batch_index,
     )
+
+
+def fixed_fineweb_validation_loader(
+    root: str | Path,
+    local_batch_size: int,
+    sequence_length: int,
+    *,
+    window_batches: int,
+    device: str | torch.device = "cuda",
+):
+    """Replay the identical validation token window at every evaluation."""
+
+    if window_batches < 1:
+        raise ValueError("validation window must contain at least one batch")
+    while True:
+        source = fineweb_distributed_data_loader(
+            root,
+            "val",
+            local_batch_size,
+            sequence_length,
+            device=device,
+        )
+        for _ in range(window_batches):
+            yield next(source)
 
 
 def _document_batches(split, resume_state_dict, tokenizer_batch_size, *, distributed=True):

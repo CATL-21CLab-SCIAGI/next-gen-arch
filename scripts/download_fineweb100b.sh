@@ -8,6 +8,7 @@ NGA_DATASET="${NGA_DATASET:-kjj0/fineweb100B-gpt2}"
 NGA_DATASET_REVISION="${NGA_DATASET_REVISION:-50d1422b27e1a928440c26a8829f3f827f44ac56}"
 NGA_STAGE_ROOT="${NGA_STAGE_ROOT:-/tmp/fineweb100B-${NGA_DATASET_REVISION}}"
 NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb100B}"
+NGA_DATA_MANIFEST="${NGA_DATA_MANIFEST:-/mnt/oss/datasets/fineweb100B.manifest.json}"
 NGA_STATE_ROOT="${NGA_STATE_ROOT:-/mnt/nas/evergreen/next-gen-arch/data-downloads}"
 NGA_DOWNLOAD_WORKERS="${NGA_DOWNLOAD_WORKERS:-32}"
 
@@ -43,11 +44,13 @@ NGA_DATA_ROOT="$NGA_DATA_ROOT" \
 NGA_DATASET="$NGA_DATASET" \
 NGA_DATASET_REVISION="$NGA_DATASET_REVISION" \
 NGA_STATE_ROOT="$NGA_STATE_ROOT" \
+NGA_DATA_MANIFEST="$NGA_DATA_MANIFEST" \
 PYTHONPATH="$NGA_REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
 "$NGA_PYTHON" -c '
 import json
 import os
 from pathlib import Path
+from archlab.provenance import create_dataset_manifest, write_dataset_manifest
 from archlab.speedrun.dataloader import inspect_fineweb_dataset
 
 summary = inspect_fineweb_dataset(os.environ["NGA_DATA_ROOT"], expected_train_shards=1028)
@@ -57,4 +60,11 @@ target = Path(os.environ["NGA_STATE_ROOT"]) / "fineweb100b.COMPLETE.json"
 temporary = target.with_suffix(".tmp")
 temporary.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 temporary.replace(target)
+manifest = create_dataset_manifest(
+    os.environ["NGA_DATA_ROOT"],
+    dataset=os.environ["NGA_DATASET"],
+    revision=os.environ["NGA_DATASET_REVISION"],
+    patterns=("fineweb_train_*.bin", "fineweb_val_*.bin"),
+)
+write_dataset_manifest(os.environ["NGA_DATA_MANIFEST"], manifest)
 '

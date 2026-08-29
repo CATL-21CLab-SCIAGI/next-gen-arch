@@ -5,7 +5,9 @@ set -uo pipefail
 : "${MASTER_ADDR:?set MASTER_ADDR to the rank-0 private address}"
 
 NGA_REPO_ROOT="${NGA_REPO_ROOT:-/mnt/nas/evergreen/next-gen-arch}"
+NGA_EXPECTED_COMMIT="${NGA_EXPECTED_COMMIT:?set the immutable source commit}"
 NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb10B}"
+NGA_DATA_MANIFEST="${NGA_DATA_MANIFEST:?set the pinned FineWeb content manifest}"
 NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/fineweb10b-wave-v1}"
 NGA_TOKENIZER_CACHE="${NGA_TOKENIZER_CACHE:-/mnt/oss/datasets/tokenizers/tiktoken}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
@@ -18,6 +20,13 @@ NGA_BACKEND_PROFILE="${NGA_BACKEND_PROFILE:-compile}"
 NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-}"
 NGA_SCALES="${NGA_SCALES:-1m 10m 100m 300m}"
 NGA_VARIANTS="${NGA_VARIANTS:-baseline engram kda dsa attnres mhc gated-attention situ-glu inkling-relative-attention glm-mla xielu qwen-gdn inkling-sconv-kv inkling-sconv-residual partial-rope-25 kimi-k3-kda-update colu}"
+NGA_SAVE_INTERVAL="${NGA_SAVE_INTERVAL:-1000}"
+
+mountpoint -q /mnt/nas
+mountpoint -q /mnt/oss
+test -f "$NGA_DATA_MANIFEST"
+test "$(git -C "$NGA_REPO_ROOT" rev-parse HEAD)" = "$NGA_EXPECTED_COMMIT"
+test -z "$(git -C "$NGA_REPO_ROOT" status --porcelain=v1 --untracked-files=all)"
 
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export PATH="$(dirname "$NGA_PYTHON"):$CUDA_HOME/bin:$PATH"
@@ -55,10 +64,18 @@ for variant in $NGA_VARIANTS; do
             --module archlab.megatron.train \
             --dataset fineweb10b \
             --data-root "$NGA_DATA_ROOT" \
+            --data-manifest "$NGA_DATA_MANIFEST" \
+            --data-verification metadata \
             --scale "$scale" \
             --variant "$variant" \
+            --comparison-regime scaling \
+            --tokens-per-parameter 12 \
+            --artifact-policy research \
+            --initialization-hash shared \
             --seed 42 \
             --run-dir "$run_dir" \
+            --checkpoint-dir "$run_dir/checkpoints" \
+            --save-interval "$NGA_SAVE_INTERVAL" \
             --backend-profile "$NGA_BACKEND_PROFILE" \
             --optimization-recipe baseline \
             --metrics-every 10 \

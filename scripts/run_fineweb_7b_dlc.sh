@@ -9,6 +9,7 @@ set -euo pipefail
 NGA_REPO_ROOT="${NGA_REPO_ROOT:-/mnt/nas/evergreen/next-gen-arch-7b}"
 NGA_EXPECTED_COMMIT="${NGA_EXPECTED_COMMIT:?set the immutable source commit}"
 NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb100B}"
+NGA_DATA_MANIFEST="${NGA_DATA_MANIFEST:-/mnt/oss/datasets/fineweb100B.sha256}"
 NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/fineweb100b-7b-baseline-seed42}"
 NGA_TOKENIZER_CACHE="${NGA_TOKENIZER_CACHE:-/mnt/oss/datasets/tokenizers/tiktoken}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
@@ -24,6 +25,7 @@ if [[ "$WORLD_SIZE" != "4" || "$NGA_GPUS_PER_NODE" != "8" ]]; then
 fi
 mountpoint -q /mnt/nas
 mountpoint -q /mnt/oss
+test -f "$NGA_DATA_MANIFEST"
 test "$(git -C "$NGA_REPO_ROOT" rev-parse HEAD)" = "$NGA_EXPECTED_COMMIT"
 test -z "$(git -C "$NGA_REPO_ROOT" status --porcelain=v1 --untracked-files=all)"
 
@@ -75,13 +77,19 @@ done
     --module archlab.megatron.train \
     --dataset fineweb100b \
     --data-root "$NGA_DATA_ROOT" \
+    --data-manifest "$NGA_DATA_MANIFEST" \
+    --data-verification metadata \
     --scale 7b \
     --variant baseline \
+    --comparison-regime controlled \
+    --target-train-tokens 100000000000 \
+    --artifact-policy research \
+    --initialization-hash shared \
     --seed 42 \
     --run-dir "$NGA_OUTPUT_ROOT/run" \
     --checkpoint-dir "$NGA_OUTPUT_ROOT/checkpoints" \
     --save-interval "$NGA_SAVE_INTERVAL" \
     --backend-profile "$NGA_BACKEND_PROFILE" \
     --optimization-recipe baseline \
+    --throughput-warmup-steps 10 \
     --metrics-every 10
-

@@ -156,6 +156,47 @@ def test_fineweb_binary_loader_partitions_one_contiguous_global_batch(tmp_path):
     assert next(rank0)[0].flatten().tolist() == list(range(16, 24))
 
 
+def test_fineweb_binary_loader_resumes_from_exact_microbatch_cursor(tmp_path):
+    _write_fineweb_shard(tmp_path / "fineweb_train_000001.bin", list(range(100)))
+
+    uninterrupted = dataloader.FineWebBinaryLoader(
+        tmp_path, "train", 2, 4, rank=0, world_size=2, device="cpu"
+    )
+    for _ in range(3):
+        expected = next(uninterrupted)
+    resumed = dataloader.FineWebBinaryLoader(
+        tmp_path,
+        "train",
+        2,
+        4,
+        rank=0,
+        world_size=2,
+        device="cpu",
+        start_batch_index=2,
+    )
+    actual = next(resumed)
+
+    assert torch.equal(actual[0], expected[0])
+    assert torch.equal(actual[1], expected[1])
+    assert resumed.state_dict()["batch_index"] == 3
+
+
+def test_fineweb_validation_replays_identical_window(tmp_path, monkeypatch):
+    _write_fineweb_shard(tmp_path / "fineweb_val_000000.bin", list(range(100)))
+    monkeypatch.setattr(dataloader, "get_dist_info", lambda: (False, 0, 0, 1))
+    source = dataloader.fixed_fineweb_validation_loader(
+        tmp_path,
+        1,
+        4,
+        window_batches=2,
+        device="cpu",
+    )
+
+    first = [next(source) for _ in range(2)]
+    second = [next(source) for _ in range(2)]
+    assert all(torch.equal(first[index][0], second[index][0]) for index in range(2))
+
+
 def test_fineweb_shard_validation_rejects_truncated_payload(tmp_path):
     shard = tmp_path / "fineweb_val_000000.bin"
     _write_fineweb_shard(shard, [1, 2, 3])

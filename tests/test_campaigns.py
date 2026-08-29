@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -198,7 +199,13 @@ def test_published_backend_comparison_is_complete_and_provenanced():
     payload = json.loads(PUBLISHED_COMPARISON.read_text(encoding="utf-8"))
     assert len(payload["runs"]) == 96
     assert len(payload["summary"]) == 32
-    assert payload["cross_backend"] == metrics
+    recorded = payload["cross_backend"]
+    assert recorded.keys() == metrics.keys()
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            assert math.isclose(recorded[key], value, rel_tol=0.0, abs_tol=1e-15)
+        else:
+            assert recorded[key] == value
 
 
 def test_optimization_ledger_covers_every_executable_recipe() -> None:

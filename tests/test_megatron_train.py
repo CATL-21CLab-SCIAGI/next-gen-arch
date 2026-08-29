@@ -321,7 +321,9 @@ def test_throughput_summary_separates_compile_pause_from_steady_steps() -> None:
 
     summary = schedule.throughput_summary()
 
-    assert summary["measured_training_seconds"] == 109.0
-    assert summary["tokens_per_second"] == 10 * TEN_M_BATCH_TOKENS / 109.0
+    assert summary["measured_training_seconds"] == 9.0
+    assert summary["tokens_per_second"] == TEN_M_BATCH_TOKENS
     assert summary["median_step_seconds"] == 1.0
     assert summary["steady_state_tokens_per_second"] == TEN_M_BATCH_TOKENS
+    assert summary["throughput_sample_intervals"] == 9
+    assert summary["throughput_protocol"]["warmup_steps"] == 10

@@ -325,11 +325,20 @@ def main() -> None:
                     stdout=log,
                     stderr=subprocess.STDOUT,
                 )
+            failure = None
+            failed_path = run_dir / "FAILED.json"
+            if completed.returncode != 0 and failed_path.is_file():
+                failed_payload = json.loads(failed_path.read_text(encoding="utf-8"))
+                failure = failed_payload.get("failure")
             update(
                 task,
                 status="complete" if completed.returncode == 0 else "failed",
                 returncode=completed.returncode,
                 log=str(log_path),
+                failure=failure,
+                retry_recommended=bool(
+                    isinstance(failure, dict) and failure.get("retriable")
+                ),
                 finished_at_unix=time.time(),
             )
 

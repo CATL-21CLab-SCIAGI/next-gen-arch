@@ -16,6 +16,8 @@ from typing import Any
 
 import yaml
 
+from archlab.contracts import ArtifactPolicy, ComparisonContract, ContractError
+
 PACKAGE_ROOT = Path(__file__).resolve().parent
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -124,6 +126,16 @@ class ExperimentSpec:
     def parallelism(self) -> dict[str, Any]:
         return dict(self.config.get("parallelism", {}))
 
+    @property
+    def comparison(self) -> ComparisonContract | None:
+        value = self.config.get("comparison")
+        return None if value is None else ComparisonContract.from_mapping(value)
+
+    @property
+    def artifacts(self) -> ArtifactPolicy | None:
+        value = self.config.get("artifacts")
+        return None if value is None else ArtifactPolicy.from_mapping(value)
+
     def resolve_reference(
         self,
         value: str,
@@ -190,4 +202,17 @@ def load_experiment(path: str | Path) -> ExperimentSpec:
     if not isinstance(prompts, str):
         raise SpecError("prompts must be a portable string reference")
     _validate_portable_reference(prompts, "prompts")
+    research_keys = {key for key in ("comparison", "artifacts") if key in config}
+    if research_keys and research_keys != {"comparison", "artifacts"}:
+        raise SpecError("new research specs must define both comparison and artifacts")
+    if research_keys:
+        if not isinstance(config["comparison"], Mapping):
+            raise SpecError("comparison must be a mapping")
+        if not isinstance(config["artifacts"], Mapping):
+            raise SpecError("artifacts must be a mapping")
+        try:
+            ComparisonContract.from_mapping(config["comparison"])
+            ArtifactPolicy.from_mapping(config["artifacts"])
+        except ContractError as error:
+            raise SpecError(str(error)) from error
     return ExperimentSpec(source, tuple(source_files), config)

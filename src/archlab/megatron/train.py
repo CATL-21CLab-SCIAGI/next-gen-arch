@@ -10,24 +10,29 @@ that every mechanism has a tensor-parallel-native MCore layer implementation.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import inspect
 import json
 import math
 import os
 import platform
 import socket
-import statistics
-import subprocess
 import sys
 import time
 import traceback
+import uuid
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from archlab.contracts import (
+    BudgetResolution,
+    ComparisonRegime,
+    ContractError,
+    resolve_training_budget,
+)
+from archlab.failures import classify_failure
 from archlab.megatron.backend import validate_runtime
 from archlab.optimizers.recipes import (
     OPTIMIZATION_RECIPES,
@@ -35,6 +40,15 @@ from archlab.optimizers.recipes import (
     get_optimization_recipe,
 )
 from archlab.optimizers.speedrun import setup_model_optimizer
+from archlab.performance import ThroughputProtocol, summarize_step_timestamps
+from archlab.provenance import (
+    hash_named_tensors,
+    hash_tokenizer_vocabulary,
+    sha256_file,
+    source_provenance,
+    stable_json_sha256,
+    verify_dataset_manifest,
+)
 from archlab.speedrun.campaigns import (
     CAMPAIGN_VARIANTS,
     COMPARISON_BATCH_TOKENS,
@@ -55,6 +69,7 @@ from archlab.speedrun.campaigns import (
 )
 from archlab.speedrun.dataloader import (
     fineweb_distributed_data_loader,
+    fixed_fineweb_validation_loader,
     inspect_fineweb_dataset,
     tokenizing_distributed_data_loader_bos_bestfit,
     tokenizing_distributed_data_loader_with_state_bos_bestfit,
@@ -78,6 +93,8 @@ _TRAIN_LOSS_SUM = 0.0
 _TRAIN_TOKENS = 0
 _TRAIN_METRICS_ENABLED = False
 _TOKEN_BYTES: torch.Tensor | None = None
+_RUN_ID = ""
+_ATTEMPT_ID = ""
 DATASETS = ("climbmix", "fineweb10b", "fineweb100b")
 FINEWEB_DATASETS = frozenset({"fineweb10b", "fineweb100b"})
 FINEWEB_EXPECTED_TRAIN_SHARDS = {"fineweb10b": 103, "fineweb100b": 1_028}
@@ -91,11 +108,27 @@ def _world_size() -> int:
     return int(os.environ.get("WORLD_SIZE", "1"))
 
 
+def _megatron_resume_iteration() -> int:
+    """Read the restored optimizer-step cursor when an external loader first advances."""
+
+    try:
+        from megatron.training import get_args
+
+        return int(get_args().iteration)
+    except (ImportError, AttributeError):
+        return 0
+
+
 def _append_jsonl(path: Path | None, payload: dict[str, Any]) -> None:
     if path is None or _global_rank() != 0:
         return
+    enriched = dict(payload)
+    if _RUN_ID:
+        enriched.setdefault("run_id", _RUN_ID)
+    if _ATTEMPT_ID:
+        enriched.setdefault("attempt_id", _ATTEMPT_ID)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.write(json.dumps(enriched, sort_keys=True) + "\n")
 
 
 @dataclass(frozen=True)
@@ -202,24 +235,87 @@ def _model_config_kwargs(
     return campaign_model_config_kwargs(scale, variant)
 
 
-def resolve_fineweb_variant(scale: str, name: str) -> CampaignVariant:
-    """Resolve exact GPT-2-vocabulary parameters and the 12-token/parameter budget."""
-    template = get_fineweb_variant_template(scale, name)
-    config = build_model_config(**fineweb_model_config_kwargs(scale, template))
+def _variant_model_metrics(
+    dataset: str,
+    scale: str,
+    template: CampaignVariant,
+) -> tuple[int, float, float]:
+    config = build_model_config(**_model_config_kwargs(dataset, scale, template))
     with torch.device("meta"):
         model = instantiate_model(config)
     parameter_count = int(model.num_scaling_params()["total"])
-    token_target = FINEWEB_FIXED_TOKEN_TARGETS.get(
-        scale, FINEWEB_TOKENS_PER_PARAMETER * parameter_count
+    algorithmic_flops = float(model.estimate_flops())
+    executed_flops = float(
+        model.estimate_executed_flops()
+        if hasattr(model, "estimate_executed_flops")
+        else algorithmic_flops
     )
-    steps = max(1, round(token_target / COMPARISON_BATCH_TOKENS))
-    warmup_steps = min(40, max(1, round(0.05 * steps)))
-    return replace(
+    return parameter_count, algorithmic_flops, executed_flops
+
+
+def resolve_variant_contract(
+    dataset: str,
+    scale: str,
+    name: str,
+    *,
+    regime: ComparisonRegime | str | None = None,
+    target_train_tokens: int | None = None,
+    target_model_flops: float | None = None,
+    tokens_per_parameter: float | None = None,
+) -> tuple[CampaignVariant, BudgetResolution, float, float]:
+    """Resolve exact model counts and one explicit comparison budget."""
+
+    if _is_fineweb(dataset):
+        template = get_fineweb_variant_template(scale, name)
+    else:
+        template = get_campaign_variant(scale, name)
+    parameter_count, algorithmic_flops, executed_flops = _variant_model_metrics(
+        dataset, scale, template
+    )
+    if not _is_fineweb(dataset) and parameter_count != template.parameter_count:
+        raise RuntimeError(
+            f"parameter count drift for {name}: {parameter_count} != {template.parameter_count}"
+        )
+    if regime is None:
+        if _is_fineweb(dataset) and scale in FINEWEB_FIXED_TOKEN_TARGETS:
+            regime = ComparisonRegime.CONTROLLED
+            target_train_tokens = FINEWEB_FIXED_TOKEN_TARGETS[scale]
+        elif _is_fineweb(dataset):
+            regime = ComparisonRegime.SCALING
+            tokens_per_parameter = FINEWEB_TOKENS_PER_PARAMETER
+        else:
+            # Preserve frozen ClimbMix step counts while labeling their actual
+            # tokens/parameter semantics explicitly.
+            regime = ComparisonRegime.SCALING
+            tokens_per_parameter = template.training_tokens / parameter_count
+    budget = resolve_training_budget(
+        regime,
+        batch_tokens=COMPARISON_BATCH_TOKENS,
+        parameter_count=parameter_count,
+        algorithmic_flops_per_token=algorithmic_flops,
+        target_train_tokens=target_train_tokens,
+        target_model_flops=target_model_flops,
+        tokens_per_parameter=tokens_per_parameter,
+    )
+    warmup_steps = min(40, max(1, round(0.05 * budget.steps)))
+    variant = replace(
         template,
         parameter_count=parameter_count,
-        steps=steps,
+        steps=budget.steps,
         warmup_steps=warmup_steps,
     )
+    return variant, budget, algorithmic_flops, executed_flops
+
+
+def resolve_fineweb_variant(scale: str, name: str) -> CampaignVariant:
+    """Compatibility wrapper for the original FineWeb scaling contract."""
+
+    variant, _budget, _algorithmic, _executed = resolve_variant_contract(
+        "fineweb100b" if scale == "7b" else "fineweb10b",
+        scale,
+        name,
+    )
+    return variant
 
 
 def _current_training_iteration(args) -> int:
@@ -229,66 +325,8 @@ def _current_training_iteration(args) -> int:
     return int(args.iteration)
 
 
-def _git_output(root: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-c", f"safe.directory={root}", *args],
-        cwd=root,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    ).stdout.strip()
-
-
 def _source_provenance(repository: Path) -> dict[str, Any]:
-    status = _git_output(repository, "status", "--porcelain=v1", "--untracked-files=all")
-    diff = subprocess.run(
-        ["git", "-c", f"safe.directory={repository}", "diff", "--binary", "HEAD"],
-        cwd=repository,
-        check=True,
-        stdout=subprocess.PIPE,
-    ).stdout
-    untracked_output = subprocess.run(
-        [
-            "git",
-            "-c",
-            f"safe.directory={repository}",
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ],
-        cwd=repository,
-        check=True,
-        stdout=subprocess.PIPE,
-    ).stdout
-    untracked = sorted(Path(os.fsdecode(path)) for path in untracked_output.split(b"\0") if path)
-    untracked_digest = hashlib.sha256()
-    worktree_digest = hashlib.sha256(b"tracked-diff\0" + diff)
-    for relative in untracked:
-        path = repository / relative
-        if path.is_symlink():
-            content = b"symlink\0" + os.fsencode(os.readlink(path))
-        elif path.is_file():
-            content = b"file\0" + path.read_bytes()
-        else:
-            content = b"other\0"
-        framed = (
-            len(os.fsencode(relative)).to_bytes(8, "big")
-            + os.fsencode(relative)
-            + len(content).to_bytes(8, "big")
-            + content
-        )
-        untracked_digest.update(framed)
-        worktree_digest.update(framed)
-    return {
-        "source_commit": _git_output(repository, "rev-parse", "HEAD"),
-        "source_dirty": bool(status),
-        "source_diff_sha256": hashlib.sha256(diff).hexdigest(),
-        "source_untracked_files": [str(path) for path in untracked],
-        "source_untracked_sha256": untracked_digest.hexdigest(),
-        "source_worktree_sha256": worktree_digest.hexdigest(),
-    }
+    return source_provenance(repository)
 
 
 def _repository_root() -> Path:
@@ -297,6 +335,35 @@ def _repository_root() -> Path:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _validate_checkpoint_artifact(checkpoint_dir: Path, expected_iteration: int) -> dict[str, Any]:
+    """Require a complete final Megatron model/optimizer/RNG checkpoint."""
+
+    tracker = checkpoint_dir / "latest_checkpointed_iteration.txt"
+    if not tracker.is_file():
+        raise RuntimeError(f"final checkpoint tracker is missing: {tracker}")
+    try:
+        iteration = int(tracker.read_text(encoding="utf-8").strip())
+    except ValueError as error:
+        raise RuntimeError(f"invalid final checkpoint tracker: {tracker}") from error
+    if iteration != expected_iteration:
+        raise RuntimeError(
+            f"final checkpoint iteration mismatch: {iteration} != {expected_iteration}"
+        )
+    candidates = sorted(checkpoint_dir.glob(f"iter_{iteration:07d}/**/model_optim_rng.pt"))
+    if not candidates:
+        candidates = sorted(checkpoint_dir.glob(f"iter_{iteration:07d}/**/*.pt"))
+    if not candidates:
+        raise RuntimeError(f"final checkpoint payload is missing for iteration {iteration}")
+    return {
+        "iteration": iteration,
+        "tracker": str(tracker),
+        "payload_files": len(candidates),
+        "payload_bytes": sum(path.stat().st_size for path in candidates),
+        "payload_paths": [str(path) for path in candidates],
+        "resume_contract": "optimizer-rng-plus-iteration-derived-fineweb-cursor-v1",
+    }
 
 
 def _global_rank() -> int:
@@ -316,7 +383,13 @@ def _reduce_validation_totals() -> tuple[float, int]:
     return float(totals[0].item()), int(totals[1].item())
 
 
-def _claim_run_directory(run_dir: Path, variant: CampaignVariant, seed: int) -> Path:
+def _claim_run_directory(
+    run_dir: Path,
+    variant: CampaignVariant,
+    seed: int,
+    *,
+    attempt_id: str,
+) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     marker = run_dir / "RUNNING.json"
     descriptor = {
@@ -325,6 +398,7 @@ def _claim_run_directory(run_dir: Path, variant: CampaignVariant, seed: int) -> 
         "host": socket.gethostname(),
         "variant": variant.name,
         "seed": seed,
+        "attempt_id": attempt_id,
         "started_at_unix": time.time(),
     }
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -349,6 +423,7 @@ def _megatron_arguments(
     micro_batch_size_override: int | None = None,
     checkpoint_dir: Path | None = None,
     save_interval: int | None = None,
+    resume: bool = False,
 ) -> list[str]:
     model_kwargs = _model_config_kwargs(dataset, scale, variant)
     head_dim = int(model_kwargs["head_dim"])
@@ -502,8 +577,12 @@ def _megatron_arguments(
                 "torch",
             )
         )
+        if resume:
+            arguments.extend(("--load", str(checkpoint_dir)))
     elif save_interval is not None:
         raise ValueError("save interval requires a checkpoint directory")
+    elif resume:
+        raise ValueError("resume requires a checkpoint directory")
     return arguments
 
 
@@ -517,11 +596,15 @@ class SpeedrunSchedule:
         *,
         metrics_path: Path | None = None,
         metrics_every: int = 10,
+        throughput_protocol: ThroughputProtocol | None = None,
     ):
         self.optimizer = optimizer
         self.variant = variant
         self.metrics_path = metrics_path
         self.metrics_every = metrics_every
+        self.throughput_protocol = (
+            ThroughputProtocol() if throughput_protocol is None else throughput_protocol
+        )
         self.iteration = 0
         self.step_timestamps: list[float] = []
         self._apply(0)
@@ -598,37 +681,14 @@ class SpeedrunSchedule:
         summary = self.throughput_summary()
         return summary["measured_training_seconds"], summary["tokens_per_second"]
 
-    def throughput_summary(self) -> dict[str, float]:
-        """Report both cold-inclusive aggregate and robust steady-state throughput."""
-        warm_steps = 10
-        if len(self.step_timestamps) <= warm_steps:
-            return {
-                "measured_training_seconds": 0.0,
-                "tokens_per_second": 0.0,
-                "median_step_seconds": 0.0,
-                "p90_step_seconds": 0.0,
-                "steady_state_tokens_per_second": 0.0,
-            }
-        elapsed = self.step_timestamps[-1] - self.step_timestamps[warm_steps - 1]
-        measured_steps = len(self.step_timestamps) - warm_steps
-        intervals = [
-            current - previous
-            for previous, current in zip(
-                self.step_timestamps[warm_steps - 1 : -1],
-                self.step_timestamps[warm_steps:],
-                strict=True,
-            )
-        ]
-        median_step = statistics.median(intervals)
-        ordered = sorted(intervals)
-        p90_step = ordered[max(0, math.ceil(0.9 * len(ordered)) - 1)]
-        return {
-            "measured_training_seconds": elapsed,
-            "tokens_per_second": measured_steps * COMPARISON_BATCH_TOKENS / elapsed,
-            "median_step_seconds": median_step,
-            "p90_step_seconds": p90_step,
-            "steady_state_tokens_per_second": COMPARISON_BATCH_TOKENS / median_step,
-        }
+    def throughput_summary(self) -> dict[str, Any]:
+        """Report a predeclared steady-state timing window."""
+
+        return summarize_step_timestamps(
+            self.step_timestamps,
+            tokens_per_step=COMPARISON_BATCH_TOKENS,
+            protocol=self.throughput_protocol,
+        )
 
 
 def _install_optimizer_adapter(
@@ -638,6 +698,7 @@ def _install_optimizer_adapter(
     *,
     metrics_path: Path | None = None,
     metrics_every: int = 10,
+    throughput_protocol: ThroughputProtocol | None = None,
 ) -> dict[str, SpeedrunSchedule]:
     import megatron.training.training as training_module
     from megatron.core.optimizer.optimizer import Float16OptimizerWithFloat16Params, FP32Optimizer
@@ -696,6 +757,7 @@ def _install_optimizer_adapter(
             variant,
             metrics_path=metrics_path,
             metrics_every=metrics_every,
+            throughput_protocol=throughput_protocol,
         )
         schedule_holder["schedule"] = schedule
         args.iteration = 0
@@ -730,13 +792,27 @@ def _external_batch_loader(
             raise ValueError(
                 "FineWeb global batch must be divisible by micro batch size times world size"
             )
-        source = fineweb_distributed_data_loader(
-            data_root,
-            split,
-            local_batch_size,
-            COMPARISON_SEQUENCE_LENGTH,
-            device="cuda",
+        accumulation_microbatches = COMPARISON_GLOBAL_BATCH_SIZE // (
+            local_batch_size * _world_size()
         )
+        if split == "train":
+            source = fineweb_distributed_data_loader(
+                data_root,
+                split,
+                local_batch_size,
+                COMPARISON_SEQUENCE_LENGTH,
+                device="cuda",
+                start_batch_index=_megatron_resume_iteration() * accumulation_microbatches,
+            )
+        else:
+            evaluation_iterations = COMPARISON_EVAL_TOKENS // COMPARISON_BATCH_TOKENS
+            source = fixed_fineweb_validation_loader(
+                data_root,
+                local_batch_size,
+                COMPARISON_SEQUENCE_LENGTH,
+                window_batches=evaluation_iterations * accumulation_microbatches,
+                device="cuda",
+            )
         for tokens, labels in source:
             yield {"tokens": tokens, "labels": labels}
         return
@@ -883,8 +959,11 @@ def _run_megatron(
     micro_batch_size_override: int | None,
     checkpoint_dir: Path | None,
     save_interval: int | None,
+    resume: bool,
     metrics_path: Path | None,
     metrics_every: int,
+    throughput_protocol: ThroughputProtocol,
+    initialization_hash_mode: str,
 ):
     global _EVAL_BYTES, _EVAL_NATS, _TOKEN_BYTES, _TRAIN_LOSS_SUM
     global _TRAIN_METRICS_ENABLED, _TRAIN_TOKENS
@@ -908,6 +987,7 @@ def _run_megatron(
         micro_batch_size_override=micro_batch_size_override,
         checkpoint_dir=checkpoint_dir,
         save_interval=save_interval,
+        resume=resume,
     ) + ["--seed", str(seed)]
 
     import megatron.training.training as training_module
@@ -968,6 +1048,46 @@ def _run_megatron(
                     f"{actual_parameters} != {variant.parameter_count}"
                 )
             schedule_holder["parameter_count"] = actual_parameters
+            schedule_holder["algorithmic_flops_per_token"] = float(
+                architecture.estimate_flops()
+            )
+            schedule_holder["executed_flops_per_token"] = float(
+                architecture.estimate_executed_flops()
+                if hasattr(architecture, "estimate_executed_flops")
+                else architecture.estimate_flops()
+            )
+            if initialization_hash_mode != "none" and _global_rank() == 0:
+                include_names = None
+                if initialization_hash_mode == "shared":
+                    baseline_template = (
+                        get_fineweb_variant_template(scale, "baseline")
+                        if _is_fineweb(dataset)
+                        else get_campaign_variant(scale, "baseline")
+                    )
+                    baseline_kwargs = _model_config_kwargs(dataset, scale, baseline_template)
+                    baseline_kwargs.update(recipe.model_overrides)
+                    with torch.device("meta"):
+                        baseline_model = instantiate_model(
+                            build_model_config(**baseline_kwargs)
+                        )
+                    include_names = {
+                        name for name, _parameter in baseline_model.named_parameters()
+                    }
+                    include_names &= {
+                        name for name, _parameter in architecture.named_parameters()
+                    }
+                selected_count = sum(
+                    1
+                    for name, _parameter in architecture.named_parameters()
+                    if include_names is None or name in include_names
+                )
+                schedule_holder["initialization"] = {
+                    "mode": initialization_hash_mode,
+                    "parameter_tensors": selected_count,
+                    "sha256": hash_named_tensors(
+                        architecture.named_parameters(), include_names=include_names
+                    ),
+                }
             compile_kwargs = {"dynamic": False}
             compile_mode = profile.resolved_compile_mode(variant.name)
             if compile_mode is not None:
@@ -1058,6 +1178,7 @@ def _run_megatron(
         recipe,
         metrics_path=metrics_path,
         metrics_every=metrics_every,
+        throughput_protocol=throughput_protocol,
     )
     validation_holder: dict[str, float] = {}
     original_evaluate_and_print = training_module.evaluate_and_print_results
@@ -1119,6 +1240,13 @@ def _run_megatron(
         schedule_holder["schedule"],
         int(schedule_holder["parameter_count"]),
         validation_holder["final_bpb"],
+        {
+            "initialization": schedule_holder.get(
+                "initialization", {"mode": initialization_hash_mode, "sha256": None}
+            ),
+            "algorithmic_flops_per_token": schedule_holder["algorithmic_flops_per_token"],
+            "executed_flops_per_token": schedule_holder["executed_flops_per_token"],
+        },
     )
 
 
@@ -1136,6 +1264,14 @@ def _environment(
     micro_batch_size_override: int | None,
     checkpoint_dir: Path | None,
     save_interval: int | None,
+    resume: bool,
+    throughput_protocol: ThroughputProtocol,
+    budget: BudgetResolution,
+    artifact_policy: str,
+    data_identity: dict[str, Any] | None,
+    algorithmic_flops_per_token: float,
+    executed_flops_per_token: float,
+    initialization_hash_mode: str,
 ) -> dict[str, Any]:
     repository = _repository_root()
     profile_payload = asdict(profile)
@@ -1161,6 +1297,31 @@ def _environment(
         "seed": seed,
         "mode": mode,
         "dataset": dataset,
+        "comparison_regime": budget.regime.value,
+        "budget": asdict(budget),
+        "artifact_policy": artifact_policy,
+        "data_identity": data_identity,
+        "dataset_manifest_sha256": (
+            data_identity["manifest_identity_sha256"] if data_identity is not None else None
+        ),
+        "data_order_id": stable_json_sha256(
+            {
+                "dataset_manifest_sha256": (
+                    data_identity["manifest_identity_sha256"]
+                    if data_identity is not None
+                    else "unverified"
+                ),
+                "seed": seed,
+                "loader": (
+                    "fineweb-distributed-microbatch-cursor-v1"
+                    if _is_fineweb(dataset)
+                    else "historical-climbmix-loader"
+                ),
+            }
+        ),
+        "initialization_hash_mode": initialization_hash_mode,
+        "algorithmic_flops_per_token": algorithmic_flops_per_token,
+        "executed_flops_per_token": executed_flops_per_token,
         "exact_global_batch_replay": exact_global_batch_replay,
         "effective_global_batch_sequences": COMPARISON_GLOBAL_BATCH_SIZE,
         "micro_batch_sequences": micro_batch_size,
@@ -1171,8 +1332,19 @@ def _environment(
         "world_size": _world_size(),
         "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else None,
         "save_interval": save_interval,
+        "resume": resume,
+        "throughput_protocol": throughput_protocol.to_dict(),
+        "dataloader_resume_contract": (
+            "fineweb-distributed-microbatch-cursor-v1"
+            if _is_fineweb(dataset)
+            else "historical-climbmix-loader"
+        ),
+        "validation_window_contract": (
+            "fixed-first-window-v1" if _is_fineweb(dataset) else "historical-climbmix-window"
+        ),
         "backend_profile": profile_payload,
         "optimization_recipe": asdict(recipe),
+        "optimizer_contract_sha256": stable_json_sha256(asdict(recipe)),
         "host": socket.gethostname(),
         "platform": platform.platform(),
         "python": sys.version,
@@ -1197,6 +1369,8 @@ def _environment(
 
 
 def main() -> None:
+    global _ATTEMPT_ID, _RUN_ID
+
     parser = argparse.ArgumentParser(description=__doc__)
     scales = tuple(dict.fromkeys((*CAMPAIGN_VARIANTS, *FINEWEB_CAMPAIGN_VARIANTS)))
     parser.add_argument("--dataset", choices=DATASETS, default="climbmix")
@@ -1206,6 +1380,31 @@ def main() -> None:
     parser.add_argument("--seed", required=True, type=int, choices=COMPARISON_SEEDS)
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--probe-steps", type=int, default=0)
+    parser.add_argument(
+        "--comparison-regime",
+        choices=tuple(item.value for item in ComparisonRegime),
+        help="controlled=fixed tokens, fixed_compute=fixed model FLOPs, scaling=fixed tokens/parameter",
+    )
+    parser.add_argument("--target-train-tokens", type=int)
+    parser.add_argument("--target-model-flops", type=float)
+    parser.add_argument("--tokens-per-parameter", type=float)
+    parser.add_argument(
+        "--artifact-policy",
+        choices=("metrics_only", "research"),
+        default="metrics_only",
+        help="research requires content provenance, initialization hash, and final checkpoint",
+    )
+    parser.add_argument("--data-manifest", type=Path)
+    parser.add_argument(
+        "--data-verification",
+        choices=("metadata", "full"),
+        default="metadata",
+    )
+    parser.add_argument(
+        "--initialization-hash",
+        choices=("none", "shared", "full"),
+        default="none",
+    )
     parser.add_argument(
         "--micro-batch-size",
         type=int,
@@ -1218,8 +1417,25 @@ def main() -> None:
         help="preserve the 192-sequence canonical stream over non-divisible DP worlds",
     )
     parser.add_argument("--metrics-every", type=int, default=10)
+    parser.add_argument(
+        "--throughput-warmup-steps",
+        type=int,
+        default=10,
+        help="optimizer-step intervals excluded from steady-state throughput",
+    )
+    parser.add_argument(
+        "--throughput-measurement-steps",
+        type=int,
+        default=0,
+        help="steady-state intervals to measure (0 uses every post-warmup interval)",
+    )
     parser.add_argument("--checkpoint-dir", type=Path)
     parser.add_argument("--save-interval", type=int)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="load model/optimizer state and derive the FineWeb cursor from checkpoint iteration",
+    )
     parser.add_argument(
         "--backend-profile",
         choices=tuple(MEGATRON_BACKEND_PROFILES),
@@ -1237,6 +1453,8 @@ def main() -> None:
         parser.error("--probe-steps must be non-negative")
     if args.metrics_every < 1:
         parser.error("--metrics-every must be positive")
+    if args.throughput_warmup_steps < 0 or args.throughput_measurement_steps < 0:
+        parser.error("throughput step counts must be non-negative")
     if args.micro_batch_size is not None and args.micro_batch_size < 1:
         parser.error("--micro-batch-size must be positive")
     if args.checkpoint_dir is not None and (
@@ -1245,6 +1463,29 @@ def main() -> None:
         parser.error("--checkpoint-dir requires a positive --save-interval")
     if args.checkpoint_dir is None and args.save_interval is not None:
         parser.error("--save-interval requires --checkpoint-dir")
+    if args.resume and args.checkpoint_dir is None:
+        parser.error("--resume requires --checkpoint-dir")
+    if args.artifact_policy == "research":
+        if args.checkpoint_dir is None:
+            parser.error("research artifact policy requires --checkpoint-dir")
+        if args.data_manifest is None:
+            parser.error("research artifact policy requires --data-manifest")
+        if args.initialization_hash == "none":
+            parser.error("research artifact policy requires --initialization-hash=shared or full")
+    try:
+        contract_variant, budget, probed_algorithmic_flops, probed_executed_flops = (
+            resolve_variant_contract(
+                args.dataset,
+                args.scale,
+                args.variant,
+                regime=args.comparison_regime,
+                target_train_tokens=args.target_train_tokens,
+                target_model_flops=args.target_model_flops,
+                tokens_per_parameter=args.tokens_per_parameter,
+            )
+        )
+    except (ContractError, KeyError, ValueError) as error:
+        parser.error(str(error))
     if _is_fineweb(args.dataset):
         if args.scale not in FINEWEB_CAMPAIGN_VARIANTS:
             parser.error(f"--scale={args.scale} is not available for FineWeb")
@@ -1256,7 +1497,6 @@ def main() -> None:
             parser.error(
                 "FineWeb global batch must be divisible by micro batch size times world size"
             )
-        contract_variant = resolve_fineweb_variant(args.scale, args.variant)
         data_root = args.data_root.expanduser().resolve()
         data_summary = inspect_fineweb_dataset(
             data_root,
@@ -1268,22 +1508,44 @@ def main() -> None:
             parser.error(f"--scale={args.scale} is not available for ClimbMix")
         if args.data_root is not None:
             parser.error("--data-root is only valid with a FineWeb dataset")
-        contract_variant = get_campaign_variant(args.scale, args.variant)
         data_root = None
         data_summary = None
+    climbmix_root = os.environ.get("NANOCHAT_BASE_DIR")
+    dataset_root_for_manifest = (
+        data_root
+        if data_root is not None
+        else (Path(climbmix_root).expanduser().resolve() if climbmix_root else None)
+    )
+    data_identity = None
+    if args.data_manifest is not None:
+        if dataset_root_for_manifest is None:
+            parser.error("a dataset root is required to verify --data-manifest")
+        data_identity = verify_dataset_manifest(
+            dataset_root_for_manifest,
+            args.data_manifest,
+            mode=args.data_verification,
+        )
     variant = (
         replace(contract_variant, steps=args.probe_steps) if args.probe_steps else contract_variant
     )
     mode = "probe" if args.probe_steps else "full"
     profile = get_megatron_backend_profile(args.backend_profile)
     recipe = get_optimization_recipe(args.optimization_recipe)
+    throughput_protocol = ThroughputProtocol(
+        warmup_steps=args.throughput_warmup_steps,
+        measurement_steps=args.throughput_measurement_steps,
+    )
     run_dir = args.run_dir.expanduser().resolve()
     checkpoint_dir = (
         args.checkpoint_dir.expanduser().resolve() if args.checkpoint_dir is not None else None
     )
     primary = _global_rank() == 0
+    attempt_id = str(uuid.uuid4())
+    _ATTEMPT_ID = attempt_id
     marker = (
-        _claim_run_directory(run_dir, variant, args.seed) if primary else run_dir / "RUNNING.json"
+        _claim_run_directory(run_dir, variant, args.seed, attempt_id=attempt_id)
+        if primary
+        else run_dir / "RUNNING.json"
     )
     metrics_path = run_dir / "metrics.jsonl"
     try:
@@ -1308,19 +1570,60 @@ def main() -> None:
             micro_batch_size_override=args.micro_batch_size,
             checkpoint_dir=checkpoint_dir,
             save_interval=args.save_interval,
+            resume=args.resume,
+            throughput_protocol=throughput_protocol,
+            budget=budget,
+            artifact_policy=args.artifact_policy,
+            data_identity=data_identity,
+            algorithmic_flops_per_token=probed_algorithmic_flops,
+            executed_flops_per_token=probed_executed_flops,
+            initialization_hash_mode=args.initialization_hash,
         )
         environment["runtime"] = runtime
         if data_summary is not None:
             environment["data"] = data_summary
-        if primary:
-            _write_json(run_dir / "resolved_run.json", environment)
         tokenizer = (
             get_pretrained_tokenizer("gpt2")
             if _is_fineweb(args.dataset)
             else get_tokenizer()
         )
+        padded_vocab_size = int(
+            _model_config_kwargs(args.dataset, args.scale, contract_variant)["vocab_size"]
+        )
+        environment["tokenizer_sha256"] = hash_tokenizer_vocabulary(
+            tokenizer, padded_vocab_size=padded_vocab_size
+        )
+        environment["metrics_path"] = str(metrics_path)
+        environment["attempt_id"] = attempt_id
+        identity_payload = {
+            key: environment[key]
+            for key in (
+                "backend",
+                "variant",
+                "scale",
+                "seed",
+                "dataset",
+                "comparison_regime",
+                "budget",
+                "dataset_manifest_sha256",
+                "data_order_id",
+                "tokenizer_sha256",
+                "optimizer_contract_sha256",
+                "source_commit",
+                "source_worktree_sha256",
+                "world_size",
+                "effective_global_batch_sequences",
+            )
+        }
+        _RUN_ID = stable_json_sha256(identity_payload)
+        environment["run_id"] = _RUN_ID
+        environment["run_identity"] = identity_payload
+        if args.artifact_policy == "research" and environment["source_dirty"]:
+            raise RuntimeError("research runs require a clean source worktree")
+        if primary:
+            _write_json(run_dir / "resolved_run.json", environment)
         started = time.perf_counter()
-        schedule, parameter_count, final_bpb = _run_megatron(
+        schedule, parameter_count, final_bpb, model_audit = _run_megatron(
             variant,
             args.seed,
             tokenizer,
@@ -1333,24 +1636,47 @@ def main() -> None:
             micro_batch_size_override=args.micro_batch_size,
             checkpoint_dir=checkpoint_dir,
             save_interval=args.save_interval,
+            resume=args.resume,
             metrics_path=metrics_path,
             metrics_every=args.metrics_every,
+            throughput_protocol=throughput_protocol,
+            initialization_hash_mode=args.initialization_hash,
         )
         wall_seconds = time.perf_counter() - started
         throughput = schedule.throughput_summary()
         if not math.isfinite(final_bpb):
             raise RuntimeError("validation produced a non-finite final BPB")
+        if not math.isclose(
+            model_audit["algorithmic_flops_per_token"],
+            probed_algorithmic_flops,
+            rel_tol=0.0,
+            abs_tol=0.0,
+        ):
+            raise RuntimeError("algorithmic FLOP accounting drifted after model construction")
+        checkpoint_artifact = None
+        if args.artifact_policy == "research":
+            assert checkpoint_dir is not None
+            checkpoint_artifact = _validate_checkpoint_artifact(
+                checkpoint_dir, variant.steps
+            )
         result = {
             **environment,
             "status": "complete",
             "parameter_count": parameter_count,
+            "initialization": model_audit["initialization"],
+            "shared_initialization_sha256": model_audit["initialization"].get("sha256"),
             "training_steps": variant.steps,
             "training_tokens": variant.training_tokens,
+            "global_batch_tokens": COMPARISON_BATCH_TOKENS,
+            "sequence_length": COMPARISON_SEQUENCE_LENGTH,
             "contract_training_steps": contract_variant.steps,
             "contract_training_tokens": contract_variant.training_tokens,
             "validation_tokens": COMPARISON_EVAL_TOKENS,
             "final_bpb": final_bpb,
             "wall_seconds": wall_seconds,
+            "metrics_sha256": sha256_file(metrics_path),
+            "checkpoint_artifact": checkpoint_artifact,
+            "wandb_run_url": os.environ.get("WANDB_RUN_URL"),
             **throughput,
             "completed_at_unix": time.time(),
         }
@@ -1359,10 +1685,14 @@ def main() -> None:
             marker.replace(run_dir / "COMPLETE.json")
     except BaseException as error:
         if primary:
+            failure = classify_failure(error)
             _write_json(
                 run_dir / "FAILED.json",
                 {
                     "status": "failed",
+                    "run_id": _RUN_ID or None,
+                    "attempt_id": attempt_id,
+                    "failure": failure.to_dict(),
                     "error_type": type(error).__name__,
                     "error": str(error),
                     "traceback": traceback.format_exc(),
