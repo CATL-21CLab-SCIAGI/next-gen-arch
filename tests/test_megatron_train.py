@@ -14,6 +14,7 @@ from archlab.megatron.train import (
     _invoke_megatron_pretrain,
     _loss_func,
     _megatron_arguments,
+    _restore_megatron_checkpoint,
     _source_provenance,
     get_megatron_backend_profile,
     resolve_fineweb_variant,
@@ -86,6 +87,88 @@ def test_exact_replay_resume_uses_one_packed_batch_per_step(monkeypatch):
     assert captured["resume_state_dict"] == {"batch_index": 7}
     assert batch["tokens"].item() == 0
     assert batch["labels"].item() == 1
+
+
+class _FakeTimer:
+    def __init__(self):
+        self.events = []
+
+    def start(self, **kwargs):
+        self.events.append(("start", kwargs))
+
+    def stop(self, **kwargs):
+        self.events.append(("stop", kwargs))
+
+
+def test_megatron_checkpoint_restore_precedes_external_loader():
+    timer = _FakeTimer()
+    args = SimpleNamespace(
+        load="/checkpoints",
+        pretrained_checkpoint=None,
+        iteration=0,
+        num_floating_point_operations_so_far=0,
+    )
+    schedule = SimpleNamespace(iteration=0)
+    calls = []
+
+    def load_checkpoint(model, optimizer, restored_schedule, *, checkpointing_context):
+        calls.append((model, optimizer, restored_schedule, checkpointing_context))
+        restored_schedule.iteration = 10
+        return 10, 1234
+
+    def timers(*_args, **_kwargs):
+        return timer
+
+    timers.log = lambda names: calls.append(("timers", names))
+    training_module = SimpleNamespace(
+        get_args=lambda: args,
+        get_timers=lambda: timers,
+        load_checkpoint=load_checkpoint,
+    )
+
+    restored = _restore_megatron_checkpoint(
+        training_module,
+        "model",
+        "optimizer",
+        schedule,
+        {"local": "context"},
+    )
+
+    assert restored == 10
+    assert args.iteration == 10
+    assert args.num_floating_point_operations_so_far == 1234
+    assert calls[0] == ("model", "optimizer", schedule, {"local": "context"})
+    assert timer.events == [("start", {"barrier": True}), ("stop", {"barrier": True})]
+
+
+def test_megatron_checkpoint_restore_rejects_silent_restart():
+    timer = _FakeTimer()
+    args = SimpleNamespace(
+        load="/checkpoints",
+        pretrained_checkpoint=None,
+        iteration=0,
+        num_floating_point_operations_so_far=0,
+    )
+    schedule = SimpleNamespace(iteration=0)
+
+    def timers(*_args, **_kwargs):
+        return timer
+
+    timers.log = lambda _names: None
+    training_module = SimpleNamespace(
+        get_args=lambda: args,
+        get_timers=lambda: timers,
+        load_checkpoint=lambda *_args, **_kwargs: (0, 0),
+    )
+
+    with pytest.raises(RuntimeError, match="did not restore a positive iteration"):
+        _restore_megatron_checkpoint(
+            training_module,
+            "model",
+            "optimizer",
+            schedule,
+            {},
+        )
 
 
 def test_pretrain_adapter_supports_config_container_api(monkeypatch):

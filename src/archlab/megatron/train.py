@@ -700,14 +700,13 @@ def _install_optimizer_adapter(
     metrics_path: Path | None = None,
     metrics_every: int = 10,
     throughput_protocol: ThroughputProtocol | None = None,
-) -> dict[str, SpeedrunSchedule]:
+) -> dict[str, Any]:
     import megatron.training.training as training_module
     from megatron.core.optimizer.optimizer import Float16OptimizerWithFloat16Params, FP32Optimizer
 
-    schedule_holder: dict[str, SpeedrunSchedule] = {}
+    schedule_holder: dict[str, Any] = {}
 
     def setup_model_and_optimizer(model_provider_func, model_type, checkpointing_context=None):
-        del checkpointing_context
         args = training_module.get_args()
         timers = training_module.get_timers()
         model = training_module.get_model(model_provider_func, model_type, wrap_with_ddp=True)
@@ -763,12 +762,55 @@ def _install_optimizer_adapter(
             throughput_protocol=throughput_protocol,
         )
         schedule_holder["schedule"] = schedule
-        args.iteration = 0
-        args.num_floating_point_operations_so_far = 0
+        restored_iteration = _restore_megatron_checkpoint(
+            training_module,
+            model,
+            optimizer,
+            schedule,
+            checkpointing_context,
+        )
+        schedule_holder["restored_iteration"] = restored_iteration
         return model, optimizer, schedule
 
     training_module.setup_model_and_optimizer = setup_model_and_optimizer
     return schedule_holder
+
+
+def _restore_megatron_checkpoint(
+    training_module,
+    model,
+    optimizer,
+    schedule: SpeedrunSchedule,
+    checkpointing_context,
+) -> int:
+    """Restore native Megatron state before constructing external data iterators."""
+
+    args = training_module.get_args()
+    if args.load is None and getattr(args, "pretrained_checkpoint", None) is None:
+        args.iteration = 0
+        args.num_floating_point_operations_so_far = 0
+        return 0
+
+    timers = training_module.get_timers()
+    timers("load-checkpoint", log_level=0).start(barrier=True)
+    try:
+        args.iteration, args.num_floating_point_operations_so_far = training_module.load_checkpoint(
+            model,
+            optimizer,
+            schedule,
+            checkpointing_context=checkpointing_context,
+        )
+    finally:
+        timers("load-checkpoint").stop(barrier=True)
+    timers.log(["load-checkpoint"])
+    if args.iteration <= 0:
+        raise RuntimeError(f"Megatron did not restore a positive iteration from {args.load}")
+    if schedule.iteration != args.iteration:
+        raise RuntimeError(
+            "Megatron scheduler iteration mismatch after restore: "
+            f"{schedule.iteration} != {args.iteration}"
+        )
+    return int(args.iteration)
 
 
 def _external_batch_loader(
@@ -1251,6 +1293,7 @@ def _run_megatron(
             ),
             "algorithmic_flops_per_token": schedule_holder["algorithmic_flops_per_token"],
             "executed_flops_per_token": schedule_holder["executed_flops_per_token"],
+            "restored_iteration": int(schedule_holder.get("restored_iteration", 0)),
         },
     )
 
@@ -1437,7 +1480,7 @@ def main() -> None:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="load model/optimizer state and derive the FineWeb cursor from checkpoint iteration",
+        help="load model/optimizer/RNG/scheduler state and derive the data cursor from iteration",
     )
     parser.add_argument(
         "--backend-profile",
@@ -1670,6 +1713,7 @@ def main() -> None:
             "contract_training_tokens": contract_variant.training_tokens,
             "validation_tokens": COMPARISON_EVAL_TOKENS,
             "final_bpb": final_bpb,
+            "restored_iteration": model_audit["restored_iteration"],
             "wall_seconds": wall_seconds,
             "metrics_sha256": sha256_file(metrics_path),
             "checkpoint_artifact": checkpoint_artifact,
