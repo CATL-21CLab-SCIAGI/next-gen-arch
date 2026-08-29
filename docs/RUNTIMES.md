@@ -157,3 +157,5 @@ Training and evaluation load the same schema-versioned prompt set. The default i
 The original and safe-autotune 96-run comparisons, DSA correction, compiler recovery,
 and throughput-basis audits are published in
 [BACKEND_COMPARISON.md](BACKEND_COMPARISON.md).
+The current backend ownership and speedrun-retirement gates are recorded in
+[BACKEND_RETENTION.md](BACKEND_RETENTION.md).

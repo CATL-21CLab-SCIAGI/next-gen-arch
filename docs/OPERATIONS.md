@@ -64,7 +64,11 @@ python -m archlab.megatron.train ... \
   --checkpoint-dir /runs/baseline-seed42/checkpoints
 ```
 
-The restored Megatron iteration drives the FineWeb microbatch cursor. Do not manually choose a “latest-looking” checkpoint or remove a stale running marker without first verifying the process is gone.
+Megatron restores model, optimizer, RNG, and scheduler state through the native MCore
+loader, then derives the FineWeb or ClimbMix microbatch cursor from the restored
+iteration. A resume request fails if the loaded iteration is non-positive or the
+scheduler disagrees. Do not manually choose a “latest-looking” checkpoint or remove a
+stale running marker without first verifying the process is gone.
 
 ## Throughput
 
