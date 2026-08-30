@@ -201,7 +201,7 @@ fi
     --position-embedding-type rope \
     --rotary-base 1000000 \
     --normalization RMSNorm \
-    --layernorm-epsilon 1e-6 \
+    --norm-epsilon 1e-6 \
     --swiglu \
     --disable-bias-linear \
     --add-qkv-bias \

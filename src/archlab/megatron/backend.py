@@ -333,7 +333,7 @@ class MegatronBackend:
         if "rotary_base" in model:
             argv.extend(("--rotary-base", str(int(model["rotary_base"]))))
         if "layernorm_epsilon" in model:
-            argv.extend(("--layernorm-epsilon", str(float(model["layernorm_epsilon"]))))
+            argv.extend(("--norm-epsilon", str(float(model["layernorm_epsilon"]))))
         if "make_vocab_size_divisible_by" in model:
             divisor = int(model["make_vocab_size_divisible_by"])
             if divisor < 1:
