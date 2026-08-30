@@ -16,15 +16,26 @@ NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/fineweb100b
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
 NGA_MEGATRON_ROOT="${NGA_MEGATRON_ROOT:-/opt/Megatron-Bridge/3rdparty/Megatron-LM}"
 NGA_GPUS_PER_NODE="${NGA_GPUS_PER_NODE:-8}"
+NGA_EXPECTED_NODES="${NGA_EXPECTED_NODES:-4}"
 NGA_TOKENIZER_WORKERS="${NGA_TOKENIZER_WORKERS:-8}"
+NGA_EXPECTED_TRAIN_PARTS="${NGA_EXPECTED_TRAIN_PARTS:-$((NGA_EXPECTED_NODES * NGA_TOKENIZER_WORKERS))}"
+NGA_REUSE_READY_DATA="${NGA_REUSE_READY_DATA:-0}"
 NGA_DATA_WAIT_SECONDS="${NGA_DATA_WAIT_SECONDS:-21600}"
 NGA_SAVE_INTERVAL="${NGA_SAVE_INTERVAL:-10000}"
 NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-32}"
 NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-1024}"
 NGA_TRAIN_ITERS="${NGA_TRAIN_ITERS:-47684}"
 
-if [[ "$WORLD_SIZE" != "4" || "$NGA_GPUS_PER_NODE" != "8" ]]; then
-    echo "the Qwen2.5-1.5B contract requires 4 nodes x 8 GPUs; got $WORLD_SIZE x $NGA_GPUS_PER_NODE" >&2
+if [[ "$WORLD_SIZE" != "$NGA_EXPECTED_NODES" ]]; then
+    echo "DLC injected $WORLD_SIZE nodes; expected $NGA_EXPECTED_NODES" >&2
+    exit 1
+fi
+if ((NGA_GPUS_PER_NODE < 1)); then
+    echo "NGA_GPUS_PER_NODE must be positive" >&2
+    exit 1
+fi
+if [[ "$NGA_REUSE_READY_DATA" != "0" && "$NGA_REUSE_READY_DATA" != "1" ]]; then
+    echo "NGA_REUSE_READY_DATA must be 0 or 1" >&2
     exit 1
 fi
 if ((NGA_GLOBAL_BATCH_SIZE % (WORLD_SIZE * NGA_GPUS_PER_NODE * NGA_MICRO_BATCH_SIZE) != 0)); then
@@ -53,6 +64,7 @@ export NGA_CONTAINER_DIGEST="${NGA_CONTAINER_DIGEST:-nemo-26.06}"
 export NGA_REPO_ROOT NGA_EXPECTED_COMMIT NGA_SOURCE_DATA NGA_SOURCE_MANIFEST
 export NGA_DATA_ROOT NGA_TOKENIZER NGA_OUTPUT_ROOT
 export NGA_MICRO_BATCH_SIZE NGA_GLOBAL_BATCH_SIZE NGA_TRAIN_ITERS
+export NGA_GPUS_PER_NODE NGA_EXPECTED_NODES NGA_EXPECTED_TRAIN_PARTS NGA_REUSE_READY_DATA
 
 mkdir -p "$NGA_DATA_ROOT" "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/data-cache"
 
@@ -78,46 +90,48 @@ if drift:
     raise SystemExit(f"Qwen config drift: {drift}")
 PY
 
-"$NGA_PYTHON" -m archlab.megatron.data convert \
-    --source-root "$NGA_SOURCE_DATA" \
-    --source-manifest "$NGA_SOURCE_MANIFEST" \
-    --output-root "$NGA_DATA_ROOT" \
-    --tokenizer "$NGA_TOKENIZER" \
-    --split train \
-    --expected-shards 1028 \
-    --nodes "$WORLD_SIZE" \
-    --node-rank "$RANK" \
-    --workers "$NGA_TOKENIZER_WORKERS"
-
-if [[ "$RANK" = "0" ]]; then
+if [[ "$NGA_REUSE_READY_DATA" = "0" ]]; then
     "$NGA_PYTHON" -m archlab.megatron.data convert \
         --source-root "$NGA_SOURCE_DATA" \
         --source-manifest "$NGA_SOURCE_MANIFEST" \
         --output-root "$NGA_DATA_ROOT" \
         --tokenizer "$NGA_TOKENIZER" \
-        --split val \
-        --expected-shards 1 \
-        --nodes 1 \
-        --node-rank 0 \
-        --workers 1
+        --split train \
+        --expected-shards 1028 \
+        --nodes "$WORLD_SIZE" \
+        --node-rank "$RANK" \
+        --workers "$NGA_TOKENIZER_WORKERS"
 
-    deadline="$((SECONDS + NGA_DATA_WAIT_SECONDS))"
-    for node_rank in 0 1 2 3; do
-        marker="$NGA_DATA_ROOT/train.node-$(printf '%05d' "$node_rank").json"
-        while [[ ! -f "$marker" ]]; do
-            if ((SECONDS >= deadline)); then
-                echo "timed out waiting for $marker" >&2
-                exit 1
-            fi
-            sleep 30
+    if [[ "$RANK" = "0" ]]; then
+        "$NGA_PYTHON" -m archlab.megatron.data convert \
+            --source-root "$NGA_SOURCE_DATA" \
+            --source-manifest "$NGA_SOURCE_MANIFEST" \
+            --output-root "$NGA_DATA_ROOT" \
+            --tokenizer "$NGA_TOKENIZER" \
+            --split val \
+            --expected-shards 1 \
+            --nodes 1 \
+            --node-rank 0 \
+            --workers 1
+
+        deadline="$((SECONDS + NGA_DATA_WAIT_SECONDS))"
+        for ((node_rank = 0; node_rank < WORLD_SIZE; node_rank++)); do
+            marker="$NGA_DATA_ROOT/train.node-$(printf '%05d' "$node_rank").json"
+            while [[ ! -f "$marker" ]]; do
+                if ((SECONDS >= deadline)); then
+                    echo "timed out waiting for $marker" >&2
+                    exit 1
+                fi
+                sleep 30
+            done
         done
-    done
-    "$NGA_PYTHON" -m archlab.megatron.data summarize \
-        --output-root "$NGA_DATA_ROOT" \
-        --train-parts "$((WORLD_SIZE * NGA_TOKENIZER_WORKERS))" \
-        --valid-parts 1 \
-        --required-train-tokens 100000000000 \
-        --output "$NGA_DATA_ROOT/DATA_READY.json"
+        "$NGA_PYTHON" -m archlab.megatron.data summarize \
+            --output-root "$NGA_DATA_ROOT" \
+            --train-parts "$NGA_EXPECTED_TRAIN_PARTS" \
+            --valid-parts 1 \
+            --required-train-tokens 100000000000 \
+            --output "$NGA_DATA_ROOT/DATA_READY.json"
+    fi
 fi
 
 deadline="$((SECONDS + NGA_DATA_WAIT_SECONDS))"
@@ -127,6 +141,26 @@ while [[ ! -f "$NGA_DATA_ROOT/DATA_READY.json" ]]; do
         exit 1
     fi
     sleep 30
+done
+
+if [[ "$RANK" = "0" ]]; then
+    "$NGA_PYTHON" -m archlab.megatron.data validate \
+        --ready "$NGA_DATA_ROOT/DATA_READY.json" \
+        --source-manifest "$NGA_SOURCE_MANIFEST" \
+        --tokenizer "$NGA_TOKENIZER/tokenizer.json" \
+        --train-parts "$NGA_EXPECTED_TRAIN_PARTS" \
+        --valid-parts 1 \
+        --required-train-tokens 100000000000 \
+        --output "$NGA_OUTPUT_ROOT/DATA_VALIDATED.json"
+fi
+
+deadline="$((SECONDS + NGA_DATA_WAIT_SECONDS))"
+while [[ ! -f "$NGA_OUTPUT_ROOT/DATA_VALIDATED.json" ]]; do
+    if ((SECONDS >= deadline)); then
+        echo "rank $RANK timed out waiting for validated data contract" >&2
+        exit 1
+    fi
+    sleep 5
 done
 
 if [[ "$RANK" = "0" && ! -f "$NGA_OUTPUT_ROOT/RUN_CONTRACT.json" ]]; then
@@ -148,9 +182,15 @@ payload = {
     "source_manifest_sha256": sha(os.environ["NGA_SOURCE_MANIFEST"]),
     "source_commit": os.environ["NGA_EXPECTED_COMMIT"],
     "seed": 42,
-    "nodes": 4,
-    "gpus_per_node": 8,
-    "parallelism": {"data": 32, "tensor": 1, "pipeline": 1, "context": 1},
+    "nodes": int(os.environ["NGA_EXPECTED_NODES"]),
+    "gpus_per_node": int(os.environ["NGA_GPUS_PER_NODE"]),
+    "parallelism": {
+        "data": int(os.environ["NGA_EXPECTED_NODES"])
+        * int(os.environ["NGA_GPUS_PER_NODE"]),
+        "tensor": 1,
+        "pipeline": 1,
+        "context": 1,
+    },
     "sequence_length": 2048,
     "micro_batch_sequences": int(os.environ["NGA_MICRO_BATCH_SIZE"]),
     "global_batch_sequences": int(os.environ["NGA_GLOBAL_BATCH_SIZE"]),
@@ -179,7 +219,7 @@ mapfile -t valid_prefixes < <(
     find "$NGA_DATA_ROOT/val" -maxdepth 1 -type f -name 'part-*.idx' -print \
         | sed 's/\.idx$//' | sort
 )
-if [[ "${#train_prefixes[@]}" != "$((WORLD_SIZE * NGA_TOKENIZER_WORKERS))" ]]; then
+if [[ "${#train_prefixes[@]}" != "$NGA_EXPECTED_TRAIN_PARTS" ]]; then
     echo "unexpected Qwen FineWeb train part count: ${#train_prefixes[@]}" >&2
     exit 1
 fi

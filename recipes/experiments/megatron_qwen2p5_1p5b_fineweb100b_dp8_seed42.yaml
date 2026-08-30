@@ -1,0 +1,62 @@
+extends:
+  - ../base.yaml
+  - ../backends/megatron.yaml
+  - ../scales/megatron_qwen2p5_1p5b.yaml
+name: megatron-qwen2p5-1p5b-fineweb100b-dp8-seed42
+variant: qwen2p5-1p5b-baseline
+seed: 42
+parallelism:
+  nodes: 2
+  gpus_per_node: 4
+  tensor: 1
+  pipeline: 1
+  context: 1
+  expert: 1
+model:
+  num_layers: 28
+  hidden_size: 1536
+  ffn_hidden_size: 8960
+  num_attention_heads: 12
+  num_query_groups: 2
+  sequence_length: 2048
+  max_position_embeddings: 131072
+  rotary_base: 1000000
+  layernorm_epsilon: 1.0e-6
+  tie_word_embeddings: true
+  add_qkv_bias: true
+  make_vocab_size_divisible_by: 151936
+  transformer_impl: transformer_engine
+  attention_backend: flash
+  attention_dropout: 0.0
+  hidden_dropout: 0.0
+  init_method_std: 0.02
+training:
+  precision: bf16
+  optimizer: adam
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_epsilon: 1.0e-8
+  micro_batch_size: 32
+  global_batch_size: 1024
+  target_train_tokens: 100000000000
+  require_at_least_target_tokens: true
+  learning_rate: 0.0003
+  minimum_learning_rate: 0.00003
+  lr_decay_style: cosine
+  lr_warmup_fraction: 0.01
+  weight_decay: 0.1
+  clip_grad: 1.0
+  calculate_per_token_loss: true
+  log_throughput: true
+  use_distributed_optimizer: true
+  overlap_grad_reduce: true
+  overlap_param_gather: true
+  create_attention_mask: false
+  checkpoint_format: torch_dist
+  async_save: true
+  save: true
+  tensorboard: true
+  eval_interval: 1000
+  eval_iters: 10
+  save_interval: 10000
+  log_interval: 10

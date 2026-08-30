@@ -119,6 +119,30 @@ def test_qwen15b_recipe_uses_cuda13_safe_te_flash_contract(monkeypatch, tmp_path
     assert "--no-persist-layer-norm" not in plan.argv
 
 
+def test_qwen15b_dp8_recipe_preserves_batch_and_token_contract(monkeypatch, tmp_path):
+    for name, value in {
+        "NGA_TRAIN_DATA": tmp_path / "train_text_document",
+        "NGA_VALID_DATA": tmp_path / "valid_text_document",
+        "NGA_DATA_CACHE": tmp_path / "cache",
+        "NGA_TOKENIZER": tmp_path / "tokenizer",
+        "NGA_OUTPUT_DIR": tmp_path / "output",
+    }.items():
+        monkeypatch.setenv(name, str(value))
+
+    spec = load_experiment(
+        ROOT / "recipes/experiments/megatron_qwen2p5_1p5b_fineweb100b_dp8_seed42.yaml"
+    )
+    plan = get_backend(spec.backend).render(spec)
+
+    assert plan.metadata["world_size"] == 8
+    assert plan.metadata["data_parallel_size"] == 8
+    assert plan.metadata["num_microbatches"] == 4
+    assert plan.metadata["effective_training_tokens"] == 100_000_595_968
+    assert plan.argv[plan.argv.index("--micro-batch-size") + 1] == "32"
+    assert plan.argv[plan.argv.index("--global-batch-size") + 1] == "1024"
+    assert plan.argv[plan.argv.index("--train-iters") + 1] == "47684"
+
+
 @pytest.mark.parametrize(
     ("config_name", "model_parallel", "data_parallel", "expert_parallel", "microbatches"),
     (

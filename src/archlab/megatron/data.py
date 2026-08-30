@@ -293,6 +293,44 @@ def _summarize(args: argparse.Namespace) -> None:
     print(json.dumps(payload, sort_keys=True))
 
 
+def _validate(args: argparse.Namespace) -> None:
+    ready = args.ready.expanduser().resolve()
+    payload = json.loads(ready.read_text(encoding="utf-8"))
+    train_parts = payload.get("train_parts", [])
+    valid_parts = payload.get("valid_parts", [])
+    if len(train_parts) != args.train_parts or len(valid_parts) != args.valid_parts:
+        raise RuntimeError(
+            f"ready dataset part count changed: train={len(train_parts)}/{args.train_parts}, "
+            f"val={len(valid_parts)}/{args.valid_parts}"
+        )
+    if payload.get("train_tokens", 0) < args.required_train_tokens:
+        raise RuntimeError(
+            f"ready dataset has {payload.get('train_tokens')} tokens, fewer than required "
+            f"{args.required_train_tokens}"
+        )
+    expected_hashes = {
+        "source_manifest_sha256": _sha256(args.source_manifest.expanduser().resolve()),
+        "tokenizer_sha256": _sha256(args.tokenizer.expanduser().resolve()),
+    }
+    for key, expected in expected_hashes.items():
+        if payload.get(key) != expected:
+            raise RuntimeError(f"ready dataset identity changed: {key}")
+    for prefix in (*train_parts, *valid_parts):
+        for suffix in (".bin", ".idx", ".json"):
+            artifact = Path(prefix + suffix)
+            if not artifact.is_file() or artifact.stat().st_size <= 0:
+                raise RuntimeError(f"ready dataset artifact is missing: {artifact}")
+    validated = dict(payload)
+    validated.update(
+        {
+            "ready_path": str(ready),
+            "validated_at_unix": time.time(),
+        }
+    )
+    _write_json(args.output, validated)
+    print(json.dumps(validated, sort_keys=True))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -314,6 +352,14 @@ def _parser() -> argparse.ArgumentParser:
     summarize.add_argument("--valid-parts", type=int, default=1)
     summarize.add_argument("--required-train-tokens", type=int, default=100_000_000_000)
     summarize.add_argument("--output", required=True, type=Path)
+    validate = sub.add_parser("validate")
+    validate.add_argument("--ready", required=True, type=Path)
+    validate.add_argument("--source-manifest", required=True, type=Path)
+    validate.add_argument("--tokenizer", required=True, type=Path)
+    validate.add_argument("--train-parts", required=True, type=int)
+    validate.add_argument("--valid-parts", type=int, default=1)
+    validate.add_argument("--required-train-tokens", type=int, default=100_000_000_000)
+    validate.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -321,8 +367,10 @@ def main() -> None:
     args = _parser().parse_args()
     if args.action == "convert":
         _convert(args)
-    else:
+    elif args.action == "summarize":
         _summarize(args)
+    else:
+        _validate(args)
 
 
 if __name__ == "__main__":
