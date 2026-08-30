@@ -185,6 +185,7 @@ class MegatronBackend:
             )
 
         sequence_length = int(model["sequence_length"])
+        max_position_embeddings = int(model.get("max_position_embeddings", sequence_length))
         num_layers = int(model["num_layers"])
         hidden_size = int(model["hidden_size"])
         ffn_hidden_size = int(model["ffn_hidden_size"])
@@ -265,14 +266,13 @@ class MegatronBackend:
             "--seq-length",
             str(sequence_length),
             "--max-position-embeddings",
-            str(sequence_length),
+            str(max_position_embeddings),
             "--position-embedding-type",
             "rope",
             "--normalization",
             "RMSNorm",
             "--swiglu",
             "--disable-bias-linear",
-            "--untie-embeddings-and-output-weights",
             "--micro-batch-size",
             str(micro_batch),
             "--global-batch-size",
@@ -321,6 +321,24 @@ class MegatronBackend:
             "--log-interval",
             str(training.get("log_interval", 1)),
         ]
+        if not bool(model.get("tie_word_embeddings", False)):
+            argv.append("--untie-embeddings-and-output-weights")
+        if bool(model.get("add_qkv_bias", False)):
+            argv.append("--add-qkv-bias")
+        if "num_query_groups" in model:
+            num_query_groups = int(model["num_query_groups"])
+            if num_query_groups < 1 or num_attention_heads % num_query_groups:
+                raise SpecError("num_query_groups must divide num_attention_heads")
+            argv.extend(("--group-query-attention", "--num-query-groups", str(num_query_groups)))
+        if "rotary_base" in model:
+            argv.extend(("--rotary-base", str(int(model["rotary_base"]))))
+        if "layernorm_epsilon" in model:
+            argv.extend(("--layernorm-epsilon", str(float(model["layernorm_epsilon"]))))
+        if "make_vocab_size_divisible_by" in model:
+            divisor = int(model["make_vocab_size_divisible_by"])
+            if divisor < 1:
+                raise SpecError("make_vocab_size_divisible_by must be positive")
+            argv.extend(("--make-vocab-size-divisible-by", str(divisor)))
         if training.get("save", True):
             argv.extend(
                 (

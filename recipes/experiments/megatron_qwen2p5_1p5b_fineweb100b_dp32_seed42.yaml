@@ -1,0 +1,14 @@
+extends:
+  - ../base.yaml
+  - ../backends/megatron.yaml
+  - ../scales/megatron_qwen2p5_1p5b.yaml
+name: megatron-qwen2p5-1p5b-fineweb100b-dp32-seed42
+variant: qwen2p5-1p5b-baseline
+seed: 42
+parallelism:
+  nodes: 4
+  gpus_per_node: 8
+  tensor: 1
+  pipeline: 1
+  context: 1
+  expert: 1
