@@ -339,6 +339,8 @@ class MegatronBackend:
             if divisor < 1:
                 raise SpecError("make_vocab_size_divisible_by must be positive")
             argv.extend(("--make-vocab-size-divisible-by", str(divisor)))
+        if not bool(model.get("persist_layer_norm", True)):
+            argv.append("--no-persist-layer-norm")
         if training.get("save", True):
             argv.extend(
                 (

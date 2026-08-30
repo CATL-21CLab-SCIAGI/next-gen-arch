@@ -202,6 +202,7 @@ fi
     --rotary-base 1000000 \
     --normalization RMSNorm \
     --norm-epsilon 1e-6 \
+    --no-persist-layer-norm \
     --swiglu \
     --disable-bias-linear \
     --add-qkv-bias \
@@ -216,7 +217,7 @@ fi
     --pipeline-model-parallel-size 1 \
     --context-parallel-size 1 \
     --distributed-backend nccl \
-    --transformer-impl transformer_engine \
+    --transformer-impl local \
     --optimizer adam \
     --adam-beta1 0.9 \
     --adam-beta2 0.95 \

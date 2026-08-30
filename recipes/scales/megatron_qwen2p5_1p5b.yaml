@@ -11,7 +11,8 @@ model:
   tie_word_embeddings: true
   add_qkv_bias: true
   make_vocab_size_divisible_by: 151936
-  transformer_impl: transformer_engine
+  transformer_impl: local
+  persist_layer_norm: false
   attention_dropout: 0.0
   hidden_dropout: 0.0
   init_method_std: 0.02
