@@ -19,9 +19,9 @@ NGA_GPUS_PER_NODE="${NGA_GPUS_PER_NODE:-8}"
 NGA_TOKENIZER_WORKERS="${NGA_TOKENIZER_WORKERS:-8}"
 NGA_DATA_WAIT_SECONDS="${NGA_DATA_WAIT_SECONDS:-21600}"
 NGA_SAVE_INTERVAL="${NGA_SAVE_INTERVAL:-10000}"
-NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-6}"
-NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-192}"
-NGA_TRAIN_ITERS="${NGA_TRAIN_ITERS:-254313}"
+NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-32}"
+NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-1024}"
+NGA_TRAIN_ITERS="${NGA_TRAIN_ITERS:-47684}"
 
 if [[ "$WORLD_SIZE" != "4" || "$NGA_GPUS_PER_NODE" != "8" ]]; then
     echo "the Qwen2.5-1.5B contract requires 4 nodes x 8 GPUs; got $WORLD_SIZE x $NGA_GPUS_PER_NODE" >&2
@@ -52,6 +52,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export NGA_CONTAINER_DIGEST="${NGA_CONTAINER_DIGEST:-nemo-26.06}"
 export NGA_REPO_ROOT NGA_EXPECTED_COMMIT NGA_SOURCE_DATA NGA_SOURCE_MANIFEST
 export NGA_DATA_ROOT NGA_TOKENIZER NGA_OUTPUT_ROOT
+export NGA_MICRO_BATCH_SIZE NGA_GLOBAL_BATCH_SIZE NGA_TRAIN_ITERS
 
 mkdir -p "$NGA_DATA_ROOT" "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/data-cache"
 
@@ -151,9 +152,14 @@ payload = {
     "gpus_per_node": 8,
     "parallelism": {"data": 32, "tensor": 1, "pipeline": 1, "context": 1},
     "sequence_length": 2048,
-    "global_batch_sequences": 192,
+    "micro_batch_sequences": int(os.environ["NGA_MICRO_BATCH_SIZE"]),
+    "global_batch_sequences": int(os.environ["NGA_GLOBAL_BATCH_SIZE"]),
     "target_tokens": 100000000000,
-    "effective_tokens": 99999940608,
+    "effective_tokens": (
+        int(os.environ["NGA_TRAIN_ITERS"])
+        * int(os.environ["NGA_GLOBAL_BATCH_SIZE"])
+        * 2048
+    ),
     "container": os.environ.get("NGA_CONTAINER_DIGEST"),
     "torch": torch.__version__,
     "cuda": torch.version.cuda,
@@ -202,7 +208,6 @@ fi
     --rotary-base 1000000 \
     --normalization RMSNorm \
     --norm-epsilon 1e-6 \
-    --no-persist-layer-norm \
     --swiglu \
     --disable-bias-linear \
     --add-qkv-bias \
@@ -217,7 +222,8 @@ fi
     --pipeline-model-parallel-size 1 \
     --context-parallel-size 1 \
     --distributed-backend nccl \
-    --transformer-impl local \
+    --transformer-impl transformer_engine \
+    --attention-backend flash \
     --optimizer adam \
     --adam-beta1 0.9 \
     --adam-beta2 0.95 \
@@ -238,6 +244,7 @@ fi
     --valid-data-path "${valid_prefixes[@]}" \
     --data-cache-path "$NGA_OUTPUT_ROOT/data-cache" \
     --num-workers 8 \
+    --no-create-attention-mask-in-dataloader \
     --seed 42 \
     --eval-interval 1000 \
     --eval-iters 10 \

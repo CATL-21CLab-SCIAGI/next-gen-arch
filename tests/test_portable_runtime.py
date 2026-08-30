@@ -84,6 +84,41 @@ def test_megatron_spec_renders_eight_rank_scaling_plan(monkeypatch, tmp_path):
     assert plan.metadata["effective_training_tokens"] <= 12_000_000_000
 
 
+def test_qwen15b_recipe_uses_cuda13_safe_te_flash_contract(monkeypatch, tmp_path):
+    for name, value in {
+        "NGA_TRAIN_DATA": tmp_path / "train_text_document",
+        "NGA_VALID_DATA": tmp_path / "valid_text_document",
+        "NGA_DATA_CACHE": tmp_path / "cache",
+        "NGA_TOKENIZER": tmp_path / "tokenizer",
+        "NGA_OUTPUT_DIR": tmp_path / "output",
+    }.items():
+        monkeypatch.setenv(name, str(value))
+
+    spec = load_experiment(
+        ROOT
+        / "recipes/experiments/megatron_qwen2p5_1p5b_fineweb100b_dp32_seed42.yaml"
+    )
+    plan = get_backend(spec.backend).render(spec)
+
+    assert plan.metadata["world_size"] == 32
+    assert plan.metadata["data_parallel_size"] == 32
+    assert plan.metadata["num_microbatches"] == 1
+    assert plan.metadata["target_training_tokens"] == 100_000_000_000
+    assert plan.metadata["effective_training_tokens"] == 100_000_595_968
+    assert plan.argv[plan.argv.index("--micro-batch-size") + 1] == "32"
+    assert plan.argv[plan.argv.index("--global-batch-size") + 1] == "1024"
+    assert plan.argv[plan.argv.index("--train-iters") + 1] == "47684"
+    assert plan.argv[plan.argv.index("--transformer-impl") + 1] == "transformer_engine"
+    assert plan.argv[plan.argv.index("--attention-backend") + 1] == "flash"
+    assert "--use-distributed-optimizer" in plan.argv
+    assert "--overlap-grad-reduce" in plan.argv
+    assert "--overlap-param-gather" in plan.argv
+    assert "--no-create-attention-mask-in-dataloader" in plan.argv
+    assert "--async-save" in plan.argv
+    assert plan.argv[plan.argv.index("--ckpt-format") + 1] == "torch_dist"
+    assert "--no-persist-layer-norm" not in plan.argv
+
+
 @pytest.mark.parametrize(
     ("config_name", "model_parallel", "data_parallel", "expert_parallel", "microbatches"),
     (

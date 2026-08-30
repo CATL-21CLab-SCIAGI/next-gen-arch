@@ -229,7 +229,10 @@ class MegatronBackend:
             raise SpecError("pipeline parallelism requires at least one microbatch per stage")
         tokens_per_iteration = sequence_length * global_batch
         target_tokens = int(training["target_train_tokens"])
-        train_iters = target_tokens // tokens_per_iteration
+        if training.get("require_at_least_target_tokens", False):
+            train_iters = (target_tokens + tokens_per_iteration - 1) // tokens_per_iteration
+        else:
+            train_iters = target_tokens // tokens_per_iteration
         if train_iters < 1:
             raise SpecError("target_train_tokens is smaller than one global batch")
         effective_tokens = train_iters * tokens_per_iteration
@@ -354,6 +357,11 @@ class MegatronBackend:
             argv.extend(("--tensorboard-dir", str(output / "tensorboard")))
         if model.get("transformer_impl"):
             argv.extend(("--transformer-impl", str(model["transformer_impl"])))
+        if model.get("attention_backend"):
+            attention_backend = str(model["attention_backend"])
+            if attention_backend not in {"auto", "flash", "fused", "unfused", "local"}:
+                raise SpecError(f"unsupported Megatron attention backend: {attention_backend}")
+            argv.extend(("--attention-backend", attention_backend))
         if "attention_dropout" in model:
             argv.extend(("--attention-dropout", str(model["attention_dropout"])))
         if "hidden_dropout" in model:
@@ -405,6 +413,18 @@ class MegatronBackend:
             argv.extend(("--deterministic-mode", "--no-gradient-accumulation-fusion"))
         if training.get("use_distributed_optimizer", False):
             argv.append("--use-distributed-optimizer")
+        if training.get("overlap_grad_reduce", False):
+            argv.append("--overlap-grad-reduce")
+        if training.get("overlap_param_gather", False):
+            argv.append("--overlap-param-gather")
+        if not training.get("create_attention_mask", True):
+            argv.append("--no-create-attention-mask-in-dataloader")
+        if checkpoint_format := training.get("checkpoint_format"):
+            argv.extend(("--ckpt-format", str(checkpoint_format)))
+        if training.get("async_save", False):
+            if not training.get("save", True):
+                raise SpecError("async checkpoint save requires training.save")
+            argv.append("--async-save")
 
         launch_env = {"CUDA_DEVICE_MAX_CONNECTIONS": "1"}
         if training.get("deterministic", False):

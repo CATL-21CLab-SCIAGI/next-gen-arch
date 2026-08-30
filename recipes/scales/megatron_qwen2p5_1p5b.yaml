@@ -11,8 +11,8 @@ model:
   tie_word_embeddings: true
   add_qkv_bias: true
   make_vocab_size_divisible_by: 151936
-  transformer_impl: local
-  persist_layer_norm: false
+  transformer_impl: transformer_engine
+  attention_backend: flash
   attention_dropout: 0.0
   hidden_dropout: 0.0
   init_method_std: 0.02
@@ -22,9 +22,10 @@ training:
   adam_beta1: 0.9
   adam_beta2: 0.95
   adam_epsilon: 1.0e-8
-  micro_batch_size: 6
-  global_batch_size: 192
+  micro_batch_size: 32
+  global_batch_size: 1024
   target_train_tokens: 100000000000
+  require_at_least_target_tokens: true
   learning_rate: 0.0003
   minimum_learning_rate: 0.00003
   lr_decay_style: cosine
@@ -34,6 +35,11 @@ training:
   calculate_per_token_loss: true
   log_throughput: true
   use_distributed_optimizer: true
+  overlap_grad_reduce: true
+  overlap_param_gather: true
+  create_attention_mask: false
+  checkpoint_format: torch_dist
+  async_save: true
   save: true
   tensorboard: true
   eval_interval: 1000

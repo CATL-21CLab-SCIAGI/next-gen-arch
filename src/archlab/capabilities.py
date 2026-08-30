@@ -48,6 +48,12 @@ CAPABILITIES = {
     )
     for variant in _SPEEDRUN_VARIANTS
 }
+CAPABILITIES["qwen2p5-1p5b-baseline"] = ArchitectureCapability(
+    variant="qwen2p5-1p5b-baseline",
+    speedrun=False,
+    megatron=True,
+    note="native Qwen2.5 dense GPT configuration on the system MCore backend",
+)
 
 
 def require_backend_support(variant: str, backend: str) -> None:
