@@ -95,8 +95,7 @@ def test_qwen15b_recipe_uses_cuda13_safe_te_flash_contract(monkeypatch, tmp_path
         monkeypatch.setenv(name, str(value))
 
     spec = load_experiment(
-        ROOT
-        / "recipes/experiments/megatron_qwen2p5_1p5b_fineweb100b_dp32_seed42.yaml"
+        ROOT / "recipes/experiments/megatron_qwen2p5_1p5b_fineweb100b_dp32_seed42.yaml"
     )
     plan = get_backend(spec.backend).render(spec)
 
@@ -114,9 +113,15 @@ def test_qwen15b_recipe_uses_cuda13_safe_te_flash_contract(monkeypatch, tmp_path
     assert "--overlap-grad-reduce" in plan.argv
     assert "--overlap-param-gather" in plan.argv
     assert "--no-create-attention-mask-in-dataloader" in plan.argv
-    assert "--async-save" in plan.argv
+    assert "--async-save" not in plan.argv
     assert plan.argv[plan.argv.index("--ckpt-format") + 1] == "torch_dist"
     assert "--no-persist-layer-norm" not in plan.argv
+    assert plan.metadata["precision"] == "fp8_mxfp8"
+    assert plan.argv[plan.argv.index("--fp8-format") + 1] == "hybrid"
+    assert plan.argv[plan.argv.index("--fp8-recipe") + 1] == "mxfp8"
+    assert "--fp8-param-gather" in plan.argv
+    assert "--reuse-grad-buf-for-mxfp8-param-ag" in plan.argv
+    assert plan.argv[plan.argv.index("--save-interval") + 1] == "4768"
 
 
 def test_qwen15b_dp8_recipe_preserves_batch_and_token_contract(monkeypatch, tmp_path):

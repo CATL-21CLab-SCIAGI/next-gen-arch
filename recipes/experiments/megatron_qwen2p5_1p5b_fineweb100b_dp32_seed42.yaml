@@ -12,3 +12,7 @@ parallelism:
   pipeline: 1
   context: 1
   expert: 1
+training:
+  precision: fp8_mxfp8
+  save_interval: 4768
+  async_save: false
