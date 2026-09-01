@@ -32,6 +32,7 @@ NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-1024}"
 NGA_TRAIN_ITERS="${NGA_TRAIN_ITERS:-47684}"
 NGA_ENABLE_FP8="${NGA_ENABLE_FP8:-1}"
 NGA_OVERLAP_MXFP8_PARAM_GATHER="${NGA_OVERLAP_MXFP8_PARAM_GATHER:-0}"
+NGA_REPAIR_MXFP8_FROM_OPTIMIZER="${NGA_REPAIR_MXFP8_FROM_OPTIMIZER:-1}"
 NGA_RUN_EVAL="${NGA_RUN_EVAL:-1}"
 
 if [[ "$WORLD_SIZE" != "$NGA_EXPECTED_NODES" ]]; then
@@ -60,6 +61,10 @@ if [[ "$NGA_ENABLE_FP8" != "0" && "$NGA_ENABLE_FP8" != "1" ]]; then
 fi
 if [[ "$NGA_OVERLAP_MXFP8_PARAM_GATHER" != "0" && "$NGA_OVERLAP_MXFP8_PARAM_GATHER" != "1" ]]; then
     echo "NGA_OVERLAP_MXFP8_PARAM_GATHER must be 0 or 1" >&2
+    exit 1
+fi
+if [[ "$NGA_REPAIR_MXFP8_FROM_OPTIMIZER" != "0" && "$NGA_REPAIR_MXFP8_FROM_OPTIMIZER" != "1" ]]; then
+    echo "NGA_REPAIR_MXFP8_FROM_OPTIMIZER must be 0 or 1" >&2
     exit 1
 fi
 if [[ "$NGA_RUN_EVAL" != "0" && "$NGA_RUN_EVAL" != "1" ]]; then
@@ -103,9 +108,18 @@ export NGA_DATA_ROOT NGA_TOKENIZER NGA_OUTPUT_ROOT NGA_MODEL_EXPORT_ROOT
 export NGA_LM_EVAL_SITE
 export NGA_MICRO_BATCH_SIZE NGA_GLOBAL_BATCH_SIZE NGA_TRAIN_ITERS
 export NGA_GPUS_PER_NODE NGA_EXPECTED_NODES NGA_EXPECTED_TRAIN_PARTS NGA_ENABLE_FP8
-export NGA_SAVE_INTERVAL NGA_OVERLAP_MXFP8_PARAM_GATHER
+export NGA_SAVE_INTERVAL NGA_OVERLAP_MXFP8_PARAM_GATHER NGA_REPAIR_MXFP8_FROM_OPTIMIZER
 
 mkdir -p "$NGA_DATA_ROOT" "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/data-cache"
+
+if [[ "$NGA_REPAIR_MXFP8_FROM_OPTIMIZER" = "1" ]]; then
+    megatron_runtime_root="/opt/Megatron-Bridge/3rdparty/Megatron-LM"
+    megatron_training_file="$megatron_runtime_root/megatron/training/training.py"
+    megatron_repair_patch="$NGA_REPO_ROOT/patches/nemo2606-megatron-mxfp8-checkpoint-repair.patch"
+    if ! grep -q "Rebuilt MXFP8 model parameters from FP32 optimizer masters" "$megatron_training_file"; then
+        patch --batch --forward -p1 -d "$megatron_runtime_root" < "$megatron_repair_patch"
+    fi
+fi
 
 "$NGA_PYTHON" -m torch.distributed.run \
     --nnodes="$WORLD_SIZE" \
