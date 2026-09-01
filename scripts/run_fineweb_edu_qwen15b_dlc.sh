@@ -31,7 +31,7 @@ NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-32}"
 NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-1024}"
 NGA_TRAIN_ITERS="${NGA_TRAIN_ITERS:-47684}"
 NGA_ENABLE_FP8="${NGA_ENABLE_FP8:-1}"
-NGA_REUSE_MXFP8_GRAD_BUFFER="${NGA_REUSE_MXFP8_GRAD_BUFFER:-0}"
+NGA_OVERLAP_MXFP8_PARAM_GATHER="${NGA_OVERLAP_MXFP8_PARAM_GATHER:-0}"
 NGA_RUN_EVAL="${NGA_RUN_EVAL:-1}"
 
 if [[ "$WORLD_SIZE" != "$NGA_EXPECTED_NODES" ]]; then
@@ -58,8 +58,8 @@ if [[ "$NGA_ENABLE_FP8" != "0" && "$NGA_ENABLE_FP8" != "1" ]]; then
     echo "NGA_ENABLE_FP8 must be 0 or 1" >&2
     exit 1
 fi
-if [[ "$NGA_REUSE_MXFP8_GRAD_BUFFER" != "0" && "$NGA_REUSE_MXFP8_GRAD_BUFFER" != "1" ]]; then
-    echo "NGA_REUSE_MXFP8_GRAD_BUFFER must be 0 or 1" >&2
+if [[ "$NGA_OVERLAP_MXFP8_PARAM_GATHER" != "0" && "$NGA_OVERLAP_MXFP8_PARAM_GATHER" != "1" ]]; then
+    echo "NGA_OVERLAP_MXFP8_PARAM_GATHER must be 0 or 1" >&2
     exit 1
 fi
 if [[ "$NGA_RUN_EVAL" != "0" && "$NGA_RUN_EVAL" != "1" ]]; then
@@ -103,7 +103,7 @@ export NGA_DATA_ROOT NGA_TOKENIZER NGA_OUTPUT_ROOT NGA_MODEL_EXPORT_ROOT
 export NGA_LM_EVAL_SITE
 export NGA_MICRO_BATCH_SIZE NGA_GLOBAL_BATCH_SIZE NGA_TRAIN_ITERS
 export NGA_GPUS_PER_NODE NGA_EXPECTED_NODES NGA_EXPECTED_TRAIN_PARTS NGA_ENABLE_FP8
-export NGA_SAVE_INTERVAL NGA_REUSE_MXFP8_GRAD_BUFFER
+export NGA_SAVE_INTERVAL NGA_OVERLAP_MXFP8_PARAM_GATHER
 
 mkdir -p "$NGA_DATA_ROOT" "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/data-cache"
 
@@ -276,7 +276,8 @@ payload = {
         "master_weights": "BF16",
         "optimizer_state": "FP32",
         "fp8_parameter_gather": os.environ["NGA_ENABLE_FP8"] == "1",
-        "reuse_mxfp8_gradient_buffer": os.environ["NGA_REUSE_MXFP8_GRAD_BUFFER"] == "1",
+        "reuse_mxfp8_gradient_buffer": os.environ["NGA_ENABLE_FP8"] == "1",
+        "overlap_mxfp8_parameter_gather": os.environ["NGA_OVERLAP_MXFP8_PARAM_GATHER"] == "1",
     },
     "evaluation": {
         "harness": "lm_eval==0.4.13",
@@ -319,10 +320,12 @@ if [[ "$NGA_ENABLE_FP8" = "1" ]]; then
         --fp8-format hybrid
         --fp8-recipe mxfp8
         --fp8-param-gather
+        --reuse-grad-buf-for-mxfp8-param-ag
     )
-    if [[ "$NGA_REUSE_MXFP8_GRAD_BUFFER" = "1" ]]; then
-        fp8_args+=(--reuse-grad-buf-for-mxfp8-param-ag)
-    fi
+fi
+overlap_param_gather_args=()
+if [[ "$NGA_OVERLAP_MXFP8_PARAM_GATHER" = "1" ]]; then
+    overlap_param_gather_args=(--overlap-param-gather)
 fi
 load_args=()
 if [[ -f "$NGA_OUTPUT_ROOT/checkpoints/latest_checkpointed_iteration.txt" ]]; then
@@ -388,7 +391,7 @@ if [[ ! -f "$NGA_OUTPUT_ROOT/TRAINING_COMPLETE.json" ]]; then
         "${fp8_args[@]}" \
         --use-distributed-optimizer \
         --overlap-grad-reduce \
-        --overlap-param-gather \
+        "${overlap_param_gather_args[@]}" \
         --tokenizer-type HuggingFaceTokenizer \
         --tokenizer-model "$NGA_TOKENIZER" \
         --train-data-path "${train_prefixes[@]}" \
