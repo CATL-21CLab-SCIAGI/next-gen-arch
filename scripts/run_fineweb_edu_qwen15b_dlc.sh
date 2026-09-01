@@ -102,6 +102,16 @@ export NGA_SAVE_INTERVAL
 
 mkdir -p "$NGA_DATA_ROOT" "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/data-cache"
 
+"$NGA_PYTHON" -m torch.distributed.run \
+    --nnodes="$WORLD_SIZE" \
+    --nproc-per-node="$NGA_GPUS_PER_NODE" \
+    --node-rank="$RANK" \
+    --master-addr="$MASTER_ADDR" \
+    --master-port="$MASTER_PORT" \
+    --module archlab.megatron.collective_probe \
+    2>&1 | tee -a "$NGA_OUTPUT_ROOT/logs/collective-node-$RANK.log"
+test -f "$NGA_OUTPUT_ROOT/COLLECTIVE_VALIDATED.json"
+
 "$NGA_PYTHON" - <<'PY'
 import json, os
 from pathlib import Path
