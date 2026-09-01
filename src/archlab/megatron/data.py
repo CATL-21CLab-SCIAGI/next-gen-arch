@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -46,6 +47,24 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _minimum_unique_train_tokens(required_tokens: int, max_wrap_fraction: float) -> int:
+    """Return the unique-token floor for a bounded one-epoch corpus wrap.
+
+    FineWeb-Edu's ``sample-100BT`` name is based on its published token count,
+    which is tokenizer-dependent.  A model-native tokenizer can therefore
+    produce slightly fewer than 100B unique tokens even though the selected
+    source is the complete pinned sample.  Megatron cycles an indexed dataset
+    when the requested training horizon is longer, so permit only an explicit,
+    tightly bounded tail repeat instead of rejecting the complete corpus.
+    """
+
+    if required_tokens < 1:
+        raise ValueError("required training tokens must be positive")
+    if not 0.0 <= max_wrap_fraction <= 0.01:
+        raise ValueError("max wrap fraction must be between 0 and 0.01")
+    return math.ceil(required_tokens * (1.0 - max_wrap_fraction))
 
 
 def _source_tokens(path: Path) -> np.memmap:
@@ -555,11 +574,22 @@ def _summarize(args: argparse.Namespace) -> None:
         "documents": sum(part["documents"] for part in parts),
         "completed_at_unix": time.time(),
     }
-    if payload["train_tokens"] < args.required_train_tokens:
+    minimum_unique_tokens = _minimum_unique_train_tokens(
+        args.required_train_tokens, args.max_wrap_fraction
+    )
+    if payload["train_tokens"] < minimum_unique_tokens:
         raise RuntimeError(
-            f"retokenized corpus has {payload['train_tokens']} tokens, fewer than required "
-            f"{args.required_train_tokens}"
+            f"retokenized corpus has {payload['train_tokens']} unique tokens, fewer than the "
+            f"bounded-wrap floor {minimum_unique_tokens} for target {args.required_train_tokens}"
         )
+    payload.update(
+        {
+            "target_train_tokens": args.required_train_tokens,
+            "minimum_unique_train_tokens": minimum_unique_tokens,
+            "max_wrap_fraction": args.max_wrap_fraction,
+            "planned_repeat_tokens": max(0, args.required_train_tokens - payload["train_tokens"]),
+        }
+    )
     _write_json(args.output, payload)
     print(json.dumps(payload, sort_keys=True))
 
@@ -574,11 +604,25 @@ def _validate(args: argparse.Namespace) -> None:
             f"ready dataset part count changed: train={len(train_parts)}/{args.train_parts}, "
             f"val={len(valid_parts)}/{args.valid_parts}"
         )
-    if payload.get("train_tokens", 0) < args.required_train_tokens:
+    minimum_unique_tokens = _minimum_unique_train_tokens(
+        args.required_train_tokens, args.max_wrap_fraction
+    )
+    if payload.get("train_tokens", 0) < minimum_unique_tokens:
         raise RuntimeError(
-            f"ready dataset has {payload.get('train_tokens')} tokens, fewer than required "
-            f"{args.required_train_tokens}"
+            f"ready dataset has {payload.get('train_tokens')} unique tokens, fewer than the "
+            f"bounded-wrap floor {minimum_unique_tokens} for target {args.required_train_tokens}"
         )
+    expected_wrap = {
+        "target_train_tokens": args.required_train_tokens,
+        "minimum_unique_train_tokens": minimum_unique_tokens,
+        "max_wrap_fraction": args.max_wrap_fraction,
+        "planned_repeat_tokens": max(
+            0, args.required_train_tokens - int(payload.get("train_tokens", 0))
+        ),
+    }
+    for key, expected in expected_wrap.items():
+        if payload.get(key) != expected:
+            raise RuntimeError(f"ready dataset bounded-wrap contract changed: {key}")
     expected_hashes = {
         "source_manifest_sha256": _sha256(args.source_manifest.expanduser().resolve()),
         "tokenizer_sha256": _sha256(args.tokenizer.expanduser().resolve()),
@@ -644,6 +688,7 @@ def _parser() -> argparse.ArgumentParser:
     summarize.add_argument("--train-parts", required=True, type=int)
     summarize.add_argument("--valid-parts", type=int, default=1)
     summarize.add_argument("--required-train-tokens", type=int, default=100_000_000_000)
+    summarize.add_argument("--max-wrap-fraction", type=float, default=0.01)
     summarize.add_argument("--output", required=True, type=Path)
     validate = sub.add_parser("validate")
     validate.add_argument("--ready", required=True, type=Path)
@@ -652,6 +697,7 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument("--train-parts", required=True, type=int)
     validate.add_argument("--valid-parts", type=int, default=1)
     validate.add_argument("--required-train-tokens", type=int, default=100_000_000_000)
+    validate.add_argument("--max-wrap-fraction", type=float, default=0.01)
     validate.add_argument("--output", required=True, type=Path)
     return parser
 

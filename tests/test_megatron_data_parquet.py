@@ -110,3 +110,27 @@ def test_parquet_assignment_rejects_changed_source_size(tmp_path: Path) -> None:
                 source_token_column="token_count",
             )
         )
+
+
+def test_unique_token_floor_allows_only_one_percent_tail_wrap() -> None:
+    assert data._minimum_unique_train_tokens(100_000_000_000, 0.01) == 99_000_000_000
+    assert data._minimum_unique_train_tokens(100_000_000_000, 0.0) == 100_000_000_000
+
+    with pytest.raises(ValueError, match="between 0 and 0.01"):
+        data._minimum_unique_train_tokens(100_000_000_000, 0.010_001)
+
+
+def test_parquet_parser_defaults_to_one_percent_maximum_wrap() -> None:
+    args = data._parser().parse_args(
+        [
+            "summarize",
+            "--output-root",
+            "/tmp/data",
+            "--train-parts",
+            "32",
+            "--output",
+            "/tmp/data/DATA_READY.json",
+        ]
+    )
+    assert args.required_train_tokens == 100_000_000_000
+    assert args.max_wrap_fraction == 0.01
