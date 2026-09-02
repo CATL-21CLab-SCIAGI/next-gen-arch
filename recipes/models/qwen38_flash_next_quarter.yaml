@@ -1,0 +1,54 @@
+name: qwen38-flash-next-quarter-text
+source:
+  collection: https://huggingface.co/collections/Qwen/qwen38-flash-next
+  model: Qwen/Qwen3.8-Flash-Next
+  revision_policy: pin-before-launch
+scaling_contract:
+  rule: divide every divisible shape hyperparameter by four
+  indivisible_units: retain a minimum of one
+  routed_experts_per_token: round 10 / 4 to 3
+  tokenizer_vocabulary: preserve token identity; do not scale
+model:
+  vocab_size: 248320
+  sequence_len: 2048
+  max_position_embeddings: 262144
+  num_hidden_layers: 12
+  hidden_size: 640
+  attention_pattern: [gdn, gdn, gdn, qsa]
+  qsa:
+    query_heads: 6
+    kv_heads: 1
+    head_dim: 64
+    partial_rotary_factor: 0.25
+    indexer_query_heads: 1
+    indexer_kv_heads: 1
+    indexer_head_dim: 32
+    indexer_token_budget: 512
+  gdn:
+    qk_heads: 4
+    value_heads: 12
+    key_dim: 32
+    value_dim: 32
+    conv_kernel: 4
+  moe:
+    routed_experts: 128
+    active_routed_experts: 3
+    routed_intermediate_size: 160
+    shared_experts: 1
+    shared_intermediate_size: 160
+  gated_residual:
+    streams: 1
+    low_rank: 80
+  ngram_ple:
+    orders: [2, 3]
+    vocabulary_per_hash: 5000000
+    heads_per_order: 2
+    embedding_width: 640
+    injection_layer: 0
+  mtp_layers: 1
+precision:
+  recipe: fp4_blackwell
+  transformer_engine_recipe: NVFP4BlockScaling
+  stochastic_rounding: true
+  two_dimensional_quantization: true
+  dependency_policy: unmodified_container_runtime
