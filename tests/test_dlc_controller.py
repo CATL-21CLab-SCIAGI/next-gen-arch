@@ -58,6 +58,7 @@ def _payload(repository: Path, commit: str) -> dict[str, object]:
             "NGA_GLOBAL_BATCH_SIZE": "512",
             "NGA_TARGET_TRAIN_TOKENS": "100000000000",
             "NGA_CHECKPOINT_INTERVAL_TOKENS": "10000000000",
+            "NGA_PRECISION": "bf16",
         },
     }
 
@@ -73,6 +74,10 @@ def test_validate_request_binds_the_full_32_gpu_shape(tmp_path: Path) -> None:
     )
     assert request.environment["NGA_GLOBAL_BATCH_SIZE"] == "512"
     assert len(request.digest) == 64
+
+    payload["environment"].pop("NGA_PRECISION")  # type: ignore[union-attr]
+    legacy_controller_request = validate_request(payload, allowed_repo_root=tmp_path / "repos")
+    assert "NGA_PRECISION" not in legacy_controller_request.environment
 
 
 def test_validate_request_rejects_wrong_source_and_node_count(tmp_path: Path) -> None:
@@ -91,6 +96,15 @@ def test_validate_request_rejects_wrong_source_and_node_count(tmp_path: Path) ->
             expected_nodes=4,
             expected_gpus_per_node=8,
         )
+
+
+def test_validate_request_rejects_unknown_precision(tmp_path: Path) -> None:
+    root = tmp_path / "repos" / "next-gen-arch"
+    payload = _payload(root, "a" * 40)
+    payload["environment"]["NGA_PRECISION"] = "fp16"  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="NGA_PRECISION"):
+        validate_request(payload, allowed_repo_root=tmp_path / "repos")
 
 
 def test_publish_is_atomic_idempotent_and_rejects_generation_reuse(tmp_path: Path) -> None:

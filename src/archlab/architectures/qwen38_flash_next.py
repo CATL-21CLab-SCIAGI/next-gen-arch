@@ -138,6 +138,15 @@ class NativeLinear(nn.Linear):
 def _linear(in_features: int, out_features: int, *, runtime_backend: str, bias: bool = False):
     if runtime_backend == "native":
         return NativeLinear(in_features, out_features, bias=bias)
+    if runtime_backend == "te_bf16":
+        import transformer_engine.pytorch as te
+
+        return te.Linear(
+            in_features,
+            out_features,
+            bias=bias,
+            params_dtype=torch.float32,
+        )
     if runtime_backend == "te_fp4":
         # TE 2.16 can run an unfused NVFP4 fallback for smaller dimensions in
         # the forward pass, but its corresponding linear backward may not find
@@ -188,7 +197,7 @@ def _raw_grouped_linear(
 ):
     if runtime_backend == "native":
         return NativeGroupedLinear(experts, in_features, out_features)
-    if runtime_backend == "te_fp4":
+    if runtime_backend in {"te_bf16", "te_fp4"}:
         import transformer_engine.pytorch as te
 
         return te.GroupedLinear(

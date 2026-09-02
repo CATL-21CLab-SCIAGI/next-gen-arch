@@ -1,4 +1,5 @@
 from dataclasses import replace
+from types import ModuleType
 
 import torch
 
@@ -128,6 +129,37 @@ def test_fp4_linear_falls_back_unless_forward_and_backward_are_tile_aligned():
     assert isinstance(qwen38._linear(160, 640, runtime_backend="te_fp4"), NativeLinear)
     assert isinstance(qwen38._linear(80, 640, runtime_backend="te_fp4"), NativeLinear)
     assert isinstance(qwen38._linear(80, 1, runtime_backend="te_fp4"), NativeLinear)
+
+
+def test_bf16_backend_uses_transformer_engine_for_dense_and_grouped_linears(monkeypatch):
+    linear_calls = []
+    grouped_calls = []
+
+    class FakeLinear(NativeLinear):
+        def __init__(self, in_features, out_features, **kwargs):
+            linear_calls.append((in_features, out_features, kwargs))
+            super().__init__(in_features, out_features, bias=kwargs["bias"])
+
+    class FakeGroupedLinear(NativeGroupedLinear):
+        def __init__(self, experts, in_features, out_features, **kwargs):
+            grouped_calls.append((experts, in_features, out_features, kwargs))
+            super().__init__(experts, in_features, out_features)
+
+    transformer_engine = ModuleType("transformer_engine")
+    fake_te = ModuleType("transformer_engine.pytorch")
+    fake_te.Linear = FakeLinear
+    fake_te.GroupedLinear = FakeGroupedLinear
+    transformer_engine.pytorch = fake_te
+    modules = __import__("sys").modules
+    monkeypatch.setitem(modules, "transformer_engine", transformer_engine)
+    monkeypatch.setitem(modules, "transformer_engine.pytorch", fake_te)
+
+    qwen38._linear(640, 80, runtime_backend="te_bf16")
+    grouped = qwen38._grouped_linear(128, 640, 160, runtime_backend="te_bf16")
+
+    assert linear_calls[0][:2] == (640, 80)
+    assert isinstance(grouped, FakeGroupedLinear)
+    assert grouped_calls[0][:3] == (128, 640, 160)
 
 
 def test_grouped_token_padding_preserves_real_rows_and_gradients():

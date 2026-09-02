@@ -62,6 +62,7 @@ _ALLOWED_ENVIRONMENT_KEYS = {
     "NGA_CHECKPOINT_INTERVAL_TOKENS",
     "NGA_PROBE_STEPS",
     "NGA_CONTAINER_DIGEST",
+    "NGA_PRECISION",
 }
 _REQUIRED_ENVIRONMENT_KEYS = {
     "NGA_SOURCE_DATA",
@@ -221,6 +222,11 @@ def validate_request(
     for key in _BOOLEAN_KEYS:
         if environment[key] not in {"0", "1"}:
             raise ValueError(f"{key} must be 0 or 1")
+    if (
+        "NGA_PRECISION" in environment
+        and environment["NGA_PRECISION"] not in {"bf16", "fp4"}
+    ):
+        raise ValueError("NGA_PRECISION must be bf16 or fp4")
     for key, root in _PATH_PREFIXES.items():
         path = Path(environment[key])
         if not path.is_absolute() or not _is_within(path, root):

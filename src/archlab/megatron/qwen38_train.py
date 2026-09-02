@@ -1,4 +1,4 @@
-"""Megatron lifecycle adapter for the quarter-shape Qwen3.8 FP4 pretraining run."""
+"""Megatron lifecycle adapter for quarter-shape Qwen3.8 pretraining."""
 
 from __future__ import annotations
 
@@ -22,6 +22,9 @@ from archlab.architectures.qwen38_flash_next import (
 )
 from archlab.megatron.backend import validate_runtime
 from archlab.speedrun.precision import resolve_precision_backend
+
+PRECISION_RECIPES = {"bf16": "bf16", "fp4": "fp4_blackwell"}
+RUNTIME_BACKENDS = {"bf16": "te_bf16", "fp4": "te_fp4"}
 
 
 def _sha256(path: Path) -> str:
@@ -177,7 +180,7 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> l
     train_steps = args.probe_steps or math.ceil(args.target_train_tokens / tokens_per_step)
     save_interval = max(1, round(args.checkpoint_interval_tokens / tokens_per_step))
     argv = [
-        "qwen38-quarter-fp4",
+        f"qwen38-quarter-{args.precision}",
         "--use-mcore-models",
         "--num-layers",
         str(config.num_hidden_layers),
@@ -293,14 +296,23 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
     runtime = validate_runtime(require_pretrain=False)
     tokenizer_json = args.tokenizer / "tokenizer.json"
     data_ready = args.data_root / "DATA_READY.json"
-    payload = {
-        "model": "Qwen3.8-Flash-Next quarter-shape text pretraining",
-        "model_config": config.to_dict(),
-        "parameter_count": counts,
-        "source_model": "Qwen/Qwen3.8-Flash-Next",
-        "precision": {
+    precision = (
+        {
+            "compute": "BF16",
+            "recipe": "Megatron BF16 with Transformer Engine BF16 kernels",
+            "runtime_backend": "te_bf16",
+            "model_parameters": "BF16 under Megatron mixed precision",
+            "optimizer_master_parameters": "FP32 distributed optimizer",
+            "optimizer_state": "distributed FP32 AdamW",
+            "moe_grouped_token_padding_multiple": 1,
+            "moe_grouped_linear_max_experts": config.num_experts,
+            "mtp_token_padding_multiple": 1,
+        }
+        if args.precision == "bf16"
+        else {
             "compute": "NVFP4 block scaling",
             "recipe": "Transformer Engine NVFP4BlockScaling",
+            "runtime_backend": "te_fp4",
             "stochastic_rounding": True,
             "two_dimensional_quantization": True,
             "moe_grouped_token_padding_multiple": 64,
@@ -315,7 +327,14 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             ],
             "master_parameters": "BF16 under Megatron mixed precision",
             "optimizer_state": "distributed FP32 AdamW",
-        },
+        }
+    )
+    payload = {
+        "model": "Qwen3.8-Flash-Next quarter-shape text pretraining",
+        "model_config": config.to_dict(),
+        "parameter_count": counts,
+        "source_model": "Qwen/Qwen3.8-Flash-Next",
+        "precision": precision,
         "optimizer": {
             "name": "AdamW stabilization recipe",
             "note": "The source model's hybrid Muon/AdamW optimizer is not claimed in this run.",
@@ -389,12 +408,15 @@ def _run(args: argparse.Namespace) -> None:
             torch.manual_seed(args.seed)
             torch.cuda.manual_seed_all(args.seed)
             self.precision = resolve_precision_backend(
-                "fp4_blackwell",
+                PRECISION_RECIPES[args.precision],
                 device_type="cuda",
                 gpu_name=torch.cuda.get_device_name(torch.cuda.current_device()),
                 stochastic_rounding="on",
             )
-            self.architecture = Qwen38FlashNext(config, runtime_backend="te_fp4")
+            self.architecture = Qwen38FlashNext(
+                config,
+                runtime_backend=RUNTIME_BACKENDS[args.precision],
+            )
             self.architecture.init_weights()
 
         def set_input_tensor(self, input_tensor) -> None:
@@ -479,6 +501,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", required=True, type=Path)
     parser.add_argument("--tokenizer", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
+    parser.add_argument("--precision", choices=tuple(PRECISION_RECIPES), default="bf16")
     parser.add_argument("--sequence-length", type=int, default=2_048)
     parser.add_argument("--micro-batch-size", type=int, default=1)
     parser.add_argument("--global-batch-size", type=int, default=512)

@@ -12,7 +12,7 @@ NGA_SOURCE_DATA="${NGA_SOURCE_DATA:-/mnt/oss-dataset/datasets/AI-ModelScope/fine
 NGA_SOURCE_MANIFEST="${NGA_SOURCE_MANIFEST:-/mnt/oss/datasets/fineweb-edu-100BT-qwen2p5-c0382117-v1/SOURCE_MANIFEST.json}"
 NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100BT-qwen38-de4b8e4d43b9}"
 NGA_TOKENIZER="${NGA_TOKENIZER:-/mnt/oss/models/qwen38-flash-next-de4b8e4d43b9}"
-NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/qwen38-quarter-fp4-fineweb100b-seed42}"
+NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/qwen38-quarter-bf16-fineweb100b-seed42}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
 NGA_MEGATRON_ROOT="${NGA_MEGATRON_ROOT:-/opt/Megatron-Bridge/3rdparty/Megatron-LM}"
 NGA_EXPECTED_NODES="${NGA_EXPECTED_NODES:-4}"
@@ -33,6 +33,7 @@ NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-512}"
 NGA_TARGET_TRAIN_TOKENS="${NGA_TARGET_TRAIN_TOKENS:-100000000000}"
 NGA_CHECKPOINT_INTERVAL_TOKENS="${NGA_CHECKPOINT_INTERVAL_TOKENS:-10000000000}"
 NGA_PROBE_STEPS="${NGA_PROBE_STEPS:-0}"
+NGA_PRECISION="${NGA_PRECISION:-bf16}"
 
 if [[ "$WORLD_SIZE" != "$NGA_EXPECTED_NODES" ]]; then
     echo "DLC injected $WORLD_SIZE nodes; expected $NGA_EXPECTED_NODES" >&2
@@ -62,6 +63,14 @@ if [[ "$NGA_PREPARE_DATA" != "0" && "$NGA_PREPARE_DATA" != "1" ]]; then
 fi
 if [[ "$NGA_RUNTIME_PREFLIGHT" != "0" && "$NGA_RUNTIME_PREFLIGHT" != "1" ]]; then
     echo "NGA_RUNTIME_PREFLIGHT must be 0 or 1" >&2
+    exit 1
+fi
+if [[ "$NGA_PRECISION" != "bf16" && "$NGA_PRECISION" != "fp4" ]]; then
+    echo "NGA_PRECISION must be bf16 or fp4" >&2
+    exit 1
+fi
+if [[ "$NGA_DATA_ROOT" != /mnt/oss/datasets/* ]]; then
+    echo "NGA_DATA_ROOT must be under the writable OSS mount /mnt/oss/datasets" >&2
     exit 1
 fi
 if ((NGA_PROBE_STEPS < 0)); then
@@ -148,6 +157,7 @@ if [[ "$NGA_RUNTIME_PREFLIGHT" = "1" && ! -f "$NGA_OUTPUT_ROOT/preflight/PROBE_C
         --data-root "$NGA_PREFLIGHT_DATA_ROOT" \
         --tokenizer "$NGA_TOKENIZER" \
         --run-dir "$NGA_OUTPUT_ROOT/preflight" \
+        --precision "$NGA_PRECISION" \
         --sequence-length 128 \
         --micro-batch-size 1 \
         --global-batch-size "$((NGA_EXPECTED_NODES * NGA_GPUS_PER_NODE))" \
@@ -220,7 +230,7 @@ while [[ ! -f "$NGA_DATA_ROOT/DATA_READY.json" ]]; do
     sleep 30
 done
 
-if [[ "$NGA_PREPARE_DATA" = "1" && "$RANK" = "0" ]]; then
+if [[ "$RANK" = "0" ]]; then
     "$NGA_PYTHON" -m archlab.megatron.data validate \
         --ready "$NGA_DATA_ROOT/DATA_READY.json" \
         --source-manifest "$NGA_SOURCE_MANIFEST" \
@@ -235,6 +245,7 @@ train_args=(
     --data-root "$NGA_DATA_ROOT"
     --tokenizer "$NGA_TOKENIZER"
     --run-dir "$NGA_OUTPUT_ROOT"
+    --precision "$NGA_PRECISION"
     --sequence-length "$NGA_SEQUENCE_LENGTH"
     --micro-batch-size "$NGA_MICRO_BATCH_SIZE"
     --global-batch-size "$NGA_GLOBAL_BATCH_SIZE"

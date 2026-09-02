@@ -6,6 +6,7 @@ import torch
 from archlab.megatron.qwen38_train import (
     BinaryTokenBatches,
     _data_prefixes,
+    _parser,
     _partition_prefixes,
 )
 
@@ -41,3 +42,18 @@ def test_prefix_validation_and_rank_partition(tmp_path):
     assert _data_prefixes(tmp_path, "train") == prefixes
     assert _partition_prefixes(prefixes, 1, 2) == [prefixes[1], prefixes[3]]
     assert _partition_prefixes(prefixes, 7, 8) == [prefixes[3]]
+
+
+def test_qwen38_training_defaults_to_bf16(tmp_path):
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path / "data"),
+            "--tokenizer",
+            str(tmp_path / "tokenizer"),
+            "--run-dir",
+            str(tmp_path / "run"),
+        ]
+    )
+
+    assert args.precision == "bf16"
