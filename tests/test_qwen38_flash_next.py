@@ -10,6 +10,7 @@ from archlab.architectures.qwen38_flash_next import (
     Qwen38FlashNext,
     Qwen38FlashNextConfig,
     SingleStreamResidual,
+    SparseMoE,
     _pad_grouped_tokens,
 )
 
@@ -182,3 +183,38 @@ def test_fp4_grouped_linear_splits_128_experts_at_te_kernel_limit(monkeypatch):
     assert isinstance(module, ChunkedGroupedLinear)
     assert module.group_sizes == (64, 64)
     assert calls == [(64, 640, 320, "te_fp4"), (64, 640, 320, "te_fp4")]
+
+
+def test_moe_auxiliary_loss_excludes_masked_padding_token():
+    torch.manual_seed(17)
+    moe = SparseMoE(tiny_config(), runtime_backend="native")
+    inputs = torch.randn(1, 8, 32)
+    mask = torch.tensor([[True, True, True, True, True, True, True, False]])
+
+    moe(inputs, token_mask=mask)
+    masked_aux = moe.last_aux_loss.detach().clone()
+    moe(inputs[:, :-1])
+
+    assert torch.allclose(masked_aux, moe.last_aux_loss)
+
+
+def test_mtp_pads_fp4_token_axis_without_changing_loss_shape():
+    torch.manual_seed(19)
+    model = Qwen38FlashNext(tiny_config())
+    model.fp4_token_multiple = 8
+    model.init_weights()
+    observed = []
+
+    def record_shape(_module, args):
+        observed.append(args[0].shape)
+
+    handle = model.mtp_block.register_forward_pre_hook(record_shape)
+    tokens = torch.randint(0, model.config.vocab_size, (1, 8))
+    labels = torch.roll(tokens, shifts=-1, dims=1)
+    labels[:, -1] = -1
+    losses = model(tokens, labels, loss_reduction="none")
+    handle.remove()
+
+    assert observed == [torch.Size([1, 8, model.config.hidden_size])]
+    assert losses.shape == labels.shape
+    assert torch.isfinite(losses).all()

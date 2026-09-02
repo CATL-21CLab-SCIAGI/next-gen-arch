@@ -305,6 +305,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "two_dimensional_quantization": True,
             "moe_grouped_token_padding_multiple": 64,
             "moe_grouped_linear_max_experts": 64,
+            "mtp_token_padding_multiple": 8,
             "bf16_exceptions": [
                 "routing logits",
                 "shared-expert scalar gate",

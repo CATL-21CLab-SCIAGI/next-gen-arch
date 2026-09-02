@@ -565,9 +565,16 @@ class SparseMoE(nn.Module):
         gate, linear = value.chunk(2, dim=-1)
         return F.silu(gate) * linear
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         shape = x.shape
         flat = x.reshape(-1, shape[-1])
+        if token_mask is not None and token_mask.shape != shape[:-1]:
+            raise ValueError("MoE token mask must match every non-hidden input dimension")
         router_logits = self.router(flat).float()
         top_weights, top_experts = router_logits.topk(self.top_k, dim=-1)
         top_weights = F.softmax(top_weights, dim=-1).to(x.dtype)
@@ -598,11 +605,19 @@ class SparseMoE(nn.Module):
         shared = self.shared_down(self._swiglu(self.shared_up(flat)))
         shared = shared * self.shared_gate(flat).sigmoid()
 
-        probabilities = F.softmax(router_logits, dim=-1)
-        assignments = F.one_hot(top_experts, self.num_experts).float().mean(dim=(0, 1))
+        aux_router_logits = router_logits
+        aux_top_experts = top_experts
+        if token_mask is not None:
+            valid = token_mask.reshape(-1)
+            if not valid.any():
+                raise ValueError("MoE token mask must retain at least one token")
+            aux_router_logits = router_logits[valid]
+            aux_top_experts = top_experts[valid]
+        probabilities = F.softmax(aux_router_logits, dim=-1)
+        assignments = F.one_hot(aux_top_experts, self.num_experts).float().mean(dim=(0, 1))
         importance = probabilities.mean(dim=0)
         balance = self.num_experts * (assignments * importance).sum()
-        z_loss = torch.logsumexp(router_logits, dim=-1).square().mean()
+        z_loss = torch.logsumexp(aux_router_logits, dim=-1).square().mean()
         self.last_aux_loss = (
             self.router_aux_coefficient * balance + self.router_z_coefficient * z_loss
         )
@@ -662,7 +677,14 @@ class Qwen38Block(nn.Module):
         self.moe = SparseMoE(config, runtime_backend=runtime_backend)
         self.moe_residual = SingleStreamResidual(config, runtime_backend=runtime_backend)
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        *,
+        token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         branch, write = self.attention_residual.prepare(self.input_norm(x))
         if self.attention_kind == "qsa":
             branch = self.attention(branch, cos, sin)
@@ -670,7 +692,7 @@ class Qwen38Block(nn.Module):
             branch = self.attention(branch)
         x = self.attention_residual.combine(x, branch, write)
         branch, write = self.moe_residual.prepare(self.moe_norm(x))
-        branch = self.moe(branch)
+        branch = self.moe(branch, token_mask=token_mask)
         return self.moe_residual.combine(x, branch, write)
 
 
@@ -714,6 +736,7 @@ class Qwen38FlashNext(nn.Module):
         super().__init__()
         self.config = config
         self.runtime_backend = runtime_backend
+        self.fp4_token_multiple = 8 if runtime_backend == "te_fp4" else 1
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.ngram = NGramPLE(config)
         self.layers = nn.ModuleList(
@@ -832,8 +855,24 @@ class Qwen38FlashNext(nn.Module):
         ).view_as(labels)
         if seq_len > 1:
             mtp_input = hidden[:, :-1] + self.token_embedding(input_ids[:, 1:]).to(hidden.dtype)
-            mtp_hidden = self.mtp_block(mtp_input, cos[:, :-1], sin[:, :-1])
+            mtp_real_length = mtp_input.size(1)
+            mtp_padded_length = (
+                (mtp_real_length + self.fp4_token_multiple - 1) // self.fp4_token_multiple
+            ) * self.fp4_token_multiple
+            mtp_padding = mtp_padded_length - mtp_real_length
+            if mtp_padding:
+                mtp_input = F.pad(mtp_input, (0, 0, 0, mtp_padding))
+            mtp_token_mask = torch.arange(mtp_padded_length, device=hidden.device)
+            mtp_token_mask = mtp_token_mask.view(1, -1) < mtp_real_length
+            mtp_token_mask = mtp_token_mask.expand(hidden.size(0), -1)
+            mtp_hidden = self.mtp_block(
+                mtp_input,
+                cos[:, :mtp_padded_length],
+                sin[:, :mtp_padded_length],
+                token_mask=mtp_token_mask,
+            )
             mtp_logits = self.lm_head(self.final_norm(mtp_hidden)).float()
+            mtp_logits = mtp_logits[:, :mtp_real_length]
             mtp_losses = F.cross_entropy(
                 mtp_logits.reshape(-1, mtp_logits.size(-1)),
                 labels[:, 1:].reshape(-1),
