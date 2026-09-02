@@ -11,6 +11,8 @@ import os
 import platform
 import sys
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +23,7 @@ from archlab.architectures.qwen38_flash_next import (
     Qwen38FlashNextConfig,
 )
 from archlab.megatron.backend import validate_runtime
+from archlab.megatron.qwen38_muon import install_qwen38_muon_adapter, muon_recipe_contract
 from archlab.speedrun.precision import resolve_precision_backend
 
 PRECISION_RECIPES = {"bf16": "bf16", "fp4": "fp4_blackwell"}
@@ -63,6 +66,11 @@ class BinaryTokenBatches:
         self.sequence_len = sequence_len
         self.batch_index = start_batch
         self.device = device
+        self._executor: ThreadPoolExecutor | None = None
+        self._future: Future | None = None
+        if self.device.type == "cuda":
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="token-prefetch")
+            self._future = self._executor.submit(self._cpu_batch, self.batch_index)
 
     @staticmethod
     def _cyclic_slice(array: np.memmap, start: int, length: int) -> np.ndarray:
@@ -82,10 +90,10 @@ class BinaryTokenBatches:
     def __iter__(self):
         return self
 
-    def __next__(self) -> dict[str, torch.Tensor]:
-        array = self.arrays[self.batch_index % len(self.arrays)]
+    def _cpu_batch(self, batch_index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        array = self.arrays[batch_index % len(self.arrays)]
         flat_tokens = self.batch_size * self.sequence_len
-        start = (self.batch_index // len(self.arrays)) * flat_tokens
+        start = (batch_index // len(self.arrays)) * flat_tokens
         window = self._cyclic_slice(array, start, flat_tokens + 1)
         # Copy because memmap slices are read-only and then pin for nonblocking H2D.
         tensor = torch.from_numpy(np.array(window, dtype=np.int64, copy=True))
@@ -93,11 +101,24 @@ class BinaryTokenBatches:
             tensor = tensor.pin_memory()
         tokens = tensor[:-1].view(self.batch_size, self.sequence_len)
         labels = tensor[1:].view(self.batch_size, self.sequence_len)
+        return tokens, labels
+
+    def __next__(self) -> dict[str, torch.Tensor]:
+        if self._future is None:
+            tokens, labels = self._cpu_batch(self.batch_index)
+        else:
+            tokens, labels = self._future.result()
         self.batch_index += 1
+        if self._executor is not None:
+            self._future = self._executor.submit(self._cpu_batch, self.batch_index)
         return {
             "tokens": tokens.to(self.device, non_blocking=True),
             "labels": labels.to(self.device, non_blocking=True),
         }
+
+    def __del__(self):
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _distributed_rank() -> int:
@@ -136,11 +157,25 @@ def _current_iteration() -> int:
     return int(getattr(args, "curr_iteration", getattr(args, "iteration", 0)))
 
 
-def _loss_func(output_tensor: torch.Tensor):
+def _loss_func(
+    output_tensor: torch.Tensor,
+    component_metrics: dict[str, torch.Tensor] | None = None,
+):
     losses = output_tensor.reshape(-1).float()
     count = torch.tensor(losses.numel(), dtype=torch.float32, device=losses.device)
     loss_sum = losses.sum()
-    return loss_sum / count, {"lm loss": torch.stack((loss_sum.detach(), count))}
+    report = {"lm loss": torch.stack((loss_sum.detach(), count))}
+    for name, value in (component_metrics or {}).items():
+        metric_count = torch.ones((), dtype=torch.float32, device=value.device)
+        report[name] = torch.stack((value.float(), metric_count))
+    return loss_sum / count, report
+
+
+def _architecture_from_model(model):
+    current = model
+    while hasattr(current, "module"):
+        current = current.module
+    return current.architecture
 
 
 def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
@@ -148,7 +183,8 @@ def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
         raise NotImplementedError("the Qwen3.8 adapter does not use schedule plans")
     batch = next(data_iterator)
     losses = model(batch["tokens"], labels=batch["labels"])
-    return losses, _loss_func
+    component_metrics = dict(_architecture_from_model(model).last_loss_metrics)
+    return losses, partial(_loss_func, component_metrics=component_metrics)
 
 
 def _invoke_pretrain(training_module, datasets_provider, model_provider, model_type) -> None:
@@ -223,13 +259,29 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> l
         "--transformer-impl",
         "local",
         "--optimizer",
-        "adam",
+        "muon",
         "--adam-beta1",
         "0.9",
         "--adam-beta2",
         "0.95",
         "--adam-eps",
         "1e-8",
+        "--muon-momentum",
+        "0.95",
+        "--muon-nesterov",
+        "--muon-no-split-qkv",
+        "--muon-scale-mode",
+        "spectral",
+        "--muon-extra-scale-factor",
+        "0.2",
+        "--muon-fp32-matmul-prec",
+        "medium",
+        "--muon-coefficient-type",
+        "polar_express",
+        "--muon-num-ns-steps",
+        "8",
+        "--muon-scalar-optimizer",
+        "adam",
         "--lr",
         str(args.learning_rate),
         "--min-lr",
@@ -246,6 +298,8 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> l
         "--use-distributed-optimizer",
         "--overlap-grad-reduce",
         "--overlap-param-gather",
+        "--ddp-pad-buckets-for-high-nccl-busbw",
+        "--optimizer-cuda-graph",
         "--tokenizer-type",
         "NullTokenizer",
         "--vocab-size",
@@ -264,7 +318,6 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> l
         "--calculate-per-token-loss",
         "--rerun-mode",
         "disabled",
-        "--no-gradient-accumulation-fusion",
         "--no-masked-softmax-fusion",
         "--no-bias-gelu-fusion",
         "--no-bias-swiglu-fusion",
@@ -289,7 +342,9 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
     if int(os.environ.get("RANK", "0")) != 0:
         return
     with torch.device("meta"):
-        counts = Qwen38FlashNext(config).num_scaling_params()
+        meta_model = Qwen38FlashNext(config, gdn_kernel=args.gdn_kernel)
+        counts = meta_model.num_scaling_params()
+        optimizer_partition = meta_model.optimizer_contract()
     tokens_per_step = args.global_batch_size * config.sequence_len
     train_steps = args.probe_steps or math.ceil(args.target_train_tokens / tokens_per_step)
     save_interval = max(1, round(args.checkpoint_interval_tokens / tokens_per_step))
@@ -303,7 +358,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "runtime_backend": "te_bf16",
             "model_parameters": "BF16 under Megatron mixed precision",
             "optimizer_master_parameters": "FP32 distributed optimizer",
-            "optimizer_state": "distributed FP32 AdamW",
+            "optimizer_state": "distributed FP32 Muon momentum plus AdamW moments",
             "moe_grouped_token_padding_multiple": 1,
             "moe_grouped_linear_max_experts": config.num_experts,
             "mtp_token_padding_multiple": 1,
@@ -326,7 +381,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
                 "normalization and loss",
             ],
             "master_parameters": "BF16 under Megatron mixed precision",
-            "optimizer_state": "distributed FP32 AdamW",
+            "optimizer_state": "distributed FP32 Muon momentum plus AdamW moments",
         }
     )
     payload = {
@@ -336,13 +391,48 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
         "source_model": "Qwen/Qwen3.8-Flash-Next",
         "precision": precision,
         "optimizer": {
-            "name": "AdamW stabilization recipe",
-            "note": "The source model's hybrid Muon/AdamW optimizer is not claimed in this run.",
+            "name": "Qwen3.8 hybrid Muon/AdamW",
+            **muon_recipe_contract(),
             "learning_rate": args.learning_rate,
             "minimum_learning_rate": args.minimum_learning_rate,
             "warmup_fraction": args.warmup_fraction,
             "weight_decay": args.weight_decay,
             "clip_grad": args.clip_grad,
+            "partition": optimizer_partition,
+        },
+        "expert_routing": {
+            "top_k": config.num_experts_per_token,
+            "auxiliary_balance_formula": "E * sum(mean(top-k assignments) * mean(router probabilities))",
+            "auxiliary_balance_coefficient": config.router_aux_loss_coefficient,
+            "router_z_loss_coefficient": config.router_z_loss_coefficient,
+            "capacity_limit": None,
+            "dropped_tokens": False,
+            "logged_diagnostics": [
+                "expert balance loss",
+                "expert load cv",
+                "expert max load / mean",
+                "router entropy",
+            ],
+        },
+        "kernel_acceleration": {
+            "gdn": args.gdn_kernel,
+            "flash_qla_source_commit": os.environ.get("NGA_FLASHQLA_COMMIT"),
+            "dense_and_grouped_gemm": "Transformer Engine BF16",
+            "cross_entropy": "Transformer Engine Triton fused cross entropy",
+            "optimizer_step": "Megatron whole-step CUDA graph after warmup",
+            "gradient_accumulation": "Megatron fusion enabled",
+            "input_pipeline": "background CPU memmap prefetch, pinned memory, nonblocking H2D",
+            "distributed_overlap": [
+                "gradient reduce-scatter overlapped with backward",
+                "parameter gather overlap",
+                "DP bucket padding for NCCL bandwidth",
+            ],
+        },
+        "speedrun_exclusions": {
+            "fp8_or_fp4_compute": "disabled by the explicit 16-bit training request",
+            "dense_flash_attention": "not applicable to QSA's learned sparse top-k mask",
+            "whole_model_torch_compile": "dynamic expert token counts and host dispatch are not graph-safe",
+            "nccl_user_buffers": "not enabled without a topology-specific registration preflight",
         },
         "parallelism": {
             "world_size": int(os.environ.get("WORLD_SIZE", "1")),
@@ -393,6 +483,8 @@ def _run(args: argparse.Namespace) -> None:
     from megatron.training import get_args
     from megatron.training.arguments import core_transformer_config_from_args
 
+    install_qwen38_muon_adapter(config)
+
     class Qwen38MegatronModel(MegatronModule):
         def __init__(self, transformer_config, pg_collection):
             super().__init__(transformer_config)
@@ -416,8 +508,14 @@ def _run(args: argparse.Namespace) -> None:
             self.architecture = Qwen38FlashNext(
                 config,
                 runtime_backend=RUNTIME_BACKENDS[args.precision],
+                gdn_kernel=args.gdn_kernel,
             )
             self.architecture.init_weights()
+            optimizer_partition = self.architecture.optimizer_contract(
+                require_two_dimensional_muon=True
+            )
+            if _distributed_rank() == 0:
+                _atomic_json(args.run_dir / "OPTIMIZER_PARTITION.json", optimizer_partition)
 
         def set_input_tensor(self, input_tensor) -> None:
             self.input_tensor = input_tensor
@@ -502,6 +600,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--tokenizer", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--precision", choices=tuple(PRECISION_RECIPES), default="bf16")
+    parser.add_argument("--gdn-kernel", choices=("flash_qla", "fla"), default="flash_qla")
     parser.add_argument("--sequence-length", type=int, default=2_048)
     parser.add_argument("--micro-batch-size", type=int, default=1)
     parser.add_argument("--global-batch-size", type=int, default=512)

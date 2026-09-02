@@ -67,12 +67,32 @@ def test_quarter_shape_contract_matches_agreed_source_scaling():
     assert config.ngram_embedding_dim == 2_560 // 4
     assert config.vocab_size == 248_320
     assert config.mtp_layers == 1
+    assert config.router_aux_loss_coefficient == 0.001
+    assert config.router_z_loss_coefficient == 0.0
 
 
 def test_layer_pattern_preserves_three_gdn_then_one_qsa():
     model = Qwen38FlashNext(tiny_config())
     assert [layer.attention_kind for layer in model.layers] == ["gdn", "gdn", "gdn", "qsa"]
     assert model.mtp_block.attention_kind == "qsa"
+
+
+def test_optimizer_partition_matches_qwen_division_of_labour():
+    model = Qwen38FlashNext(tiny_config())
+    contract = model.optimizer_contract()
+    gdn = model.layers[0].attention
+
+    assert contract["all_trainable_parameters_assigned_once"] is True
+    assert sum(bucket["parameters"] for bucket in contract["optimizers"].values()) == sum(
+        parameter.numel() for parameter in model.parameters()
+    )
+    assert gdn.qkv.weight.archlab_optimizer == "muon"
+    assert gdn.qkv.weight.archlab_muon_split_rows == model.config.linear_key_dim
+    assert gdn.z.weight.archlab_optimizer == "adamw"
+    assert model.layers[0].moe.router.weight.archlab_optimizer == "adamw"
+    assert model.layers[0].moe.expert_up.weight.archlab_optimizer == "muon"
+    assert model.ngram.tables[0].weight.archlab_optimizer == "adam"
+    assert model.ngram.tables[0].weight.archlab_no_weight_decay is True
 
 
 def test_tiny_forward_backward_and_auxiliary_loss_are_finite():

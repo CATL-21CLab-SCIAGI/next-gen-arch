@@ -47,8 +47,10 @@ class Qwen38FlashNextConfig:
     num_experts_per_token: int = 3
     moe_intermediate_size: int = 160
     shared_expert_intermediate_size: int = 160
-    router_aux_loss_coefficient: float = 0.01
-    router_z_loss_coefficient: float = 0.001
+    # The released Qwen3.8 config uses the standard Switch-style balancing
+    # objective at 1e-3 and does not declare a router z-loss.
+    router_aux_loss_coefficient: float = 0.001
+    router_z_loss_coefficient: float = 0.0
 
     residual_streams: int = 1
     residual_low_rank: int = 80
@@ -206,7 +208,10 @@ def _raw_grouped_linear(
             out_features,
             bias=False,
             params_dtype=torch.float32,
-            single_grouped_weight=True,
+            # Muon assigns and orthogonalizes each expert matrix as a whole.
+            # Keeping per-expert 2D parameters also lets Megatron's LPT layout
+            # balance Newton-Schulz work across data-parallel ranks.
+            single_grouped_weight=False,
         )
     raise ValueError(f"unsupported Qwen3.8 runtime backend: {runtime_backend}")
 
@@ -342,17 +347,33 @@ def _gated_delta_reference(q, k, v, decay, beta):
 
 
 class GatedDeltaAttention(nn.Module):
-    def __init__(self, config: Qwen38FlashNextConfig, *, runtime_backend: str):
+    def __init__(
+        self,
+        config: Qwen38FlashNextConfig,
+        *,
+        runtime_backend: str,
+        gdn_kernel: str,
+    ):
         super().__init__()
+        if gdn_kernel not in {"fla", "flash_qla"}:
+            raise ValueError(f"unsupported GDN kernel: {gdn_kernel}")
+        self.gdn_kernel = gdn_kernel
         self.q_heads = config.linear_qk_heads
         self.v_heads = config.linear_v_heads
         self.key_dim = config.linear_key_dim
         self.value_dim = config.linear_value_dim
         q_width = self.q_heads * self.key_dim
         v_width = self.v_heads * self.value_dim
-        self.qkvz = _linear(
+        # Keep q/k/v fused for one GEMM and per-head Muon splitting, while the
+        # z output gate remains a separate AdamW parameter as in Qwen3.8.
+        self.qkv = _linear(
             config.hidden_size,
-            2 * q_width + 2 * v_width,
+            2 * q_width + v_width,
+            runtime_backend=runtime_backend,
+        )
+        self.z = _linear(
+            config.hidden_size,
+            v_width,
             runtime_backend=runtime_backend,
         )
         self.ba = _linear(
@@ -368,10 +389,18 @@ class GatedDeltaAttention(nn.Module):
 
     def _kernel(self, q, k, v, decay, beta):
         if q.device.type == "cuda":
-            try:
-                from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-            except ImportError as error:  # pragma: no cover - container probe
-                raise RuntimeError("Qwen3.8 GDN requires fla-core==0.4.0") from error
+            if self.gdn_kernel == "flash_qla":
+                try:
+                    from flash_qla import chunk_gated_delta_rule
+                except ImportError as error:  # pragma: no cover - container probe
+                    raise RuntimeError(
+                        "FlashQLA was requested but its pinned runtime is unavailable"
+                    ) from error
+            else:
+                try:
+                    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+                except ImportError as error:  # pragma: no cover - container probe
+                    raise RuntimeError("Qwen3.8 GDN requires fla-core") from error
             output, _state = chunk_gated_delta_rule(
                 q=q,
                 k=k,
@@ -387,11 +416,8 @@ class GatedDeltaAttention(nn.Module):
         batch, seq_len, _ = x.shape
         q_width = self.q_heads * self.key_dim
         v_width = self.v_heads * self.value_dim
-        q, k, v, z = torch.split(
-            self.qkvz(x),
-            (q_width, q_width, v_width, v_width),
-            dim=-1,
-        )
+        q, k, v = torch.split(self.qkv(x), (q_width, q_width, v_width), dim=-1)
+        z = self.z(x)
         qkv = self.conv(torch.cat((q, k, v), dim=-1))
         q, k, v = torch.split(qkv, (q_width, q_width, v_width), dim=-1)
         beta_logits, decay_logits = self.ba(x).chunk(2, dim=-1)
@@ -570,6 +596,11 @@ class SparseMoE(nn.Module):
         )
         self.shared_gate = NativeLinear(config.hidden_size, 1, bias=False)
         self.last_aux_loss = torch.tensor(0.0)
+        self.last_balance_loss = torch.tensor(0.0)
+        self.last_z_loss = torch.tensor(0.0)
+        self.last_load_cv = torch.tensor(0.0)
+        self.last_max_load_ratio = torch.tensor(0.0)
+        self.last_router_entropy = torch.tensor(0.0)
 
     @staticmethod
     def _swiglu(value: torch.Tensor) -> torch.Tensor:
@@ -628,10 +659,19 @@ class SparseMoE(nn.Module):
         assignments = F.one_hot(aux_top_experts, self.num_experts).float().mean(dim=(0, 1))
         importance = probabilities.mean(dim=0)
         balance = self.num_experts * (assignments * importance).sum()
-        z_loss = torch.logsumexp(aux_router_logits, dim=-1).square().mean()
-        self.last_aux_loss = (
-            self.router_aux_coefficient * balance + self.router_z_coefficient * z_loss
-        )
+        mean_assignment = assignments.mean().clamp_min(torch.finfo(assignments.dtype).eps)
+        self.last_load_cv = assignments.std(unbiased=False) / mean_assignment
+        self.last_max_load_ratio = assignments.max() / mean_assignment
+        self.last_router_entropy = -(probabilities * probabilities.clamp_min(1e-20).log()).sum(
+            dim=-1
+        ).mean()
+        self.last_balance_loss = self.router_aux_coefficient * balance
+        if self.router_z_coefficient:
+            z_loss = torch.logsumexp(aux_router_logits, dim=-1).square().mean()
+            self.last_z_loss = self.router_z_coefficient * z_loss
+        else:
+            self.last_z_loss = balance.new_zeros(())
+        self.last_aux_loss = self.last_balance_loss + self.last_z_loss
         return (routed + shared).view(shape)
 
 
@@ -672,6 +712,7 @@ class Qwen38Block(nn.Module):
         layer_idx: int,
         *,
         runtime_backend: str,
+        gdn_kernel: str,
         force_sparse_attention: bool = False,
     ):
         super().__init__()
@@ -682,7 +723,11 @@ class Qwen38Block(nn.Module):
         self.attention = (
             QwenSparseAttention(config, runtime_backend=runtime_backend)
             if use_sparse
-            else GatedDeltaAttention(config, runtime_backend=runtime_backend)
+            else GatedDeltaAttention(
+                config,
+                runtime_backend=runtime_backend,
+                gdn_kernel=gdn_kernel,
+            )
         )
         self.attention_residual = SingleStreamResidual(config, runtime_backend=runtime_backend)
         self.moe = SparseMoE(config, runtime_backend=runtime_backend)
@@ -743,16 +788,28 @@ class NGramPLE(nn.Module):
 
 
 class Qwen38FlashNext(nn.Module):
-    def __init__(self, config: Qwen38FlashNextConfig, *, runtime_backend: str = "native"):
+    def __init__(
+        self,
+        config: Qwen38FlashNextConfig,
+        *,
+        runtime_backend: str = "native",
+        gdn_kernel: str = "fla",
+    ):
         super().__init__()
         self.config = config
         self.runtime_backend = runtime_backend
+        self.gdn_kernel = gdn_kernel
         self.fp4_token_multiple = 8 if runtime_backend == "te_fp4" else 1
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.ngram = NGramPLE(config)
         self.layers = nn.ModuleList(
             [
-                Qwen38Block(config, layer, runtime_backend=runtime_backend)
+                Qwen38Block(
+                    config,
+                    layer,
+                    runtime_backend=runtime_backend,
+                    gdn_kernel=gdn_kernel,
+                )
                 for layer in range(config.num_hidden_layers)
             ]
         )
@@ -766,8 +823,11 @@ class Qwen38FlashNext(nn.Module):
             config,
             config.num_hidden_layers,
             runtime_backend=runtime_backend,
+            gdn_kernel=gdn_kernel,
             force_sparse_attention=True,
         )
+        self._configure_optimizer_parameters()
+        self.last_loss_metrics: dict[str, torch.Tensor] = {}
         rotary_dim = int(config.attention_head_dim * config.partial_rotary_factor)
         positions = torch.arange(config.sequence_len, dtype=torch.float32)
         channels = torch.arange(0, rotary_dim, 2, dtype=torch.float32)
@@ -775,6 +835,195 @@ class Qwen38FlashNext(nn.Module):
         angles = torch.outer(positions, inverse_frequency)
         self.register_buffer("rope_cos", angles.cos(), persistent=False)
         self.register_buffer("rope_sin", angles.sin(), persistent=False)
+
+    @staticmethod
+    def _tag_optimizer_module(
+        module: nn.Module,
+        *,
+        optimizer: str,
+        category: str,
+        split_rows: int | None = None,
+        no_weight_decay: bool = False,
+    ) -> None:
+        for parameter in module.parameters():
+            parameter.archlab_optimizer = optimizer
+            parameter.archlab_optimizer_category = category
+            parameter.is_embedding_or_output_parameter = optimizer != "muon"
+            if split_rows is not None:
+                parameter.archlab_muon_split_rows = split_rows
+            elif hasattr(parameter, "archlab_muon_split_rows"):
+                del parameter.archlab_muon_split_rows
+            if no_weight_decay:
+                parameter.archlab_no_weight_decay = True
+            elif hasattr(parameter, "archlab_no_weight_decay"):
+                del parameter.archlab_no_weight_decay
+
+    def _configure_optimizer_parameters(self) -> None:
+        """Encode Qwen3.8's Muon/Adam division of labour on each parameter."""
+        self._tag_optimizer_module(
+            self,
+            optimizer="adamw",
+            category="scalar_norm_or_non_linear",
+        )
+        self._tag_optimizer_module(
+            self.token_embedding,
+            optimizer="adamw",
+            category="input_embedding",
+        )
+        self._tag_optimizer_module(
+            self.lm_head,
+            optimizer="adamw",
+            category="output_head",
+        )
+        self._tag_optimizer_module(
+            self.ngram.tables,
+            optimizer="adam",
+            category="ngram_embedding_table",
+            no_weight_decay=True,
+        )
+
+        for block in (*self.layers, self.mtp_block):
+            attention = block.attention
+            if isinstance(attention, GatedDeltaAttention):
+                self._tag_optimizer_module(
+                    attention.qkv,
+                    optimizer="muon",
+                    category="gdn_qkv_per_head",
+                    split_rows=attention.key_dim,
+                )
+                self._tag_optimizer_module(
+                    attention.out,
+                    optimizer="muon",
+                    category="gdn_output",
+                )
+                self._tag_optimizer_module(
+                    attention.z,
+                    optimizer="adamw",
+                    category="gdn_output_gate",
+                )
+                self._tag_optimizer_module(
+                    attention.ba,
+                    optimizer="adamw",
+                    category="gdn_decay_beta",
+                )
+                self._tag_optimizer_module(
+                    attention.conv,
+                    optimizer="adamw",
+                    category="gdn_depthwise_convolution",
+                )
+            else:
+                self._tag_optimizer_module(
+                    attention.q,
+                    optimizer="muon",
+                    category="attention_q_per_head",
+                    split_rows=attention.head_dim,
+                )
+                for name in ("k", "v", "index_q", "index_k", "out"):
+                    self._tag_optimizer_module(
+                        getattr(attention, name),
+                        optimizer="muon",
+                        category=f"attention_{name}",
+                    )
+
+            for residual in (block.attention_residual, block.moe_residual):
+                self._tag_optimizer_module(
+                    residual,
+                    optimizer="adamw",
+                    category="gated_residual_low_rank",
+                )
+
+            moe = block.moe
+            self._tag_optimizer_module(
+                moe.router,
+                optimizer="adamw",
+                category="moe_router",
+            )
+            self._tag_optimizer_module(
+                moe.expert_up,
+                optimizer="muon",
+                category="routed_expert_fc1_gate_up",
+                split_rows=self.config.moe_intermediate_size,
+            )
+            self._tag_optimizer_module(
+                moe.expert_down,
+                optimizer="muon",
+                category="routed_expert_fc2",
+            )
+            self._tag_optimizer_module(
+                moe.shared_up,
+                optimizer="muon",
+                category="shared_expert_fc1_gate_up",
+                split_rows=self.config.shared_expert_intermediate_size,
+            )
+            self._tag_optimizer_module(
+                moe.shared_down,
+                optimizer="muon",
+                category="shared_expert_fc2",
+            )
+            self._tag_optimizer_module(
+                moe.shared_gate,
+                optimizer="adamw",
+                category="shared_expert_gate",
+            )
+
+    def optimizer_contract(self, *, require_two_dimensional_muon: bool = False) -> dict:
+        """Return and validate a complete, auditable optimizer partition."""
+        optimizers: dict[str, dict[str, int]] = {}
+        categories: dict[str, dict[str, int | str]] = {}
+        missing = []
+        invalid = []
+        for name, parameter in self.named_parameters():
+            optimizer = getattr(parameter, "archlab_optimizer", None)
+            category = getattr(parameter, "archlab_optimizer_category", None)
+            if optimizer is None or category is None:
+                missing.append(name)
+                continue
+            if optimizer == "muon" and require_two_dimensional_muon and parameter.ndim != 2:
+                invalid.append(f"{name}: expected 2D Muon parameter, found {tuple(parameter.shape)}")
+            split_rows = getattr(parameter, "archlab_muon_split_rows", None)
+            matrix_count = 0
+            if optimizer == "muon":
+                if split_rows is not None:
+                    output_rows = parameter.shape[-2]
+                    if output_rows % split_rows:
+                        invalid.append(
+                            f"{name}: output rows {output_rows} not divisible by {split_rows}"
+                        )
+                    matrix_count = parameter.numel() // (split_rows * parameter.shape[-1])
+                else:
+                    matrix_count = parameter.numel() // (
+                        parameter.shape[-2] * parameter.shape[-1]
+                    )
+            bucket = optimizers.setdefault(
+                optimizer,
+                {"tensors": 0, "parameters": 0, "logical_matrices": 0},
+            )
+            bucket["tensors"] += 1
+            bucket["parameters"] += parameter.numel()
+            bucket["logical_matrices"] += matrix_count
+            category_bucket = categories.setdefault(
+                category,
+                {
+                    "optimizer": optimizer,
+                    "tensors": 0,
+                    "parameters": 0,
+                    "logical_matrices": 0,
+                },
+            )
+            category_bucket["tensors"] = int(category_bucket["tensors"]) + 1
+            category_bucket["parameters"] = int(category_bucket["parameters"]) + parameter.numel()
+            category_bucket["logical_matrices"] = (
+                int(category_bucket["logical_matrices"]) + matrix_count
+            )
+        if missing or invalid:
+            details = "; ".join([*(f"untagged: {name}" for name in missing), *invalid])
+            raise RuntimeError(f"invalid Qwen3.8 optimizer partition: {details}")
+        return {
+            "optimizers": optimizers,
+            "categories": categories,
+            "all_trainable_parameters_assigned_once": True,
+            "ngram_embedding_weight_decay": False,
+        }
 
     @torch.no_grad()
     def init_weights(self, std: float = 0.02) -> None:
@@ -802,6 +1051,51 @@ class Qwen38FlashNext(nn.Module):
         losses = [layer.moe.last_aux_loss for layer in self.layers]
         losses.append(self.mtp_block.moe.last_aux_loss)
         return torch.stack([loss.to(self.get_device()) for loss in losses]).mean()
+
+    def _router_loss_components(self) -> tuple[torch.Tensor, torch.Tensor]:
+        modules = [layer.moe for layer in self.layers]
+        modules.append(self.mtp_block.moe)
+        balance = torch.stack(
+            [module.last_balance_loss.to(self.get_device()) for module in modules]
+        ).mean()
+        z_loss = torch.stack([module.last_z_loss.to(self.get_device()) for module in modules]).mean()
+        return balance, z_loss
+
+    def _router_diagnostics(self) -> dict[str, torch.Tensor]:
+        modules = [layer.moe for layer in self.layers]
+        modules.append(self.mtp_block.moe)
+        return {
+            "expert load cv": torch.stack(
+                [module.last_load_cv.to(self.get_device()) for module in modules]
+            ).mean(),
+            "expert max load / mean": torch.stack(
+                [module.last_max_load_ratio.to(self.get_device()) for module in modules]
+            ).mean(),
+            "router entropy": torch.stack(
+                [module.last_router_entropy.to(self.get_device()) for module in modules]
+            ).mean(),
+        }
+
+    def _token_cross_entropy(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        if logits.device.type == "cuda" and self.runtime_backend.startswith("te_"):
+            from transformer_engine.pytorch.cross_entropy import parallel_cross_entropy
+
+            return parallel_cross_entropy(
+                logits,
+                labels,
+                reduce_loss=False,
+                ignore_idx=-1,
+            )
+        return F.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            labels.reshape(-1),
+            ignore_index=-1,
+            reduction="none",
+        ).view_as(labels)
 
     def num_scaling_params(self) -> dict[str, int]:
         ngram = sum(parameter.numel() for parameter in self.ngram.parameters())
@@ -858,12 +1152,8 @@ class Qwen38FlashNext(nn.Module):
         if labels is None:
             return logits
 
-        losses = F.cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            labels.reshape(-1),
-            ignore_index=-1,
-            reduction="none",
-        ).view_as(labels)
+        cross_entropy_losses = self._token_cross_entropy(logits, labels)
+        mtp_contribution = torch.zeros_like(cross_entropy_losses)
         if seq_len > 1:
             mtp_input = hidden[:, :-1] + self.token_embedding(input_ids[:, 1:]).to(hidden.dtype)
             mtp_real_length = mtp_input.size(1)
@@ -884,15 +1174,20 @@ class Qwen38FlashNext(nn.Module):
             )
             mtp_logits = self.lm_head(self.final_norm(mtp_hidden)).float()
             mtp_logits = mtp_logits[:, :mtp_real_length]
-            mtp_losses = F.cross_entropy(
-                mtp_logits.reshape(-1, mtp_logits.size(-1)),
-                labels[:, 1:].reshape(-1),
-                ignore_index=-1,
-                reduction="none",
-            ).view(labels.size(0), seq_len - 1)
-            losses[:, :-1] = losses[:, :-1] + self.config.mtp_loss_weight * mtp_losses
+            mtp_losses = self._token_cross_entropy(mtp_logits, labels[:, 1:])
+            mtp_contribution[:, :-1] = self.config.mtp_loss_weight * mtp_losses
         valid = labels.ne(-1)
-        losses = losses + valid.to(losses.dtype) * self._router_aux_loss()
+        balance_loss, z_loss = self._router_loss_components()
+        losses = cross_entropy_losses + mtp_contribution
+        losses = losses + valid.to(losses.dtype) * (balance_loss + z_loss)
+        valid_count = valid.sum().clamp_min(1)
+        self.last_loss_metrics = {
+            "cross entropy": (cross_entropy_losses * valid).sum().detach() / valid_count,
+            "mtp loss": (mtp_contribution * valid).sum().detach() / valid_count,
+            "expert balance loss": balance_loss.detach(),
+            "router z loss": z_loss.detach(),
+            **{name: value.detach() for name, value in self._router_diagnostics().items()},
+        }
         if loss_reduction == "none":
             return losses
         if loss_reduction == "sum":

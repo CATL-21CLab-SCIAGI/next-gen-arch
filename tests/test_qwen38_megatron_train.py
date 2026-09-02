@@ -3,9 +3,17 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from archlab.architectures.qwen38_flash_next import Qwen38FlashNextConfig
+from archlab.megatron.qwen38_muon import (
+    FROBENIUS_EPSILON,
+    POLAR_EXPRESS_COEFFICIENTS,
+    polar_express_zeroth_power,
+)
 from archlab.megatron.qwen38_train import (
     BinaryTokenBatches,
     _data_prefixes,
+    _loss_func,
+    _megatron_argv,
     _parser,
     _partition_prefixes,
 )
@@ -57,3 +65,76 @@ def test_qwen38_training_defaults_to_bf16(tmp_path):
     )
 
     assert args.precision == "bf16"
+    assert args.gdn_kernel == "flash_qla"
+
+
+def test_megatron_argv_uses_exact_distributed_muon_and_speedups(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path / "data"),
+            "--tokenizer",
+            str(tmp_path / "tokenizer"),
+            "--run-dir",
+            str(tmp_path / "run"),
+        ]
+    )
+    argv = _megatron_argv(args, Qwen38FlashNextConfig())
+
+    expected_pairs = {
+        "--optimizer": "muon",
+        "--muon-momentum": "0.95",
+        "--muon-scale-mode": "spectral",
+        "--muon-extra-scale-factor": "0.2",
+        "--muon-fp32-matmul-prec": "medium",
+        "--muon-coefficient-type": "polar_express",
+        "--muon-num-ns-steps": "8",
+        "--muon-scalar-optimizer": "adam",
+    }
+    for flag, value in expected_pairs.items():
+        assert argv[argv.index(flag) + 1] == value
+    for flag in (
+        "--muon-nesterov",
+        "--muon-no-split-qkv",
+        "--use-distributed-optimizer",
+        "--overlap-grad-reduce",
+        "--overlap-param-gather",
+        "--ddp-pad-buckets-for-high-nccl-busbw",
+        "--optimizer-cuda-graph",
+    ):
+        assert flag in argv
+    assert "--no-gradient-accumulation-fusion" not in argv
+
+
+def test_loss_func_reports_expert_and_component_metrics():
+    output = torch.tensor([1.0, 3.0], requires_grad=True)
+    components = {
+        "cross entropy": torch.tensor(1.5),
+        "expert balance loss": torch.tensor(0.002),
+    }
+
+    loss, report = _loss_func(output, components)
+
+    assert loss.item() == 2.0
+    assert set(report) == {"lm loss", "cross entropy", "expert balance loss"}
+    assert torch.allclose(report["expert balance loss"], torch.tensor([0.002, 1.0]))
+
+
+def test_polar_express_kernel_is_batched_finite_and_exactly_eight_steps():
+    torch.manual_seed(23)
+    matrices = torch.randn(2, 4, 8)
+    batched = polar_express_zeroth_power(matrices, use_bfloat16_matmul=False)
+    separate = torch.cat(
+        [
+            polar_express_zeroth_power(matrix[None], use_bfloat16_matmul=False)
+            for matrix in matrices
+        ]
+    )
+    zeros = polar_express_zeroth_power(torch.zeros_like(matrices), use_bfloat16_matmul=False)
+
+    assert len(POLAR_EXPRESS_COEFFICIENTS) == 8
+    assert FROBENIUS_EPSILON == 1e-14
+    assert torch.allclose(batched, separate)
+    assert torch.isfinite(batched).all()
+    assert torch.equal(zeros, torch.zeros_like(zeros))

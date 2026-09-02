@@ -15,6 +15,10 @@ NGA_TOKENIZER="${NGA_TOKENIZER:-/mnt/oss/models/qwen38-flash-next-de4b8e4d43b9}"
 NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/qwen38-quarter-bf16-fineweb100b-seed42}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
 NGA_MEGATRON_ROOT="${NGA_MEGATRON_ROOT:-/opt/Megatron-Bridge/3rdparty/Megatron-LM}"
+NGA_FLASHQLA_ROOT="${NGA_FLASHQLA_ROOT:-/mnt/nas/evergreen/runtime/FlashQLA-7c7dfe1}"
+NGA_FLASHQLA_DEPS="${NGA_FLASHQLA_DEPS:-/mnt/nas/evergreen/runtime/flash-qla-0.1.2-py312}"
+NGA_FLASHQLA_COMMIT="${NGA_FLASHQLA_COMMIT:-7c7dfe16416ad21b1d03258189fc8d3b8460ae06}"
+NGA_GDN_KERNEL="${NGA_GDN_KERNEL:-flash_qla}"
 NGA_EXPECTED_NODES="${NGA_EXPECTED_NODES:-4}"
 NGA_GPUS_PER_NODE="${NGA_GPUS_PER_NODE:-8}"
 NGA_TOKENIZER_WORKERS="${NGA_TOKENIZER_WORKERS:-8}"
@@ -69,6 +73,10 @@ if [[ "$NGA_PRECISION" != "bf16" && "$NGA_PRECISION" != "fp4" ]]; then
     echo "NGA_PRECISION must be bf16 or fp4" >&2
     exit 1
 fi
+if [[ "$NGA_GDN_KERNEL" != "flash_qla" && "$NGA_GDN_KERNEL" != "fla" ]]; then
+    echo "NGA_GDN_KERNEL must be flash_qla or fla" >&2
+    exit 1
+fi
 if [[ "$NGA_DATA_ROOT" != /mnt/oss/datasets/* ]]; then
     echo "NGA_DATA_ROOT must be under the writable OSS mount /mnt/oss/datasets" >&2
     exit 1
@@ -89,6 +97,12 @@ test -d "$NGA_SOURCE_DATA"
 test -f "$NGA_SOURCE_MANIFEST"
 test -f "$NGA_TOKENIZER/config.json"
 test -f "$NGA_TOKENIZER/tokenizer.json"
+if [[ "$NGA_GDN_KERNEL" = "flash_qla" ]]; then
+    test -f "$NGA_FLASHQLA_ROOT/flash_qla/__init__.py"
+    test -d "$NGA_FLASHQLA_DEPS/tilelang"
+    test "$(git -C "$NGA_FLASHQLA_ROOT" rev-parse HEAD)" = "$NGA_FLASHQLA_COMMIT"
+    test -z "$(git -C "$NGA_FLASHQLA_ROOT" status --porcelain=v1 --untracked-files=all)"
+fi
 if [[ "$NGA_RUNTIME_PREFLIGHT" = "1" ]]; then
     test -f "$NGA_PREFLIGHT_DATA_ROOT/DATA_READY.json"
 fi
@@ -104,19 +118,24 @@ export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export PATH="$(dirname "$NGA_PYTHON"):$CUDA_HOME/bin:$PATH"
 export CPATH="$CUDA_HOME/targets/x86_64-linux/include${CPATH:+:$CPATH}"
 export TRITON_PTXAS_PATH="${TRITON_PTXAS_PATH:-$CUDA_HOME/bin/ptxas}"
-export PYTHONPATH="$NGA_REPO_ROOT/src:$NGA_MEGATRON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$NGA_FLASHQLA_ROOT:$NGA_FLASHQLA_DEPS:$NGA_REPO_ROOT/src:$NGA_MEGATRON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TOKENIZERS_PARALLELISM=true
 export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-24}"
-export NVTE_ALLOW_NONDETERMINISTIC_ALGO=0
+export NVTE_ALLOW_NONDETERMINISTIC_ALGO="${NGA_ALLOW_NONDETERMINISTIC_ALGO:-1}"
+unset NVTE_GROUPED_LINEAR_SINGLE_PARAM
 export NGA_CONTAINER_DIGEST="${NGA_CONTAINER_DIGEST:-sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06}"
 export NGA_OUTPUT_ROOT NGA_EXPECTED_NODES NGA_GPUS_PER_NODE NGA_TOKENIZER
+export NGA_FLASHQLA_ROOT NGA_FLASHQLA_COMMIT NGA_GDN_KERNEL
 
 mkdir -p "$NGA_DATA_ROOT" "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/checkpoints"
 
 "$NGA_PYTHON" - <<'PY'
+import importlib.metadata
 import json, os
 from pathlib import Path
+
+import torch
 
 root = Path(os.environ["NGA_TOKENIZER"])
 config = json.loads((root / "config.json").read_text())
@@ -134,6 +153,21 @@ if config.get("model_type") != "qwen4_exp":
     drift["outer_model_type"] = (config.get("model_type"), "qwen4_exp")
 if drift:
     raise SystemExit(f"pinned Qwen3.8 config drift: {drift}")
+
+if os.environ.get("NGA_GDN_KERNEL", "flash_qla") == "flash_qla":
+    import flash_qla
+    import tilelang
+
+    capability = torch.cuda.get_device_capability()
+    if capability not in {(9, 0), (10, 0), (10, 3), (12, 0), (12, 1)}:
+        raise SystemExit(f"FlashQLA does not support CUDA capability {capability}")
+    expected = {"tilelang": "0.1.9", "apache-tvm-ffi": "0.1.9"}
+    versions = {name: importlib.metadata.version(name) for name in expected}
+    if versions != expected:
+        raise SystemExit(f"FlashQLA dependency drift: {versions} != {expected}")
+    expected_root = str(Path(os.environ["NGA_FLASHQLA_ROOT"]).resolve()) + "/"
+    if not str(Path(flash_qla.__file__).resolve()).startswith(expected_root):
+        raise SystemExit(f"unexpected FlashQLA source: {flash_qla.__file__}")
 PY
 
 "$NGA_PYTHON" -m torch.distributed.run \
@@ -158,12 +192,13 @@ if [[ "$NGA_RUNTIME_PREFLIGHT" = "1" && ! -f "$NGA_OUTPUT_ROOT/preflight/PROBE_C
         --tokenizer "$NGA_TOKENIZER" \
         --run-dir "$NGA_OUTPUT_ROOT/preflight" \
         --precision "$NGA_PRECISION" \
+        --gdn-kernel "$NGA_GDN_KERNEL" \
         --sequence-length 128 \
         --micro-batch-size 1 \
         --global-batch-size "$((NGA_EXPECTED_NODES * NGA_GPUS_PER_NODE))" \
         --checkpoint-interval-tokens 4096 \
-        --probe-steps 2 \
-        --eval-interval 2 \
+        --probe-steps 5 \
+        --eval-interval 5 \
         --eval-iters 1 \
         --log-interval 1 \
         --seed 42 \
@@ -246,6 +281,7 @@ train_args=(
     --tokenizer "$NGA_TOKENIZER"
     --run-dir "$NGA_OUTPUT_ROOT"
     --precision "$NGA_PRECISION"
+    --gdn-kernel "$NGA_GDN_KERNEL"
     --sequence-length "$NGA_SEQUENCE_LENGTH"
     --micro-batch-size "$NGA_MICRO_BATCH_SIZE"
     --global-batch-size "$NGA_GLOBAL_BATCH_SIZE"
