@@ -25,6 +25,8 @@ NGA_EXPECTED_TRAIN_PARTS="${NGA_EXPECTED_TRAIN_PARTS:-$((NGA_EXPECTED_NODES * NG
 NGA_DOCUMENT_BATCH_SIZE="${NGA_DOCUMENT_BATCH_SIZE:-512}"
 NGA_DATA_WAIT_SECONDS="${NGA_DATA_WAIT_SECONDS:-86400}"
 NGA_PREPARE_DATA="${NGA_PREPARE_DATA:-1}"
+NGA_RUNTIME_PREFLIGHT="${NGA_RUNTIME_PREFLIGHT:-1}"
+NGA_PREFLIGHT_DATA_ROOT="${NGA_PREFLIGHT_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100BT-qwen2p5-c0382117-v1}"
 NGA_SEQUENCE_LENGTH="${NGA_SEQUENCE_LENGTH:-2048}"
 NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-1}"
 NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-512}"
@@ -58,6 +60,10 @@ if [[ "$NGA_PREPARE_DATA" != "0" && "$NGA_PREPARE_DATA" != "1" ]]; then
     echo "NGA_PREPARE_DATA must be 0 or 1" >&2
     exit 1
 fi
+if [[ "$NGA_RUNTIME_PREFLIGHT" != "0" && "$NGA_RUNTIME_PREFLIGHT" != "1" ]]; then
+    echo "NGA_RUNTIME_PREFLIGHT must be 0 or 1" >&2
+    exit 1
+fi
 if ((NGA_PROBE_STEPS < 0)); then
     echo "NGA_PROBE_STEPS must be non-negative" >&2
     exit 1
@@ -74,6 +80,9 @@ test -d "$NGA_SOURCE_DATA"
 test -f "$NGA_SOURCE_MANIFEST"
 test -f "$NGA_TOKENIZER/config.json"
 test -f "$NGA_TOKENIZER/tokenizer.json"
+if [[ "$NGA_RUNTIME_PREFLIGHT" = "1" ]]; then
+    test -f "$NGA_PREFLIGHT_DATA_ROOT/DATA_READY.json"
+fi
 test "$(git -C "$NGA_REPO_ROOT" rev-parse HEAD)" = "$NGA_EXPECTED_COMMIT"
 repo_drift="$({ git -C "$NGA_REPO_ROOT" status --porcelain=v1 --untracked-files=all || true; } \
     | grep -Ev '^\?\? (\.LAUNCH_READY|repo-head\.txt)$' || true)"
@@ -127,6 +136,32 @@ PY
     --module archlab.megatron.collective_probe \
     2>&1 | tee -a "$NGA_OUTPUT_ROOT/logs/collective-node-$RANK.log"
 test -f "$NGA_OUTPUT_ROOT/COLLECTIVE_VALIDATED.json"
+
+if [[ "$NGA_RUNTIME_PREFLIGHT" = "1" && ! -f "$NGA_OUTPUT_ROOT/preflight/PROBE_COMPLETE.json" ]]; then
+    "$NGA_PYTHON" -m torch.distributed.run \
+        --nnodes="$WORLD_SIZE" \
+        --nproc-per-node="$NGA_GPUS_PER_NODE" \
+        --node-rank="$RANK" \
+        --master-addr="$MASTER_ADDR" \
+        --master-port="$MASTER_PORT" \
+        --module archlab.megatron.qwen38_train \
+        --data-root "$NGA_PREFLIGHT_DATA_ROOT" \
+        --tokenizer "$NGA_TOKENIZER" \
+        --run-dir "$NGA_OUTPUT_ROOT/preflight" \
+        --sequence-length 128 \
+        --micro-batch-size 1 \
+        --global-batch-size "$((NGA_EXPECTED_NODES * NGA_GPUS_PER_NODE))" \
+        --checkpoint-interval-tokens 4096 \
+        --probe-steps 2 \
+        --eval-interval 2 \
+        --eval-iters 1 \
+        --log-interval 1 \
+        --seed 42 \
+        2>&1 | tee -a "$NGA_OUTPUT_ROOT/logs/preflight-node-$RANK.log"
+fi
+if [[ "$NGA_RUNTIME_PREFLIGHT" = "1" ]]; then
+    test -f "$NGA_OUTPUT_ROOT/preflight/PROBE_COMPLETE.json"
+fi
 
 if [[ "$NGA_PREPARE_DATA" = "1" && ! -f "$NGA_DATA_ROOT/DATA_READY.json" ]]; then
     "$NGA_PYTHON" -m archlab.megatron.data convert-parquet \
