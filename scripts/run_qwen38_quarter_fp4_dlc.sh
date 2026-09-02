@@ -9,7 +9,7 @@ set -euo pipefail
 NGA_REPO_ROOT="${NGA_REPO_ROOT:-/mnt/nas/evergreen/next-gen-arch-qwen38-fp4}"
 NGA_EXPECTED_COMMIT="${NGA_EXPECTED_COMMIT:?set the immutable next-gen-arch commit}"
 NGA_SOURCE_DATA="${NGA_SOURCE_DATA:-/mnt/oss-dataset/datasets/AI-ModelScope/fineweb-edu/sample/100BT}"
-NGA_SOURCE_MANIFEST="${NGA_SOURCE_MANIFEST:-/mnt/oss/datasets/fineweb-edu-100BT-qwen2p5/SOURCE_MANIFEST.json}"
+NGA_SOURCE_MANIFEST="${NGA_SOURCE_MANIFEST:-/mnt/oss/datasets/fineweb-edu-100BT-qwen2p5-c0382117-v1/SOURCE_MANIFEST.json}"
 NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100BT-qwen38-de4b8e4d43b9}"
 NGA_TOKENIZER="${NGA_TOKENIZER:-/mnt/oss/models/qwen38-flash-next-de4b8e4d43b9}"
 NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/qwen38-quarter-fp4-fineweb100b-seed42}"
