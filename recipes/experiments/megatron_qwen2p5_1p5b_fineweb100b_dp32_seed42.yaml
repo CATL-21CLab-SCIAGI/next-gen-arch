@@ -13,6 +13,6 @@ parallelism:
   context: 1
   expert: 1
 training:
-  precision: fp8_mxfp8
+  precision: bf16
   save_interval: 4768
   async_save: false

@@ -116,11 +116,10 @@ def test_qwen15b_recipe_uses_cuda13_safe_te_flash_contract(monkeypatch, tmp_path
     assert "--async-save" not in plan.argv
     assert plan.argv[plan.argv.index("--ckpt-format") + 1] == "torch_dist"
     assert "--no-persist-layer-norm" not in plan.argv
-    assert plan.metadata["precision"] == "fp8_mxfp8"
-    assert plan.argv[plan.argv.index("--fp8-format") + 1] == "hybrid"
-    assert plan.argv[plan.argv.index("--fp8-recipe") + 1] == "mxfp8"
-    assert "--fp8-param-gather" in plan.argv
-    assert "--reuse-grad-buf-for-mxfp8-param-ag" in plan.argv
+    assert plan.metadata["precision"] == "bf16"
+    assert "--fp8-format" not in plan.argv
+    assert "--fp8-recipe" not in plan.argv
+    assert "--fp8-param-gather" not in plan.argv
     assert plan.argv[plan.argv.index("--save-interval") + 1] == "4768"
 
 

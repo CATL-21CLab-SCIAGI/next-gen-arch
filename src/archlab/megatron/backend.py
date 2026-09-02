@@ -237,10 +237,8 @@ class MegatronBackend:
             raise SpecError("target_train_tokens is smaller than one global batch")
         effective_tokens = train_iters * tokens_per_iteration
         precision = str(training.get("precision", "bf16"))
-        if precision not in {"bf16", "fp8_mxfp8"}:
+        if precision != "bf16":
             raise SpecError(f"unsupported Megatron precision recipe: {precision}")
-        if precision == "fp8_mxfp8" and model.get("transformer_impl") != "transformer_engine":
-            raise SpecError("fp8_mxfp8 requires model.transformer_impl=transformer_engine")
 
         if nodes == 1:
             launcher = ["torchrun", "--standalone", f"--nproc-per-node={gpus}"]
@@ -329,17 +327,6 @@ class MegatronBackend:
             "--log-interval",
             str(training.get("log_interval", 1)),
         ]
-        if precision == "fp8_mxfp8":
-            argv.extend(
-                (
-                    "--fp8-format",
-                    "hybrid",
-                    "--fp8-recipe",
-                    "mxfp8",
-                    "--fp8-param-gather",
-                    "--reuse-grad-buf-for-mxfp8-param-ag",
-                )
-            )
         if not bool(model.get("tie_word_embeddings", False)):
             argv.append("--untie-embeddings-and-output-weights")
         if bool(model.get("add_qkv_bias", False)):

@@ -136,7 +136,7 @@ parser.add_argument(
     "--precision-recipe",
     type=str,
     default="bf16",
-    choices=["bf16", "fp8_full", "fp4_blackwell"],
+    choices=["bf16", "fp4_blackwell"],
     help="controlled precision recipe for the FOG family",
 )
 parser.add_argument(

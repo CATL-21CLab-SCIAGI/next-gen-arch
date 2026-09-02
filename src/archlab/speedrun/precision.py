@@ -133,7 +133,7 @@ def is_full_context_window_pattern(window_pattern: str) -> bool:
 
 
 def precision_recipe_requires_full_context_window(precision_recipe: str) -> bool:
-    return precision_recipe in {"fp8_full", "fp4_blackwell"}
+    return precision_recipe == "fp4_blackwell"
 
 
 def resolve_precision_backend(
@@ -160,22 +160,6 @@ def resolve_precision_backend(
         raise ValueError(f"Unsupported stochastic_rounding mode: {stochastic_rounding}")
     if split_accumulator not in {"auto", "split", "fast"}:
         raise ValueError(f"Unsupported split_accumulator mode: {split_accumulator}")
-    if precision_recipe == "fp8_full":
-        if not is_blackwell_gpu_name(gpu_name):
-            raise RuntimeError(
-                f"fp8_full is reserved for Blackwell MXFP8 runs; found '{gpu_name}'. "
-                "Use bf16 on non-Blackwell systems instead of the legacy delayed-scaling fallback."
-            )
-        if stochastic_rounding != "auto":
-            raise RuntimeError(
-                "fp8_full uses Transformer Engine MXFP8BlockScaling, which does not expose a public "
-                "stochastic-rounding control."
-            )
-        if split_accumulator != "auto":
-            raise RuntimeError(
-                "fp8_full uses Transformer Engine MXFP8BlockScaling, which does not expose a public "
-                "split-accumulator control."
-            )
     if precision_recipe == "fp4_blackwell" and not is_blackwell_gpu_name(gpu_name):
         raise RuntimeError(f"fp4_blackwell requires Blackwell hardware, found '{gpu_name}'")
 
@@ -186,29 +170,6 @@ def resolve_precision_backend(
             f"{precision_recipe} requires NVIDIA Transformer Engine to be installed"
         ) from exc
 
-    if precision_recipe == "fp8_full":
-        if not hasattr(recipe, "MXFP8BlockScaling"):
-            raise RuntimeError("Installed Transformer Engine does not expose MXFP8BlockScaling")
-        ok, reason = _probe_availability(te, "is_mxfp8_available")
-        if not ok:
-            raise RuntimeError(f"MXFP8 is unavailable on this runtime: {reason}")
-        format_enum = getattr(recipe, "Format", None)
-        mxfp8_kwargs = {}
-        fp8_format = getattr(format_enum, "E4M3", None) if format_enum is not None else None
-        if fp8_format is not None:
-            mxfp8_kwargs["fp8_format"] = fp8_format
-        return PrecisionBackend(
-            precision_recipe="fp8_full",
-            runtime_backend="te_fp8",
-            reason="Transformer Engine MXFP8 block scaling (Blackwell-only, full E4M3)",
-            te_module=te,
-            te_recipe=recipe.MXFP8BlockScaling(**mxfp8_kwargs),
-            te_recipe_name="MXFP8BlockScaling",
-            requires_materialized_construction=True,
-            stochastic_rounding="implicit_mxfp8",
-            split_accumulator="implicit_mxfp8",
-            requires_full_context_window=True,
-        )
     if precision_recipe == "fp4_blackwell":
         if not hasattr(recipe, "NVFP4BlockScaling"):
             raise RuntimeError("Installed Transformer Engine does not expose NVFP4BlockScaling")

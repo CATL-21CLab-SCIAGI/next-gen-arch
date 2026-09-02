@@ -12,7 +12,7 @@ NGA_SOURCE_DATA="${NGA_SOURCE_DATA:-/mnt/oss-dataset/datasets/AI-ModelScope/fine
 NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100BT-qwen2p5}"
 NGA_SOURCE_MANIFEST="${NGA_SOURCE_MANIFEST:-$NGA_DATA_ROOT/SOURCE_MANIFEST.json}"
 NGA_TOKENIZER="${NGA_TOKENIZER:-/mnt/oss/models/qwen2.5-1.5b-8faed761d45a}"
-NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/fineweb-edu100b-qwen2p5-1p5b-mxfp8-dp32-seed42}"
+NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/fineweb-edu100b-qwen2p5-1p5b-bf16-dp32-seed42}"
 NGA_MODEL_EXPORT_ROOT="${NGA_MODEL_EXPORT_ROOT:-/mnt/oss/models/${NGA_OUTPUT_ROOT##*/}}"
 NGA_LM_EVAL_SITE="${NGA_LM_EVAL_SITE:-/mnt/nas/evergreen/runtime/lm-eval-0.4.13}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
@@ -30,9 +30,6 @@ NGA_SAVE_INTERVAL="${NGA_SAVE_INTERVAL:-4768}"
 NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-32}"
 NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-1024}"
 NGA_TRAIN_ITERS="${NGA_TRAIN_ITERS:-47684}"
-NGA_ENABLE_FP8="${NGA_ENABLE_FP8:-1}"
-NGA_OVERLAP_MXFP8_PARAM_GATHER="${NGA_OVERLAP_MXFP8_PARAM_GATHER:-0}"
-NGA_REPAIR_MXFP8_FROM_OPTIMIZER="${NGA_REPAIR_MXFP8_FROM_OPTIMIZER:-1}"
 NGA_RUN_EVAL="${NGA_RUN_EVAL:-1}"
 
 if [[ "$WORLD_SIZE" != "$NGA_EXPECTED_NODES" ]]; then
@@ -55,18 +52,6 @@ for value in \
         exit 1
     fi
 done
-if [[ "$NGA_ENABLE_FP8" != "0" && "$NGA_ENABLE_FP8" != "1" ]]; then
-    echo "NGA_ENABLE_FP8 must be 0 or 1" >&2
-    exit 1
-fi
-if [[ "$NGA_OVERLAP_MXFP8_PARAM_GATHER" != "0" && "$NGA_OVERLAP_MXFP8_PARAM_GATHER" != "1" ]]; then
-    echo "NGA_OVERLAP_MXFP8_PARAM_GATHER must be 0 or 1" >&2
-    exit 1
-fi
-if [[ "$NGA_REPAIR_MXFP8_FROM_OPTIMIZER" != "0" && "$NGA_REPAIR_MXFP8_FROM_OPTIMIZER" != "1" ]]; then
-    echo "NGA_REPAIR_MXFP8_FROM_OPTIMIZER must be 0 or 1" >&2
-    exit 1
-fi
 if [[ "$NGA_RUN_EVAL" != "0" && "$NGA_RUN_EVAL" != "1" ]]; then
     echo "NGA_RUN_EVAL must be 0 or 1" >&2
     exit 1
@@ -107,19 +92,10 @@ export NGA_REPO_ROOT NGA_EXPECTED_COMMIT NGA_SOURCE_DATA NGA_SOURCE_MANIFEST
 export NGA_DATA_ROOT NGA_TOKENIZER NGA_OUTPUT_ROOT NGA_MODEL_EXPORT_ROOT
 export NGA_LM_EVAL_SITE
 export NGA_MICRO_BATCH_SIZE NGA_GLOBAL_BATCH_SIZE NGA_TRAIN_ITERS
-export NGA_GPUS_PER_NODE NGA_EXPECTED_NODES NGA_EXPECTED_TRAIN_PARTS NGA_ENABLE_FP8
-export NGA_SAVE_INTERVAL NGA_OVERLAP_MXFP8_PARAM_GATHER NGA_REPAIR_MXFP8_FROM_OPTIMIZER
+export NGA_GPUS_PER_NODE NGA_EXPECTED_NODES NGA_EXPECTED_TRAIN_PARTS
+export NGA_SAVE_INTERVAL
 
 mkdir -p "$NGA_DATA_ROOT" "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/data-cache"
-
-if [[ "$NGA_REPAIR_MXFP8_FROM_OPTIMIZER" = "1" ]]; then
-    megatron_runtime_root="/opt/Megatron-Bridge/3rdparty/Megatron-LM"
-    megatron_training_file="$megatron_runtime_root/megatron/training/training.py"
-    megatron_repair_patch="$NGA_REPO_ROOT/patches/nemo2606-megatron-mxfp8-checkpoint-repair.patch"
-    if ! grep -q "Rebuilt MXFP8 model parameters from FP32 optimizer masters" "$megatron_training_file"; then
-        patch --batch --forward -p1 -d "$megatron_runtime_root" < "$megatron_repair_patch"
-    fi
-fi
 
 "$NGA_PYTHON" -m torch.distributed.run \
     --nnodes="$WORLD_SIZE" \
@@ -286,12 +262,9 @@ payload = {
     "checkpoint_interval_steps": int(os.environ.get("NGA_SAVE_INTERVAL", "4768")),
     "checkpoint_interval_tokens": int(os.environ.get("NGA_SAVE_INTERVAL", "4768")) * tokens_per_iteration,
     "precision": {
-        "transformer_compute": "MXFP8 hybrid" if os.environ["NGA_ENABLE_FP8"] == "1" else "BF16",
+        "transformer_compute": "BF16",
         "master_weights": "BF16",
         "optimizer_state": "FP32",
-        "fp8_parameter_gather": os.environ["NGA_ENABLE_FP8"] == "1",
-        "reuse_mxfp8_gradient_buffer": os.environ["NGA_ENABLE_FP8"] == "1",
-        "overlap_mxfp8_parameter_gather": os.environ["NGA_OVERLAP_MXFP8_PARAM_GATHER"] == "1",
     },
     "evaluation": {
         "harness": "lm_eval==0.4.13",
@@ -328,19 +301,6 @@ if [[ "${#valid_prefixes[@]}" != "1" ]]; then
     exit 1
 fi
 
-fp8_args=()
-if [[ "$NGA_ENABLE_FP8" = "1" ]]; then
-    fp8_args=(
-        --fp8-format hybrid
-        --fp8-recipe mxfp8
-        --fp8-param-gather
-        --reuse-grad-buf-for-mxfp8-param-ag
-    )
-fi
-overlap_param_gather_args=()
-if [[ "$NGA_OVERLAP_MXFP8_PARAM_GATHER" = "1" ]]; then
-    overlap_param_gather_args=(--overlap-param-gather)
-fi
 load_args=()
 if [[ -f "$NGA_OUTPUT_ROOT/checkpoints/latest_checkpointed_iteration.txt" ]]; then
     checkpoint_iteration="$(tr -d '[:space:]' < "$NGA_OUTPUT_ROOT/checkpoints/latest_checkpointed_iteration.txt")"
@@ -402,10 +362,9 @@ if [[ ! -f "$NGA_OUTPUT_ROOT/TRAINING_COMPLETE.json" ]]; then
         --weight-decay 0.1 \
         --clip-grad 1.0 \
         --bf16 \
-        "${fp8_args[@]}" \
         --use-distributed-optimizer \
         --overlap-grad-reduce \
-        "${overlap_param_gather_args[@]}" \
+        --overlap-param-gather \
         --tokenizer-type HuggingFaceTokenizer \
         --tokenizer-model "$NGA_TOKENIZER" \
         --train-data-path "${train_prefixes[@]}" \
