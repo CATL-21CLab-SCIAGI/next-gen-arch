@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -104,12 +105,63 @@ def _valid_hf_export(path: Path) -> bool:
     )
 
 
-def _export_hf(checkpoint: Path, reference: Path, output: Path) -> None:
-    if _valid_hf_export(output):
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _is_oss_path(path: Path) -> bool:
+    try:
+        path.relative_to("/mnt/oss")
+    except ValueError:
+        return False
+    return True
+
+
+def _copy_export_to_oss(source: Path, output: Path) -> None:
+    """Copy a complete NAS export to OSS without unsupported rename/copystat calls."""
+    marker = output / "EXPORT_COPY_COMPLETE.json"
+    if _valid_hf_export(output) and marker.is_file():
         return
-    if output.exists():
-        raise RuntimeError(f"incomplete HF export already occupies final path: {output}")
-    temporary = output.with_name(f".{output.name}.incomplete-{os.getpid()}")
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    for source_file in sorted(path for path in source.rglob("*") if path.is_file()):
+        relative = source_file.relative_to(source)
+        target = output / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_file, target)
+        source_hash = _sha256(source_file)
+        target_hash = _sha256(target)
+        if source_hash != target_hash:
+            raise RuntimeError(f"HF export copy hash mismatch: {relative}")
+        manifest.append(
+            {
+                "path": str(relative),
+                "bytes": source_file.stat().st_size,
+                "sha256": source_hash,
+            }
+        )
+    if not _valid_hf_export(output):
+        raise RuntimeError(f"copied HF export is incomplete: {output}")
+    marker.write_text(json.dumps({"source": str(source), "files": manifest}, sort_keys=True) + "\n")
+
+
+def _export_hf(checkpoint: Path, reference: Path, output: Path) -> None:
+    oss_output = _is_oss_path(output)
+    copy_marker = output / "EXPORT_COPY_COMPLETE.json"
+    if _valid_hf_export(output) and (not oss_output or copy_marker.is_file()):
+        return
+    export_output = (
+        checkpoint.parent.parent / "hf-export-staging" / checkpoint.name / output.name
+        if oss_output
+        else output
+    )
+    if not _valid_hf_export(export_output) and export_output.exists():
+        raise RuntimeError(f"incomplete HF export already occupies staging path: {export_output}")
+    temporary = export_output.with_name(f".{export_output.name}.incomplete-{os.getpid()}")
     if temporary.exists():
         raise RuntimeError(f"temporary export path already exists: {temporary}")
     temporary.parent.mkdir(parents=True, exist_ok=True)
@@ -120,39 +172,42 @@ def _export_hf(checkpoint: Path, reference: Path, output: Path) -> None:
         temporary_distributed_context,
     )
 
-    bridge = AutoBridge.from_hf_pretrained(str(reference))
-    # ``pretrain_gpt.py`` checkpoints carry Megatron-LM args rather than a
-    # Megatron-Bridge run_config. Keep the Gloo process group alive across both
-    # loading and conversion, and identify the raw model family explicitly.
-    with temporary_distributed_context(backend="gloo"):
-        model = load_megatron_model(
-            str(checkpoint),
-            model_type="gpt",
-            use_cpu_init=True,
-            skip_temp_dist_context=True,
-        )
-        bridge.save_hf_pretrained(
-            model,
-            str(temporary),
-            show_progress=True,
-            strict=True,
-            source_path=str(reference),
-        )
-    for name in (
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "special_tokens_map.json",
-        "generation_config.json",
-        "merges.txt",
-        "vocab.json",
-    ):
-        source = reference / name
-        target = temporary / name
-        if source.is_file() and not target.exists():
-            shutil.copy2(source, target)
-    if not _valid_hf_export(temporary):
-        raise RuntimeError(f"HF export is incomplete: {temporary}")
-    os.replace(temporary, output)
+    if not _valid_hf_export(export_output):
+        bridge = AutoBridge.from_hf_pretrained(str(reference))
+        # ``pretrain_gpt.py`` checkpoints carry Megatron-LM args rather than a
+        # Megatron-Bridge run_config. Keep the Gloo process group alive across both
+        # loading and conversion, and identify the raw model family explicitly.
+        with temporary_distributed_context(backend="gloo"):
+            model = load_megatron_model(
+                str(checkpoint),
+                model_type="gpt",
+                use_cpu_init=True,
+                skip_temp_dist_context=True,
+            )
+            bridge.save_hf_pretrained(
+                model,
+                str(temporary),
+                show_progress=True,
+                strict=True,
+                source_path=str(reference),
+            )
+        for name in (
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+            "generation_config.json",
+            "merges.txt",
+            "vocab.json",
+        ):
+            source = reference / name
+            target = temporary / name
+            if source.is_file() and not target.exists():
+                shutil.copy2(source, target)
+        if not _valid_hf_export(temporary):
+            raise RuntimeError(f"HF export is incomplete: {temporary}")
+        os.replace(temporary, export_output)
+    if oss_output:
+        _copy_export_to_oss(export_output, output)
 
 
 EASY_TASKS = (
