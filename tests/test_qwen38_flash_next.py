@@ -131,8 +131,8 @@ def test_grouped_token_padding_preserves_real_rows_and_gradients():
 
     padded, padded_splits, real_indices = _pad_grouped_tokens(inputs, splits)
 
-    assert padded.shape == (48, 3)
-    assert padded_splits.tolist() == [16, 0, 16, 16]
+    assert padded.shape == (192, 3)
+    assert padded_splits.tolist() == [64, 0, 64, 64]
     assert torch.equal(padded.index_select(0, real_indices), inputs)
     padded.index_select(0, real_indices).sum().backward()
     assert torch.equal(inputs.grad, torch.ones_like(inputs))

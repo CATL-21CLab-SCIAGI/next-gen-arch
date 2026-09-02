@@ -303,7 +303,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "recipe": "Transformer Engine NVFP4BlockScaling",
             "stochastic_rounding": True,
             "two_dimensional_quantization": True,
-            "moe_grouped_token_padding_multiple": 16,
+            "moe_grouped_token_padding_multiple": 64,
             "moe_grouped_linear_max_experts": 64,
             "bf16_exceptions": [
                 "routing logits",

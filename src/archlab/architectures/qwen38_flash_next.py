@@ -487,7 +487,7 @@ def _pad_grouped_tokens(
     inputs: torch.Tensor,
     m_splits: torch.Tensor,
     *,
-    multiple: int = 16,
+    multiple: int = 64,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Pad each sorted expert segment and return indices of the real rows."""
     if multiple < 1:
@@ -531,7 +531,9 @@ class SparseMoE(nn.Module):
         self.top_k = config.num_experts_per_token
         self.router_aux_coefficient = config.router_aux_loss_coefficient
         self.router_z_coefficient = config.router_z_loss_coefficient
-        self.grouped_token_multiple = 16 if runtime_backend == "te_fp4" else 1
+        # TE 2.16's grouped NVFP4 Hadamard transform requires every expert's
+        # M split to be a multiple of 64 (a stricter bound than GEMM's M%16).
+        self.grouped_token_multiple = 64 if runtime_backend == "te_fp4" else 1
         self.router = NativeLinear(config.hidden_size, self.num_experts, bias=False)
         self.expert_up = _grouped_linear(
             self.num_experts,
