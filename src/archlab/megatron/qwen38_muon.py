@@ -43,6 +43,16 @@ def _combine_grad_norms(norms: list[float | torch.Tensor]) -> float | torch.Tens
     return torch.stack(values).square().sum().sqrt()
 
 
+def _canonical_optimizer_step(steps: list[int | torch.Tensor]) -> int | torch.Tensor | None:
+    """Validate equal chained-optimizer counters by value, not tensor identity."""
+    if not steps:
+        return None
+    values = [int(step.item()) if isinstance(step, torch.Tensor) else int(step) for step in steps]
+    if len(set(values)) != 1:
+        raise ValueError(f"chained optimizer step counters diverged: {values}")
+    return steps[0]
+
+
 def polar_express_zeroth_power(
     matrices: torch.Tensor,
     *,
@@ -89,6 +99,9 @@ def muon_recipe_contract() -> dict[str, Any]:
         },
         "optimizer_cuda_graph_compatibility": (
             "repository-local capture-safe chained grad-norm reduction; no host scalar conversion"
+        ),
+        "checkpoint_step_compatibility": (
+            "repository-local value comparison for equal capturable CUDA step tensors"
         ),
     }
 
@@ -239,6 +252,19 @@ def install_qwen38_muon_adapter(config) -> None:
         num_zeros = self.count_zeros() if self.config.log_num_zeros_in_grad else None
         return self.step_with_ready_grads(), grad_norm, num_zeros
 
+    def checkpoint_safe_synchronize_steps(self):
+        groups = [
+            group
+            for optimizer in self.chained_optimizers
+            for group in optimizer.optimizer.param_groups
+            if group["params"] and "step" in group
+        ]
+        step = _canonical_optimizer_step([group["step"] for group in groups])
+        for group in groups:
+            group["step"] = step
+        return step
+
     chained_optimizer.get_grad_norm = capture_safe_get_grad_norm
     chained_optimizer.step = capture_safe_step
+    chained_optimizer._synchronize_steps = checkpoint_safe_synchronize_steps
     chained_optimizer._archlab_qwen38_capture_safe = True

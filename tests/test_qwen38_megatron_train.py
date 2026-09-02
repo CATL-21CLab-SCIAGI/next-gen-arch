@@ -8,6 +8,7 @@ from archlab.architectures.qwen38_flash_next import Qwen38FlashNextConfig
 from archlab.megatron.qwen38_muon import (
     FROBENIUS_EPSILON,
     POLAR_EXPRESS_COEFFICIENTS,
+    _canonical_optimizer_step,
     _combine_grad_norms,
     _validate_local_matrix_metadata,
     polar_express_zeroth_power,
@@ -160,3 +161,12 @@ def test_chained_grad_norm_combination_stays_on_device():
     assert isinstance(combined, torch.Tensor)
     assert combined.device == first.device
     assert combined.item() == 5.0
+
+
+def test_capturable_optimizer_steps_compare_by_value_not_tensor_identity():
+    first = torch.tensor([5], dtype=torch.int32)
+    second = torch.tensor([5], dtype=torch.int32)
+
+    assert _canonical_optimizer_step([first, second]) is first
+    with pytest.raises(ValueError, match="diverged"):
+        _canonical_optimizer_step([first, torch.tensor([6], dtype=torch.int32)])
