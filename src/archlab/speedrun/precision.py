@@ -160,9 +160,6 @@ def resolve_precision_backend(
         raise ValueError(f"Unsupported stochastic_rounding mode: {stochastic_rounding}")
     if split_accumulator not in {"auto", "split", "fast"}:
         raise ValueError(f"Unsupported split_accumulator mode: {split_accumulator}")
-    if precision_recipe == "fp4_blackwell" and not is_blackwell_gpu_name(gpu_name):
-        raise RuntimeError(f"fp4_blackwell requires Blackwell hardware, found '{gpu_name}'")
-
     try:
         te, recipe = _import_transformer_engine()
     except ImportError as exc:
@@ -173,9 +170,17 @@ def resolve_precision_backend(
     if precision_recipe == "fp4_blackwell":
         if not hasattr(recipe, "NVFP4BlockScaling"):
             raise RuntimeError("Installed Transformer Engine does not expose NVFP4BlockScaling")
+        if not hasattr(te, "is_nvfp4_available"):
+            raise RuntimeError(
+                "Installed Transformer Engine cannot verify NVFP4 runtime support; "
+                f"refusing fp4_blackwell on reported GPU '{gpu_name}'"
+            )
         ok, reason = _probe_availability(te, "is_nvfp4_available")
         if not ok:
-            raise RuntimeError(f"NVFP4 is unavailable on this runtime: {reason}")
+            detail = f": {reason}" if reason else ""
+            raise RuntimeError(
+                f"NVFP4 is unavailable on reported GPU '{gpu_name}' and this runtime{detail}"
+            )
         if split_accumulator != "auto":
             raise RuntimeError(
                 "fp4_blackwell uses Transformer Engine NVFP4BlockScaling, which does not expose a public "
