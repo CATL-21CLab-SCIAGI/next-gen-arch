@@ -212,7 +212,9 @@ class CausalDepthwiseConv1d(nn.Module):
             try:
                 from fla.modules.convolution import causal_conv1d
             except ImportError as error:  # pragma: no cover - container probe
-                raise RuntimeError("Qwen3.8 GDN requires the validated fla-core CUDA kernel") from error
+                raise RuntimeError(
+                    "Qwen3.8 GDN requires the validated fla-core CUDA kernel"
+                ) from error
             output, _state = causal_conv1d(
                 x=x,
                 weight=self.weight.to(x.dtype),

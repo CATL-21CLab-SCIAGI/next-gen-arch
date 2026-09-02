@@ -92,4 +92,3 @@ def test_default_model_parameter_contract_constructs_on_meta():
     assert counts["ngram_ple"] > 3_200_000_000
     assert 4_000_000_000 < counts["total"] < 4_500_000_000
     assert model.estimate_executed_flops() < model.estimate_flops()
-

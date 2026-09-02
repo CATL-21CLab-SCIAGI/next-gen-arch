@@ -156,7 +156,9 @@ def _invoke_pretrain(training_module, datasets_provider, model_provider, model_t
 
         args = parse_and_validate_args(args_defaults={"tokenizer_type": "NullTokenizer"})
         config = pretrain_cfg_container_from_args(args)
-        training_module.pretrain(config, datasets_provider, model_provider, model_type, _forward_step)
+        training_module.pretrain(
+            config, datasets_provider, model_provider, model_type, _forward_step
+        )
         return
     training_module.pretrain(
         datasets_provider,
@@ -456,7 +458,8 @@ def _run(args: argparse.Namespace) -> None:
 
     if _distributed_rank() == 0:
         _atomic_json(
-            args.run_dir / ("PROBE_COMPLETE.json" if args.probe_steps else "TRAINING_COMPLETE.json"),
+            args.run_dir
+            / ("PROBE_COMPLETE.json" if args.probe_steps else "TRAINING_COMPLETE.json"),
             {"iteration": _current_iteration(), "completed_at_unix": time.time()},
         )
 
@@ -487,16 +490,19 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _parser().parse_args()
-    if min(
-        args.sequence_length,
-        args.micro_batch_size,
-        args.global_batch_size,
-        args.target_train_tokens,
-        args.checkpoint_interval_tokens,
-        args.eval_interval,
-        args.eval_iters,
-        args.log_interval,
-    ) < 1:
+    if (
+        min(
+            args.sequence_length,
+            args.micro_batch_size,
+            args.global_batch_size,
+            args.target_train_tokens,
+            args.checkpoint_interval_tokens,
+            args.eval_interval,
+            args.eval_iters,
+            args.log_interval,
+        )
+        < 1
+    ):
         raise SystemExit("all integer training controls must be positive")
     if args.probe_steps < 0:
         raise SystemExit("probe steps must be non-negative")

@@ -41,4 +41,3 @@ def test_prefix_validation_and_rank_partition(tmp_path):
     assert _data_prefixes(tmp_path, "train") == prefixes
     assert _partition_prefixes(prefixes, 1, 2) == [prefixes[1], prefixes[3]]
     assert _partition_prefixes(prefixes, 7, 8) == [prefixes[3]]
-
