@@ -404,6 +404,49 @@ class QwenSparseAttention(nn.Module):
         return self.out(output.flatten(-2))
 
 
+def _pad_grouped_tokens(
+    inputs: torch.Tensor,
+    m_splits: torch.Tensor,
+    *,
+    multiple: int = 16,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pad each sorted expert segment and return indices of the real rows."""
+    if multiple < 1:
+        raise ValueError("grouped-token padding multiple must be positive")
+    sizes = [int(size) for size in m_splits.detach().cpu().tolist()]
+    padded_chunks = []
+    real_indices = []
+    padded_sizes = []
+    source_offset = 0
+    padded_offset = 0
+    for size in sizes:
+        padded_size = ((size + multiple - 1) // multiple) * multiple
+        padded_sizes.append(padded_size)
+        if size:
+            padded_chunks.append(inputs[source_offset : source_offset + size])
+            real_indices.append(
+                torch.arange(padded_offset, padded_offset + size, device=inputs.device)
+            )
+        if padded_size > size:
+            padded_chunks.append(inputs.new_zeros((padded_size - size, inputs.size(-1))))
+        source_offset += size
+        padded_offset += padded_size
+    if source_offset != inputs.size(0):
+        raise ValueError("grouped-token splits do not sum to the input row count")
+    padded = (
+        torch.cat(padded_chunks, dim=0)
+        if padded_chunks
+        else inputs.new_empty((0, inputs.size(-1)))
+    )
+    indices = (
+        torch.cat(real_indices)
+        if real_indices
+        else torch.empty(0, dtype=torch.long, device=inputs.device)
+    )
+    splits = torch.tensor(padded_sizes, dtype=m_splits.dtype, device=m_splits.device)
+    return padded, splits, indices
+
+
 class SparseMoE(nn.Module):
     def __init__(self, config: Qwen38FlashNextConfig, *, runtime_backend: str):
         super().__init__()
@@ -411,6 +454,7 @@ class SparseMoE(nn.Module):
         self.top_k = config.num_experts_per_token
         self.router_aux_coefficient = config.router_aux_loss_coefficient
         self.router_z_coefficient = config.router_z_loss_coefficient
+        self.grouped_token_multiple = 16 if runtime_backend == "te_fp4" else 1
         self.router = NativeLinear(config.hidden_size, self.num_experts, bias=False)
         self.expert_up = _grouped_linear(
             self.num_experts,
@@ -454,9 +498,19 @@ class SparseMoE(nn.Module):
         order = expert_ids.argsort(stable=True)
         sorted_inputs = expanded[order]
         m_splits = torch.bincount(expert_ids, minlength=self.num_experts).to(torch.int32)
-        routed = self.expert_up(sorted_inputs, m_splits)
+        if self.grouped_token_multiple > 1:
+            grouped_inputs, grouped_splits, real_indices = _pad_grouped_tokens(
+                sorted_inputs,
+                m_splits,
+                multiple=self.grouped_token_multiple,
+            )
+        else:
+            grouped_inputs, grouped_splits, real_indices = sorted_inputs, m_splits, None
+        routed = self.expert_up(grouped_inputs, grouped_splits)
         routed = self._swiglu(routed)
-        routed = self.expert_down(routed, m_splits)
+        routed = self.expert_down(routed, grouped_splits)
+        if real_indices is not None:
+            routed = routed.index_select(0, real_indices)
         inverse = torch.empty_like(order)
         inverse[order] = torch.arange(order.numel(), device=order.device)
         routed = routed[inverse].view(flat.size(0), self.top_k, -1)

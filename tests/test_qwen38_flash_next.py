@@ -8,6 +8,7 @@ from archlab.architectures.qwen38_flash_next import (
     Qwen38FlashNext,
     Qwen38FlashNextConfig,
     SingleStreamResidual,
+    _pad_grouped_tokens,
 )
 
 
@@ -120,3 +121,16 @@ def test_fp4_linear_falls_back_for_unaligned_exact_shapes():
     assert isinstance(qwen38._linear(640, 24, runtime_backend="te_fp4"), NativeLinear)
     assert isinstance(qwen38._linear(80, 640, runtime_backend="te_fp4"), NativeLinear)
     assert isinstance(qwen38._linear(80, 1, runtime_backend="te_fp4"), NativeLinear)
+
+
+def test_grouped_token_padding_preserves_real_rows_and_gradients():
+    inputs = torch.arange(18, dtype=torch.float32).view(6, 3).requires_grad_()
+    splits = torch.tensor([1, 0, 2, 3], dtype=torch.int32)
+
+    padded, padded_splits, real_indices = _pad_grouped_tokens(inputs, splits)
+
+    assert padded.shape == (48, 3)
+    assert padded_splits.tolist() == [16, 0, 16, 16]
+    assert torch.equal(padded.index_select(0, real_indices), inputs)
+    padded.index_select(0, real_indices).sum().backward()
+    assert torch.equal(inputs.grad, torch.ones_like(inputs))
