@@ -65,7 +65,7 @@ def test_qwen38_training_defaults_to_bf16(tmp_path):
     )
 
     assert args.precision == "bf16"
-    assert args.gdn_kernel == "flash_qla"
+    assert args.gdn_kernel == "fla"
 
 
 def test_megatron_argv_uses_exact_distributed_muon_and_speedups(tmp_path, monkeypatch):

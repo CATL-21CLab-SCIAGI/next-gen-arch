@@ -433,6 +433,11 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "dense_flash_attention": "not applicable to QSA's learned sparse top-k mask",
             "whole_model_torch_compile": "dynamic expert token counts and host dispatch are not graph-safe",
             "nccl_user_buffers": "not enabled without a topology-specific registration preflight",
+            "flash_qla": (
+                "official SM103 kernel requires key dimension 128; the required quarter shape uses 32"
+                if args.gdn_kernel != "flash_qla"
+                else None
+            ),
         },
         "parallelism": {
             "world_size": int(os.environ.get("WORLD_SIZE", "1")),
@@ -600,7 +605,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--tokenizer", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--precision", choices=tuple(PRECISION_RECIPES), default="bf16")
-    parser.add_argument("--gdn-kernel", choices=("flash_qla", "fla"), default="flash_qla")
+    parser.add_argument("--gdn-kernel", choices=("flash_qla", "fla"), default="fla")
     parser.add_argument("--sequence-length", type=int, default=2_048)
     parser.add_argument("--micro-batch-size", type=int, default=1)
     parser.add_argument("--global-batch-size", type=int, default=512)

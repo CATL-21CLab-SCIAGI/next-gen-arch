@@ -18,7 +18,7 @@ NGA_MEGATRON_ROOT="${NGA_MEGATRON_ROOT:-/opt/Megatron-Bridge/3rdparty/Megatron-L
 NGA_FLASHQLA_ROOT="${NGA_FLASHQLA_ROOT:-/mnt/nas/evergreen/runtime/FlashQLA-7c7dfe1}"
 NGA_FLASHQLA_DEPS="${NGA_FLASHQLA_DEPS:-/mnt/nas/evergreen/runtime/flash-qla-0.1.2-py312}"
 NGA_FLASHQLA_COMMIT="${NGA_FLASHQLA_COMMIT:-7c7dfe16416ad21b1d03258189fc8d3b8460ae06}"
-NGA_GDN_KERNEL="${NGA_GDN_KERNEL:-flash_qla}"
+NGA_GDN_KERNEL="${NGA_GDN_KERNEL:-fla}"
 NGA_EXPECTED_NODES="${NGA_EXPECTED_NODES:-4}"
 NGA_GPUS_PER_NODE="${NGA_GPUS_PER_NODE:-8}"
 NGA_TOKENIZER_WORKERS="${NGA_TOKENIZER_WORKERS:-8}"
@@ -118,7 +118,11 @@ export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export PATH="$(dirname "$NGA_PYTHON"):$CUDA_HOME/bin:$PATH"
 export CPATH="$CUDA_HOME/targets/x86_64-linux/include${CPATH:+:$CPATH}"
 export TRITON_PTXAS_PATH="${TRITON_PTXAS_PATH:-$CUDA_HOME/bin/ptxas}"
-export PYTHONPATH="$NGA_FLASHQLA_ROOT:$NGA_FLASHQLA_DEPS:$NGA_REPO_ROOT/src:$NGA_MEGATRON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+if [[ "$NGA_GDN_KERNEL" = "flash_qla" ]]; then
+    export PYTHONPATH="$NGA_FLASHQLA_ROOT:$NGA_FLASHQLA_DEPS:$NGA_REPO_ROOT/src:$NGA_MEGATRON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+else
+    export PYTHONPATH="$NGA_REPO_ROOT/src:$NGA_MEGATRON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+fi
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TOKENIZERS_PARALLELISM=true
 export RAYON_NUM_THREADS="${RAYON_NUM_THREADS:-24}"
@@ -154,7 +158,7 @@ if config.get("model_type") != "qwen4_exp":
 if drift:
     raise SystemExit(f"pinned Qwen3.8 config drift: {drift}")
 
-if os.environ.get("NGA_GDN_KERNEL", "flash_qla") == "flash_qla":
+if os.environ.get("NGA_GDN_KERNEL", "fla") == "flash_qla":
     import flash_qla
     import tilelang
 

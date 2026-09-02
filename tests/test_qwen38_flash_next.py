@@ -1,6 +1,7 @@
 from dataclasses import replace
 from types import ModuleType
 
+import pytest
 import torch
 
 import archlab.architectures.qwen38_flash_next as qwen38
@@ -75,6 +76,11 @@ def test_layer_pattern_preserves_three_gdn_then_one_qsa():
     model = Qwen38FlashNext(tiny_config())
     assert [layer.attention_kind for layer in model.layers] == ["gdn", "gdn", "gdn", "qsa"]
     assert model.mtp_block.attention_kind == "qsa"
+
+
+def test_flash_qla_rejects_quartered_key_dimension_before_launch():
+    with pytest.raises(ValueError, match="requires GDN key dimension 128"):
+        Qwen38FlashNext(tiny_config(), gdn_kernel="flash_qla")
 
 
 def test_optimizer_partition_matches_qwen_division_of_labour():

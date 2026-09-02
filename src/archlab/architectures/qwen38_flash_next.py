@@ -357,6 +357,11 @@ class GatedDeltaAttention(nn.Module):
         super().__init__()
         if gdn_kernel not in {"fla", "flash_qla"}:
             raise ValueError(f"unsupported GDN kernel: {gdn_kernel}")
+        if gdn_kernel == "flash_qla" and config.linear_key_dim != 128:
+            raise ValueError(
+                "FlashQLA's current training kernel requires GDN key dimension 128; "
+                f"the quarter-shape model uses {config.linear_key_dim}"
+            )
         self.gdn_kernel = gdn_kernel
         self.q_heads = config.linear_qk_heads
         self.v_heads = config.linear_v_heads
