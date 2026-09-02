@@ -408,6 +408,11 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "auxiliary_balance_formula": "E * sum(mean(top-k assignments) * mean(router probabilities))",
             "auxiliary_balance_coefficient": config.router_aux_loss_coefficient,
             "router_z_loss_coefficient": config.router_z_loss_coefficient,
+            "source_recipe_difference": (
+                "the released full-size Qwen3.8 config uses balance coefficient 1e-3 and "
+                "no router z-loss; quarter-scale from-scratch training uses 1e-2 and 1e-3 "
+                "after the source values collapsed routing and caused non-finite gradients"
+            ),
             "capacity_limit": None,
             "dropped_tokens": False,
             "logged_diagnostics": [

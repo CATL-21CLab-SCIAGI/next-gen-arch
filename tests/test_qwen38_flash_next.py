@@ -71,8 +71,8 @@ def test_quarter_shape_contract_matches_agreed_source_scaling():
     assert config.ngram_conv_kernel == 4
     assert config.vocab_size == 248_320
     assert config.mtp_layers == 1
-    assert config.router_aux_loss_coefficient == 0.001
-    assert config.router_z_loss_coefficient == 0.0
+    assert config.router_aux_loss_coefficient == 0.01
+    assert config.router_z_loss_coefficient == 0.001
 
 
 def test_layer_pattern_preserves_three_gdn_then_one_qsa():

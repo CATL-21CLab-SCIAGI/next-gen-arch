@@ -48,10 +48,12 @@ class Qwen38FlashNextConfig:
     num_experts_per_token: int = 3
     moe_intermediate_size: int = 160
     shared_expert_intermediate_size: int = 160
-    # The released Qwen3.8 config uses the standard Switch-style balancing
-    # objective at 1e-3 and does not declare a router z-loss.
-    router_aux_loss_coefficient: float = 0.001
-    router_z_loss_coefficient: float = 0.0
+    # The released full-size Qwen3.8 config uses 1e-3 balancing and no z-loss.
+    # At quarter scale that recipe collapsed routing (32x max/mean load) and
+    # produced non-finite gradients during warmup.  The stronger Switch loss
+    # plus a small router z-loss is the stability guard for from-scratch runs.
+    router_aux_loss_coefficient: float = 0.01
+    router_z_loss_coefficient: float = 0.001
 
     residual_streams: int = 1
     residual_low_rank: int = 80
