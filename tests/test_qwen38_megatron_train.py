@@ -8,6 +8,7 @@ from archlab.architectures.qwen38_flash_next import Qwen38FlashNextConfig
 from archlab.megatron.qwen38_muon import (
     FROBENIUS_EPSILON,
     POLAR_EXPRESS_COEFFICIENTS,
+    _combine_grad_norms,
     _validate_local_matrix_metadata,
     polar_express_zeroth_power,
 )
@@ -150,3 +151,12 @@ def test_muon_accepts_transformer_engine_partition_metadata_only_at_tp1():
     _validate_local_matrix_metadata(parameter, tp_size=1)
     with pytest.raises(ValueError, match="requires TP=EP=1"):
         _validate_local_matrix_metadata(parameter, tp_size=2)
+
+
+def test_chained_grad_norm_combination_stays_on_device():
+    first = torch.tensor(3.0)
+    combined = _combine_grad_norms([first, torch.tensor(4.0), 0.0])
+
+    assert isinstance(combined, torch.Tensor)
+    assert combined.device == first.device
+    assert combined.item() == 5.0

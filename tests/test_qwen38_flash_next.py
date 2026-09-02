@@ -44,6 +44,7 @@ def tiny_config(**overrides):
         ngram_vocab_size=31,
         ngram_heads_per_order=2,
         ngram_embedding_dim=32,
+        eos_token_id=63,
     )
     return replace(config, **overrides)
 
@@ -66,6 +67,8 @@ def test_quarter_shape_contract_matches_agreed_source_scaling():
     assert config.residual_low_rank == 320 // 4
     assert config.ngram_vocab_size == 20_000_000 // 4
     assert config.ngram_embedding_dim == 2_560 // 4
+    assert config.ngram_layer == 1
+    assert config.ngram_conv_kernel == 4
     assert config.vocab_size == 248_320
     assert config.mtp_layers == 1
     assert config.router_aux_loss_coefficient == 0.001
@@ -99,6 +102,9 @@ def test_optimizer_partition_matches_qwen_division_of_labour():
     assert model.layers[0].moe.expert_up.weight.archlab_optimizer == "muon"
     assert model.ngram.tables[0].weight.archlab_optimizer == "adam"
     assert model.ngram.tables[0].weight.archlab_no_weight_decay is True
+    assert model.ngram.key_proj.weight.archlab_optimizer == "muon"
+    assert model.ngram.value_proj.weight.archlab_optimizer == "muon"
+    assert model.ngram.conv.weight.archlab_optimizer == "adamw"
 
 
 def test_tiny_forward_backward_and_auxiliary_loss_are_finite():
@@ -116,6 +122,19 @@ def test_tiny_forward_backward_and_auxiliary_loss_are_finite():
     assert model.layers[0].moe.router.weight.grad is not None
     assert model.layers[-1].attention.index_q.weight.grad is not None
     assert torch.isfinite(model.layers[-1].attention.index_q.weight.grad).all()
+    assert model.ngram.key_proj.weight.grad is not None
+    assert model.ngram.value_proj.weight.grad is not None
+
+
+def test_ngram_hash_does_not_cross_eos_boundaries():
+    model = Qwen38FlashNext(tiny_config())
+    first = torch.tensor([[1, 2, 63, 4, 5]])
+    second = torch.tensor([[11, 12, 63, 4, 5]])
+
+    first_hash = model.ngram._hash(first, order=3, branch=3)
+    second_hash = model.ngram._hash(second, order=3, branch=3)
+
+    assert torch.equal(first_hash[:, 3:], second_hash[:, 3:])
 
 
 def test_default_model_parameter_contract_constructs_on_meta():

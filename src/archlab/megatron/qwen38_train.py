@@ -117,8 +117,9 @@ class BinaryTokenBatches:
         }
 
     def __del__(self):
-        if self._executor is not None:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+        executor = getattr(self, "_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _distributed_rank() -> int:
@@ -421,6 +422,10 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "flash_qla_source_commit": os.environ.get("NGA_FLASHQLA_COMMIT"),
             "dense_and_grouped_gemm": "Transformer Engine BF16",
             "cross_entropy": "Transformer Engine Triton fused cross entropy",
+            "ple": (
+                "GPU hashed lookup, Transformer Engine key/value projections, "
+                "cuDNN dilated depthwise convolution"
+            ),
             "optimizer_step": "Megatron whole-step CUDA graph after warmup",
             "gradient_accumulation": "Megatron fusion enabled",
             "input_pipeline": "background CPU memmap prefetch, pinned memory, nonblocking H2D",
@@ -432,9 +437,26 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
         },
         "speedrun_exclusions": {
             "fp8_or_fp4_compute": "disabled by the explicit 16-bit training request",
-            "dense_flash_attention": "not applicable to QSA's learned sparse top-k mask",
+            "qsa_fused_training_kernel": (
+                "Qwen's production fused sparse-attention/KL kernel is not public in the fresh "
+                "container; the 2K run uses the auditable PyTorch QSA path"
+            ),
             "whole_model_torch_compile": "dynamic expert token counts and host dispatch are not graph-safe",
             "nccl_user_buffers": "not enabled without a topology-specific registration preflight",
+            "sparse_ngram_gradient_communication": (
+                "modded-nanogpt's custom bigram protocol is model-specific; native Megatron "
+                "requires dense gradients for this four-table PLE"
+            ),
+            "ngram_host_offload": (
+                "the quartered 3.2B table fits B300 HBM; direct device lookup avoids host transfer"
+            ),
+            "normuon_and_cautious_weight_decay": (
+                "not substituted for the published Qwen3.8 Polar-Express Muon recipe without "
+                "a controlled quality/stability sweep"
+            ),
+            "batch_or_sequence_ramp": (
+                "Qwen3.8 reports a constant large batch outperforming batch-size warmup"
+            ),
             "flash_qla": (
                 "official SM103 kernel requires key dimension 128; the required quarter shape uses 32"
                 if args.gdn_kernel != "flash_qla"

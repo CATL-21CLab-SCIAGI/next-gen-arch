@@ -8,6 +8,7 @@ same architecture has a small CPU reference path for contract tests.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 
 import torch
@@ -59,7 +60,12 @@ class Qwen38FlashNextConfig:
     ngram_orders: tuple[int, ...] = (2, 3)
     ngram_heads_per_order: int = 2
     ngram_embedding_dim: int = 640
-    ngram_layer: int = 0
+    # The source model injects PLE at one-indexed Layer 2.  Placement is not a
+    # tensor shape, so it remains the second layer in the quarter-shape model.
+    ngram_layer: int = 1
+    ngram_conv_kernel: int = 4
+    ngram_hash_seed: int = 1_234
+    eos_token_id: int = 248_044
 
     mtp_layers: int = 1
     mtp_loss_weight: float = 0.1
@@ -93,6 +99,8 @@ class Qwen38FlashNextConfig:
             self.ngram_vocab_size,
             self.ngram_heads_per_order,
             self.ngram_embedding_dim,
+            self.ngram_conv_kernel,
+            self.eos_token_id,
         )
         if min(positive) < 1:
             raise ValueError("Qwen3.8 quarter-shape dimensions must be positive")
@@ -114,6 +122,8 @@ class Qwen38FlashNextConfig:
             raise ValueError("partial RoPE must retain a positive even dimension")
         if self.mtp_layers != 1:
             raise ValueError("the minimum-one scaling contract retains one MTP layer")
+        if not 0 <= self.ngram_layer < self.num_hidden_layers:
+            raise ValueError("n-gram PLE placement must address a transformer layer")
 
     def to_dict(self) -> dict:
         payload = asdict(self)
@@ -329,6 +339,27 @@ class CausalDepthwiseConv1d(nn.Module):
             padding=self.kernel_size - 1,
             groups=x.size(-1),
         )[..., : x.size(1)]
+        return F.silu(output.transpose(1, 2))
+
+
+class DilatedCausalDepthwiseConv1d(nn.Module):
+    """cuDNN-backed causal depthwise convolution used by Qwen PLE."""
+
+    def __init__(self, channels: int, kernel_size: int, dilation: int):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        self.weight = nn.Parameter(torch.empty(channels, kernel_size))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        left_padding = (self.kernel_size - 1) * self.dilation
+        channels_first = F.pad(x.transpose(1, 2), (left_padding, 0))
+        output = F.conv1d(
+            channels_first,
+            self.weight.to(x.dtype).unsqueeze(1),
+            groups=x.size(-1),
+            dilation=self.dilation,
+        )
         return F.silu(output.transpose(1, 2))
 
 
@@ -758,13 +789,14 @@ class Qwen38Block(nn.Module):
 
 
 class NGramPLE(nn.Module):
-    """Hashed bigram/trigram PLE with quartered vocab, heads, and width."""
+    """Quarter-shape Qwen PLE: hashed memory, gated KV projections, and local conv."""
 
-    def __init__(self, config: Qwen38FlashNextConfig):
+    def __init__(self, config: Qwen38FlashNextConfig, *, runtime_backend: str):
         super().__init__()
         self.vocab_size = config.ngram_vocab_size
         self.orders = config.ngram_orders
         self.heads = config.ngram_heads_per_order
+        self.eos_token_id = config.eos_token_id
         self.branch_dim = config.ngram_embedding_dim // (len(self.orders) * self.heads)
         self.tables = nn.ModuleList(
             [
@@ -772,24 +804,77 @@ class NGramPLE(nn.Module):
                 for _ in range(len(self.orders) * self.heads)
             ]
         )
-        self.output_norm = RMSNorm(config.ngram_embedding_dim, config.rms_norm_eps)
+        self.key_proj = _linear(
+            config.ngram_embedding_dim,
+            config.hidden_size,
+            runtime_backend=runtime_backend,
+        )
+        self.value_proj = _linear(
+            config.ngram_embedding_dim,
+            config.hidden_size,
+            runtime_backend=runtime_backend,
+        )
+        self.norm_key = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.norm_query = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.norm_conv = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.conv = DilatedCausalDepthwiseConv1d(
+            config.hidden_size,
+            config.ngram_conv_kernel,
+            dilation=max(config.ngram_orders),
+        )
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(config.ngram_hash_seed)
+        multipliers = torch.randint(
+            1,
+            2**31 - 1,
+            (max(config.ngram_orders), len(config.ngram_orders) * self.heads),
+            generator=generator,
+            dtype=torch.long,
+        )
+        self.register_buffer("hash_multipliers", multipliers | 1, persistent=True)
 
-    def _hash(self, token_ids: torch.Tensor, order: int, head: int) -> torch.Tensor:
-        value = torch.zeros_like(token_ids)
-        prime = 1_000_003 + 97 * head + 53 * order
-        for offset in range(order):
-            shifted = F.pad(token_ids[:, : token_ids.size(1) - offset], (offset, 0))
-            value = (value * prime + shifted + 1 + 17 * head) % self.vocab_size
-        return value
+    def _shift_right_ignore_eos(self, token_ids: torch.Tensor, shift: int) -> torch.Tensor:
+        if shift == 0:
+            return token_ids
+        positions = torch.arange(token_ids.size(1), device=token_ids.device)
+        eos_positions = torch.where(token_ids == self.eos_token_id, positions, -1)
+        previous_eos_inclusive = torch.cummax(eos_positions, dim=1).values
+        previous_eos = torch.cat(
+            (eos_positions.new_full((token_ids.size(0), 1), -1), previous_eos_inclusive[:, :-1]),
+            dim=1,
+        )
+        position_in_segment = positions.unsqueeze(0) - (previous_eos + 1)
+        source_positions = positions - shift
+        gather_positions = source_positions.clamp_min(0).expand(token_ids.size(0), -1)
+        shifted = token_ids.gather(1, gather_positions)
+        valid = (position_in_segment >= shift) & (source_positions.unsqueeze(0) >= 0)
+        return torch.where(valid, shifted, token_ids.new_full((), self.eos_token_id))
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def _hash(self, token_ids: torch.Tensor, order: int, branch: int) -> torch.Tensor:
+        shifted = [self._shift_right_ignore_eos(token_ids, offset) for offset in range(order)]
+        value = shifted[0] * self.hash_multipliers[0, branch]
+        for offset in range(1, order):
+            value = torch.bitwise_xor(
+                value,
+                shifted[offset] * self.hash_multipliers[offset, branch],
+            )
+        return torch.remainder(value, self.vocab_size)
+
+    def forward(self, token_ids: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
         outputs = []
         branch = 0
         for order in self.orders:
-            for head in range(self.heads):
-                outputs.append(self.tables[branch](self._hash(token_ids, order, head)))
+            for _head in range(self.heads):
+                outputs.append(self.tables[branch](self._hash(token_ids, order, branch)))
                 branch += 1
-        return self.output_norm(torch.cat(outputs, dim=-1))
+        embeddings = torch.cat(outputs, dim=-1).to(hidden_states.dtype)
+        key = self.norm_key(self.key_proj(embeddings))
+        value = self.value_proj(embeddings)
+        query = self.norm_query(hidden_states)
+        gate = (key * query).sum(dim=-1, keepdim=True) / math.sqrt(hidden_states.size(-1))
+        gate = gate.sign() * gate.abs().clamp_min(1e-6).sqrt()
+        gated_value = gate.sigmoid() * value
+        return gated_value + self.conv(self.norm_conv(gated_value))
 
 
 class Qwen38FlashNext(nn.Module):
@@ -806,7 +891,7 @@ class Qwen38FlashNext(nn.Module):
         self.gdn_kernel = gdn_kernel
         self.fp4_token_multiple = 8 if runtime_backend == "te_fp4" else 1
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.ngram = NGramPLE(config)
+        self.ngram = NGramPLE(config, runtime_backend=runtime_backend)
         self.layers = nn.ModuleList(
             [
                 Qwen38Block(
@@ -885,6 +970,17 @@ class Qwen38FlashNext(nn.Module):
             optimizer="adam",
             category="ngram_embedding_table",
             no_weight_decay=True,
+        )
+        for projection_name in ("key_proj", "value_proj"):
+            self._tag_optimizer_module(
+                getattr(self.ngram, projection_name),
+                optimizer="muon",
+                category=f"ngram_{projection_name}",
+            )
+        self._tag_optimizer_module(
+            self.ngram.conv,
+            optimizer="adamw",
+            category="ngram_dilated_depthwise_convolution",
         )
 
         for block in (*self.layers, self.mtp_block):
@@ -1145,12 +1241,11 @@ class Qwen38FlashNext(nn.Module):
         if self.get_device().type == "cuda":
             compute_dtype = torch.bfloat16
         x = self.token_embedding(input_ids).to(compute_dtype)
-        ngram = self.ngram(input_ids).to(compute_dtype)
         cos = self.rope_cos[:seq_len].to(device=x.device, dtype=x.dtype).view(1, seq_len, 1, -1)
         sin = self.rope_sin[:seq_len].to(device=x.device, dtype=x.dtype).view(1, seq_len, 1, -1)
         for layer_idx, layer in enumerate(self.layers):
             if layer_idx == self.config.ngram_layer:
-                x = x + ngram
+                x = x + self.ngram(input_ids, x).to(compute_dtype)
             x = layer(x, cos, sin)
         hidden = self.final_norm(x)
         logits = self.lm_head(hidden)[..., : self.config.vocab_size].float()

@@ -31,6 +31,18 @@ def _validate_local_matrix_metadata(parameter: torch.Tensor, tp_size: int) -> No
         raise ValueError(f"invalid 2D parameter partition dimension: {partition_dim}")
 
 
+def _combine_grad_norms(norms: list[float | torch.Tensor]) -> float | torch.Tensor:
+    """Combine optimizer-local L2 norms without synchronizing CUDA to the host."""
+    tensor = next((value for value in norms if isinstance(value, torch.Tensor)), None)
+    if tensor is None:
+        return math.sqrt(sum(float(value) ** 2 for value in norms))
+    values = [
+        value if isinstance(value, torch.Tensor) else tensor.new_tensor(float(value))
+        for value in norms
+    ]
+    return torch.stack(values).square().sum().sqrt()
+
+
 def polar_express_zeroth_power(
     matrices: torch.Tensor,
     *,
@@ -75,12 +87,17 @@ def muon_recipe_contract() -> dict[str, Any]:
             "gradient_communication": "reduce-scatter overlapped with backward",
             "adam_state": "Megatron distributed optimizer",
         },
+        "optimizer_cuda_graph_compatibility": (
+            "repository-local capture-safe chained grad-norm reduction; no host scalar conversion"
+        ),
     }
 
 
 def install_qwen38_muon_adapter(config) -> None:
     """Install a process-local adapter without altering container packages."""
     from megatron.core.optimizer import emerging_optimizers
+    from megatron.core.optimizer import optimizer as optimizer_module
+    from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32
     from megatron.core.optimizer.optimizer_config import ParamKey, ParamPredicate
     from megatron.core.utils import get_pg_size
 
@@ -172,3 +189,56 @@ def install_qwen38_muon_adapter(config) -> None:
 
     entry.optimizer_cls = Qwen38TensorParallelMuon
     entry.default_param_overrides = overrides
+
+    chained_optimizer = optimizer_module.ChainedOptimizer
+    if getattr(chained_optimizer, "_archlab_qwen38_capture_safe", False):
+        return
+    original_get_grad_norm = chained_optimizer.get_grad_norm
+
+    @torch.no_grad()
+    def capture_safe_get_grad_norm(self):
+        if len(self.chained_optimizers) == 1 or self.grads_states_parallel_group_is_shared():
+            return original_get_grad_norm(self)
+        return _combine_grad_norms(
+            [optimizer.get_grad_norm() for optimizer in self.chained_optimizers]
+        )
+
+    @torch.no_grad()
+    def capture_safe_step(self):
+        found_inf = self.prepare_grads()
+        if found_inf:
+            return False, None, None
+
+        grad_norm = self.get_grad_norm()
+        for optimizer in self.chained_optimizers:
+            if getattr(optimizer, "is_stub_optimizer", False):
+                continue
+            parameters = optimizer.get_parameters()
+            if not parameters:
+                continue
+            threshold = optimizer.config.grad_norm_skip_threshold
+            if not math.isinf(threshold):
+                raise ValueError(
+                    "optimizer CUDA graph requires an infinite grad-norm skip threshold; "
+                    "finite clipping remains enabled independently"
+                )
+            if optimizer.config.clip_grad > 0.0:
+                clip_grad_by_total_norm_fp32(
+                    parameters,
+                    max_norm=optimizer.config.clip_grad,
+                    total_norm=grad_norm,
+                    use_decoupled_grad=(
+                        optimizer.config.use_precision_aware_optimizer_no_fp8_or_ds_fp8
+                        or (
+                            optimizer.config.use_precision_aware_optimizer
+                            and getattr(parameters[0], "__fsdp_param__", False)
+                        )
+                    ),
+                )
+
+        num_zeros = self.count_zeros() if self.config.log_num_zeros_in_grad else None
+        return self.step_with_ready_grads(), grad_norm, num_zeros
+
+    chained_optimizer.get_grad_norm = capture_safe_get_grad_norm
+    chained_optimizer.step = capture_safe_step
+    chained_optimizer._archlab_qwen38_capture_safe = True
