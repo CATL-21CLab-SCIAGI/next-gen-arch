@@ -2,9 +2,12 @@ from dataclasses import replace
 
 import torch
 
+import archlab.architectures.qwen38_flash_next as qwen38
 from archlab.architectures.qwen38_flash_next import (
+    NativeLinear,
     Qwen38FlashNext,
     Qwen38FlashNextConfig,
+    SingleStreamResidual,
 )
 
 
@@ -92,3 +95,18 @@ def test_default_model_parameter_contract_constructs_on_meta():
     assert counts["ngram_ple"] > 3_200_000_000
     assert 4_000_000_000 < counts["total"] < 4_500_000_000
     assert model.estimate_executed_flops() < model.estimate_flops()
+
+
+def test_fp4_residual_keeps_rank_80_reduction_gates_in_bf16(monkeypatch):
+    calls = []
+
+    def fake_fp4_linear(in_features, out_features, *, runtime_backend, bias=False):
+        calls.append((in_features, out_features, runtime_backend, bias))
+        return torch.nn.Linear(in_features, out_features, bias=bias)
+
+    monkeypatch.setattr(qwen38, "_linear", fake_fp4_linear)
+    residual = SingleStreamResidual(Qwen38FlashNextConfig(), runtime_backend="te_fp4")
+
+    assert calls == [(640, 80, "te_fp4", False)]
+    assert isinstance(residual.read, NativeLinear)
+    assert isinstance(residual.write, NativeLinear)

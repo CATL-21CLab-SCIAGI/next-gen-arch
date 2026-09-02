@@ -303,6 +303,12 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "recipe": "Transformer Engine NVFP4BlockScaling",
             "stochastic_rounding": True,
             "two_dimensional_quantization": True,
+            "bf16_exceptions": [
+                "routing logits",
+                "shared-expert scalar gate",
+                "rank-80 residual read/write gates",
+                "normalization and loss",
+            ],
             "master_parameters": "BF16 under Megatron mixed precision",
             "optimizer_state": "distributed FP32 AdamW",
         },

@@ -480,12 +480,12 @@ class SingleStreamResidual(nn.Module):
             config.residual_low_rank,
             runtime_backend=runtime_backend,
         )
-        self.read = _linear(
-            config.residual_low_rank,
-            config.hidden_size,
-            runtime_backend=runtime_backend,
-        )
-        self.write = _linear(config.residual_low_rank, 1, runtime_backend=runtime_backend)
+        # The exact quarter-shape rank is 80. Transformer Engine 2.16 cannot
+        # dispatch an NVFP4 GEMM with K=80 in the pinned B300 container, so the
+        # two projections that reduce over that rank stay in BF16. The much
+        # larger 640 -> 80 down projection remains on the requested FP4 path.
+        self.read = NativeLinear(config.residual_low_rank, config.hidden_size, bias=False)
+        self.write = NativeLinear(config.residual_low_rank, 1, bias=False)
 
     def gates(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         latent = F.silu(self.down(x))
