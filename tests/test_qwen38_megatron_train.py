@@ -1,12 +1,14 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from archlab.architectures.qwen38_flash_next import Qwen38FlashNextConfig
 from archlab.megatron.qwen38_muon import (
     FROBENIUS_EPSILON,
     POLAR_EXPRESS_COEFFICIENTS,
+    _validate_local_matrix_metadata,
     polar_express_zeroth_power,
 )
 from archlab.megatron.qwen38_train import (
@@ -91,6 +93,7 @@ def test_megatron_argv_uses_exact_distributed_muon_and_speedups(tmp_path, monkey
         "--muon-coefficient-type": "polar_express",
         "--muon-num-ns-steps": "8",
         "--muon-scalar-optimizer": "adam",
+        "--seed": "42",
     }
     for flag, value in expected_pairs.items():
         assert argv[argv.index(flag) + 1] == value
@@ -138,3 +141,12 @@ def test_polar_express_kernel_is_batched_finite_and_exactly_eight_steps():
     assert torch.allclose(batched, separate)
     assert torch.isfinite(batched).all()
     assert torch.equal(zeros, torch.zeros_like(zeros))
+
+
+def test_muon_accepts_transformer_engine_partition_metadata_only_at_tp1():
+    parameter = torch.nn.Parameter(torch.empty(8, 4))
+    parameter.partition_dim = 0
+
+    _validate_local_matrix_metadata(parameter, tp_size=1)
+    with pytest.raises(ValueError, match="requires TP=EP=1"):
+        _validate_local_matrix_metadata(parameter, tp_size=2)

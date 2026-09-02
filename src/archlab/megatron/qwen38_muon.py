@@ -22,6 +22,15 @@ MUON_MOMENTUM = 0.95
 MUON_EXTRA_SCALE = 0.2
 
 
+def _validate_local_matrix_metadata(parameter: torch.Tensor, tp_size: int) -> None:
+    """Accept TE's partition metadata only when the TP shard is the whole matrix."""
+    if tp_size != 1:
+        raise ValueError("the Qwen3.8 adapter currently requires TP=EP=1")
+    partition_dim = getattr(parameter, "partition_dim", None)
+    if partition_dim not in (None, -1, 0, 1):
+        raise ValueError(f"invalid 2D parameter partition dimension: {partition_dim}")
+
+
 def polar_express_zeroth_power(
     matrices: torch.Tensor,
     *,
@@ -113,17 +122,18 @@ def install_qwen38_muon_adapter(config) -> None:
         ) -> torch.Tensor:
             if gradient.ndim != 2:
                 raise ValueError("Qwen3.8 Muon requires 2D physical parameters")
+            tp_size = 1
             if self.pg_collection:
                 tp_group = (
                     self.pg_collection.expt_tp
                     if getattr(parameter, "expert_tp", False)
                     else self.pg_collection.tp
                 )
-                if get_pg_size(tp_group) != 1:
-                    raise ValueError("the Qwen3.8 adapter currently requires TP=EP=1")
-            partition_dim = getattr(parameter, "partition_dim", None)
-            if partition_dim not in (None, -1):
-                raise ValueError("the Qwen3.8 adapter requires unsharded logical matrices")
+                tp_size = get_pg_size(tp_group)
+            # Transformer Engine labels column/row-parallel weights with
+            # partition_dim even at TP=1.  Such a tensor is still the complete
+            # physical matrix, so its Qwen-specific logical splits are valid.
+            _validate_local_matrix_metadata(parameter, tp_size)
             if self._qwen_scale_mode != "spectral":
                 raise ValueError("Qwen3.8 requires spectral Muon scaling")
 
@@ -162,4 +172,3 @@ def install_qwen38_muon_adapter(config) -> None:
 
     entry.optimizer_cls = Qwen38TensorParallelMuon
     entry.default_param_overrides = overrides
-

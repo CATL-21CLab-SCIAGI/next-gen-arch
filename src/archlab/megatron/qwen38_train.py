@@ -256,6 +256,8 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> l
         "1",
         "--distributed-backend",
         "nccl",
+        "--seed",
+        str(args.seed),
         "--transformer-impl",
         "local",
         "--optimizer",
@@ -454,6 +456,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "tokens_per_step": tokens_per_step,
         },
         "training": {
+            "seed": args.seed,
             "target_tokens": args.target_train_tokens,
             "train_steps": train_steps,
             "effective_tokens": train_steps * tokens_per_step,
