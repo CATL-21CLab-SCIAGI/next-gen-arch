@@ -8,7 +8,6 @@ same architecture has a small CPU reference path for contract tests.
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, dataclass
 
 import torch
@@ -710,4 +709,3 @@ class Qwen38FlashNext(nn.Module):
         if loss_reduction == "mean":
             return losses.sum() / valid.sum().clamp_min(1)
         raise ValueError(f"unsupported loss reduction: {loss_reduction}")
-
