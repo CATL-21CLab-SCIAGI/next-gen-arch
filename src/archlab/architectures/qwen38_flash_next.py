@@ -139,11 +139,13 @@ def _linear(in_features: int, out_features: int, *, runtime_backend: str, bias: 
     if runtime_backend == "native":
         return NativeLinear(in_features, out_features, bias=bias)
     if runtime_backend == "te_fp4":
-        # The pinned TE 2.16 kernels require K to be divisible by 32 and the
-        # weight's first dimension (N) to be divisible by the 16-value NVFP4
-        # block. Keep exact quarter-scaled shapes outside those constraints in
-        # BF16 instead of rounding architecture dimensions.
-        if in_features % 32 or out_features % 16:
+        # TE 2.16 can run an unfused NVFP4 fallback for smaller dimensions in
+        # the forward pass, but its corresponding linear backward may not find
+        # a supported cuBLASLt algorithm. Require both sides of the GEMM to be
+        # Hadamard-tile aligned so forward, dgrad, and wgrad all keep a
+        # 128-divisible inner dimension. Preserve exact quarter-scaled shapes
+        # outside that contract in BF16 instead of rounding model dimensions.
+        if in_features % 128 or out_features % 128:
             return NativeLinear(in_features, out_features, bias=bias)
         import transformer_engine.pytorch as te
 

@@ -306,10 +306,11 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "moe_grouped_token_padding_multiple": 64,
             "moe_grouped_linear_max_experts": 64,
             "mtp_token_padding_multiple": 8,
+            "dense_linear_alignment": 128,
             "bf16_exceptions": [
                 "routing logits",
                 "shared-expert scalar gate",
-                "linear weights with K not divisible by 32 or N not divisible by 16",
+                "dense linear weights with K or N not divisible by 128",
                 "normalization and loss",
             ],
             "master_parameters": "BF16 under Megatron mixed precision",

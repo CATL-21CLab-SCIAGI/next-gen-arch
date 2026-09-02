@@ -120,8 +120,12 @@ def test_fp4_residual_keeps_rank_80_reduction_gates_in_bf16(monkeypatch):
     assert isinstance(residual.write, NativeLinear)
 
 
-def test_fp4_linear_falls_back_for_unaligned_exact_shapes():
+def test_fp4_linear_falls_back_unless_forward_and_backward_are_tile_aligned():
     assert isinstance(qwen38._linear(640, 24, runtime_backend="te_fp4"), NativeLinear)
+    assert isinstance(qwen38._linear(640, 64, runtime_backend="te_fp4"), NativeLinear)
+    assert isinstance(qwen38._linear(640, 80, runtime_backend="te_fp4"), NativeLinear)
+    assert isinstance(qwen38._linear(640, 320, runtime_backend="te_fp4"), NativeLinear)
+    assert isinstance(qwen38._linear(160, 640, runtime_backend="te_fp4"), NativeLinear)
     assert isinstance(qwen38._linear(80, 640, runtime_backend="te_fp4"), NativeLinear)
     assert isinstance(qwen38._linear(80, 1, runtime_backend="te_fp4"), NativeLinear)
 
