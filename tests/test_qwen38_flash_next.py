@@ -102,11 +102,21 @@ def test_fp4_residual_keeps_rank_80_reduction_gates_in_bf16(monkeypatch):
 
     def fake_fp4_linear(in_features, out_features, *, runtime_backend, bias=False):
         calls.append((in_features, out_features, runtime_backend, bias))
-        return torch.nn.Linear(in_features, out_features, bias=bias)
+        return NativeLinear(in_features, out_features, bias=bias)
 
     monkeypatch.setattr(qwen38, "_linear", fake_fp4_linear)
     residual = SingleStreamResidual(Qwen38FlashNextConfig(), runtime_backend="te_fp4")
 
-    assert calls == [(640, 80, "te_fp4", False)]
+    assert calls == [
+        (640, 80, "te_fp4", False),
+        (80, 640, "te_fp4", False),
+        (80, 1, "te_fp4", False),
+    ]
     assert isinstance(residual.read, NativeLinear)
     assert isinstance(residual.write, NativeLinear)
+
+
+def test_fp4_linear_falls_back_for_unaligned_exact_shapes():
+    assert isinstance(qwen38._linear(640, 24, runtime_backend="te_fp4"), NativeLinear)
+    assert isinstance(qwen38._linear(80, 640, runtime_backend="te_fp4"), NativeLinear)
+    assert isinstance(qwen38._linear(80, 1, runtime_backend="te_fp4"), NativeLinear)

@@ -306,7 +306,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "bf16_exceptions": [
                 "routing logits",
                 "shared-expert scalar gate",
-                "rank-80 residual read/write gates",
+                "linear weights with K not divisible by 32 or N not divisible by 16",
                 "normalization and loss",
             ],
             "master_parameters": "BF16 under Megatron mixed precision",
