@@ -417,6 +417,15 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
                 "router entropy",
             ],
         },
+        "qsa_training": {
+            "mode": "joint from-scratch sparse-index training",
+            "selection_budget": config.indexer_budget,
+            "implementation": "auditable PyTorch top-k QSA with differentiable index-score bias",
+            "source_recipe_difference": (
+                "the published Qwen3.8 model introduced QSA during continued pretraining with "
+                "dense-attention distillation; this from-scratch run has no dense teacher checkpoint"
+            ),
+        },
         "kernel_acceleration": {
             "gdn": args.gdn_kernel,
             "flash_qla_source_commit": os.environ.get("NGA_FLASHQLA_COMMIT"),

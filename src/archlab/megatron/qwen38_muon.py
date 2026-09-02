@@ -53,6 +53,61 @@ def _canonical_optimizer_step(steps: list[int | torch.Tensor]) -> int | torch.Te
     return steps[0]
 
 
+def _filter_and_reorder_optimizer_groups(
+    current_groups: list[dict[str, Any]],
+    loaded_groups: list[dict[str, Any]],
+    identifier_keys: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Match checkpoint groups one-to-one, including duplicate identifier keys.
+
+    Megatron's fresh-container implementation stores only one loaded group per
+    identifier tuple in a dict.  Muon's logical matrix splits deliberately
+    produce several groups with the same scheduler identifiers, so that code
+    aliases every duplicate to the last group and breaks optimizer resume.
+    Preserve the checkpoint order within each identifier tuple instead.
+    """
+
+    if len(current_groups) != len(loaded_groups):
+        raise ValueError(
+            "optimizer parameter group count changed: "
+            f"{len(loaded_groups)} checkpoint groups != {len(current_groups)} current groups"
+        )
+
+    def key(group: dict[str, Any]) -> tuple[Any, ...]:
+        return tuple(
+            group[name] if name in group else group[f"pre_{name}"]
+            for name in identifier_keys
+        )
+
+    queues: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    runtime_params_by_position = [group["params"] for group in loaded_groups]
+    for group in loaded_groups:
+        queues.setdefault(key(group), []).append(group)
+
+    reordered = []
+    for current_group, runtime_params in zip(
+        current_groups,
+        runtime_params_by_position,
+        strict=True,
+    ):
+        group_key = key(current_group)
+        candidates = queues.get(group_key, [])
+        if not candidates:
+            available = "\n".join(str(value) for value, groups in queues.items() if groups)
+            raise ValueError(
+                f"could not find checkpoint optimizer group {group_key}; "
+                f"available groups:\n{available}"
+            )
+        group = candidates.pop(0)
+        group["params"] = runtime_params
+        reordered.append(group)
+
+    leftovers = {group_key: len(groups) for group_key, groups in queues.items() if groups}
+    if leftovers:
+        raise ValueError(f"unused checkpoint optimizer groups: {leftovers}")
+    return reordered
+
+
 def polar_express_zeroth_power(
     matrices: torch.Tensor,
     *,
@@ -202,6 +257,16 @@ def install_qwen38_muon_adapter(config) -> None:
 
     entry.optimizer_cls = Qwen38TensorParallelMuon
     entry.default_param_overrides = overrides
+
+    # Process-local correction for duplicate Muon parameter-group identifiers;
+    # the container checkout remains pristine and replaceable.
+    optimizer_module.MegatronOptimizer._filter_and_reorder_param_groups = staticmethod(
+        lambda current, loaded: _filter_and_reorder_optimizer_groups(
+            current,
+            loaded,
+            optimizer_module.param_group_identifier_keys,
+        )
+    )
 
     chained_optimizer = optimizer_module.ChainedOptimizer
     if getattr(chained_optimizer, "_archlab_qwen38_capture_safe", False):

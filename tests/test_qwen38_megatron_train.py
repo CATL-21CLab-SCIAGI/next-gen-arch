@@ -10,6 +10,7 @@ from archlab.megatron.qwen38_muon import (
     POLAR_EXPRESS_COEFFICIENTS,
     _canonical_optimizer_step,
     _combine_grad_norms,
+    _filter_and_reorder_optimizer_groups,
     _validate_local_matrix_metadata,
     polar_express_zeroth_power,
 )
@@ -170,3 +171,28 @@ def test_capturable_optimizer_steps_compare_by_value_not_tensor_identity():
     assert _canonical_optimizer_step([first, second]) is first
     with pytest.raises(ValueError, match="diverged"):
         _canonical_optimizer_step([first, torch.tensor([6], dtype=torch.int32)])
+
+
+def test_checkpoint_group_matching_preserves_duplicate_muon_groups_one_to_one():
+    keys = ("wd_mult", "lr_mult", "is_expert_parallel", "is_decoupled_lr")
+
+    def group(parameter, split_rows):
+        return {
+            "params": [parameter],
+            "wd_mult": 1.0,
+            "lr_mult": 1.0,
+            "is_expert_parallel": False,
+            "is_decoupled_lr": False,
+            "archlab_muon_split_rows": split_rows,
+        }
+
+    current = [group("runtime-64", 64), group("runtime-160", 160)]
+    loaded = [group("checkpoint-64", 64), group("checkpoint-160", 160)]
+    reordered = _filter_and_reorder_optimizer_groups(current, loaded, keys)
+
+    assert reordered[0] is not reordered[1]
+    assert [item["archlab_muon_split_rows"] for item in reordered] == [64, 160]
+    assert [item["params"] for item in reordered] == [
+        ["checkpoint-64"],
+        ["checkpoint-160"],
+    ]
