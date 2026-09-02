@@ -177,7 +177,13 @@ class NativeGroupedLinear(nn.Module):
         return torch.cat(outputs, dim=0)
 
 
-def _grouped_linear(experts: int, in_features: int, out_features: int, *, runtime_backend: str):
+def _raw_grouped_linear(
+    experts: int,
+    in_features: int,
+    out_features: int,
+    *,
+    runtime_backend: str,
+):
     if runtime_backend == "native":
         return NativeGroupedLinear(experts, in_features, out_features)
     if runtime_backend == "te_fp4":
@@ -192,6 +198,79 @@ def _grouped_linear(experts: int, in_features: int, out_features: int, *, runtim
             single_grouped_weight=True,
         )
     raise ValueError(f"unsupported Qwen3.8 runtime backend: {runtime_backend}")
+
+
+class ChunkedGroupedLinear(nn.Module):
+    """Run sorted experts in bounded groups while preserving their row order."""
+
+    def __init__(
+        self,
+        experts: int,
+        in_features: int,
+        out_features: int,
+        *,
+        runtime_backend: str,
+        max_experts_per_group: int,
+    ):
+        super().__init__()
+        if max_experts_per_group < 1:
+            raise ValueError("grouped-linear expert limit must be positive")
+        self.experts = experts
+        self.out_features = out_features
+        self.group_sizes = tuple(
+            min(max_experts_per_group, experts - offset)
+            for offset in range(0, experts, max_experts_per_group)
+        )
+        self.groups = nn.ModuleList(
+            [
+                _raw_grouped_linear(
+                    group_size,
+                    in_features,
+                    out_features,
+                    runtime_backend=runtime_backend,
+                )
+                for group_size in self.group_sizes
+            ]
+        )
+
+    def forward(self, inputs: torch.Tensor, m_splits: torch.Tensor) -> torch.Tensor:
+        if m_splits.numel() != self.experts:
+            raise ValueError(
+                f"expected {self.experts} grouped-linear splits, found {m_splits.numel()}"
+            )
+        outputs = []
+        offset = 0
+        split_groups = torch.split(m_splits, self.group_sizes)
+        for module, splits in zip(self.groups, split_groups, strict=True):
+            rows = int(splits.detach().sum().cpu().item())
+            if rows:
+                outputs.append(module(inputs[offset : offset + rows], splits))
+            else:
+                outputs.append(inputs.new_empty((0, self.out_features)))
+            offset += rows
+        if offset != inputs.size(0):
+            raise ValueError("grouped-linear splits do not sum to the input row count")
+        return torch.cat(outputs, dim=0)
+
+
+def _grouped_linear(experts: int, in_features: int, out_features: int, *, runtime_backend: str):
+    # Transformer Engine 2.16's grouped Hadamard quantizer accepts at most 64
+    # tensors per kernel. Qwen3.8 quarter-shape retains 128 experts, so expose
+    # two ordinary 64-GEMM TE modules without altering any expert dimensions.
+    if runtime_backend == "te_fp4" and experts > 64:
+        return ChunkedGroupedLinear(
+            experts,
+            in_features,
+            out_features,
+            runtime_backend=runtime_backend,
+            max_experts_per_group=64,
+        )
+    return _raw_grouped_linear(
+        experts,
+        in_features,
+        out_features,
+        runtime_backend=runtime_backend,
+    )
 
 
 def _apply_partial_rope(
@@ -434,9 +513,7 @@ def _pad_grouped_tokens(
     if source_offset != inputs.size(0):
         raise ValueError("grouped-token splits do not sum to the input row count")
     padded = (
-        torch.cat(padded_chunks, dim=0)
-        if padded_chunks
-        else inputs.new_empty((0, inputs.size(-1)))
+        torch.cat(padded_chunks, dim=0) if padded_chunks else inputs.new_empty((0, inputs.size(-1)))
     )
     indices = (
         torch.cat(real_indices)

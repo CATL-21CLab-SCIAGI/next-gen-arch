@@ -4,6 +4,8 @@ import torch
 
 import archlab.architectures.qwen38_flash_next as qwen38
 from archlab.architectures.qwen38_flash_next import (
+    ChunkedGroupedLinear,
+    NativeGroupedLinear,
     NativeLinear,
     Qwen38FlashNext,
     Qwen38FlashNextConfig,
@@ -134,3 +136,49 @@ def test_grouped_token_padding_preserves_real_rows_and_gradients():
     assert torch.equal(padded.index_select(0, real_indices), inputs)
     padded.index_select(0, real_indices).sum().backward()
     assert torch.equal(inputs.grad, torch.ones_like(inputs))
+
+
+def test_chunked_grouped_linear_preserves_expert_order_and_gradients():
+    torch.manual_seed(11)
+    reference = NativeGroupedLinear(5, 3, 4)
+    chunked = ChunkedGroupedLinear(
+        5,
+        3,
+        4,
+        runtime_backend="native",
+        max_experts_per_group=2,
+    )
+    with torch.no_grad():
+        offset = 0
+        for group in chunked.groups:
+            stop = offset + group.weight.size(0)
+            group.weight.copy_(reference.weight[offset:stop])
+            offset = stop
+
+    splits = torch.tensor([1, 0, 2, 3, 0], dtype=torch.int32)
+    reference_inputs = torch.randn(6, 3, requires_grad=True)
+    chunked_inputs = reference_inputs.detach().clone().requires_grad_()
+    reference_output = reference(reference_inputs, splits)
+    chunked_output = chunked(chunked_inputs, splits)
+
+    assert chunked.group_sizes == (2, 2, 1)
+    assert torch.equal(chunked_output, reference_output)
+    reference_output.sum().backward()
+    chunked_output.sum().backward()
+    assert torch.equal(chunked_inputs.grad, reference_inputs.grad)
+    assert sum(parameter.numel() for parameter in chunked.parameters()) == reference.weight.numel()
+
+
+def test_fp4_grouped_linear_splits_128_experts_at_te_kernel_limit(monkeypatch):
+    calls = []
+
+    def fake_raw(experts, in_features, out_features, *, runtime_backend):
+        calls.append((experts, in_features, out_features, runtime_backend))
+        return NativeGroupedLinear(experts, in_features, out_features)
+
+    monkeypatch.setattr(qwen38, "_raw_grouped_linear", fake_raw)
+    module = qwen38._grouped_linear(128, 640, 320, runtime_backend="te_fp4")
+
+    assert isinstance(module, ChunkedGroupedLinear)
+    assert module.group_sizes == (64, 64)
+    assert calls == [(64, 640, 320, "te_fp4"), (64, 640, 320, "te_fp4")]
