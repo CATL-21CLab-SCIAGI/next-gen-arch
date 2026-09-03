@@ -143,6 +143,22 @@ def test_tiny_forward_backward_and_auxiliary_loss_are_finite():
     assert model.ngram.value_proj.weight.grad is not None
 
 
+def test_sparse_qsa_never_selects_future_padding_slots():
+    torch.manual_seed(17)
+    attention = qwen38.QwenSparseAttention(tiny_config(indexer_budget=8), runtime_backend="native")
+    for parameter in attention.parameters():
+        torch.nn.init.normal_(parameter)
+    x = torch.randn(2, 8, 32, requires_grad=True)
+    rotary = torch.zeros(1, 8, 1, 2)
+
+    output = attention(x, rotary.cos(), rotary.sin())
+    perturbed = x.detach().clone()
+    perturbed[:, 1:] += 100.0
+    perturbed_output = attention(perturbed, rotary.cos(), rotary.sin())
+
+    assert torch.allclose(output[:, 0], perturbed_output[:, 0], atol=1e-5, rtol=1e-5)
+
+
 def test_ngram_hash_does_not_cross_eos_boundaries():
     model = Qwen38FlashNext(tiny_config())
     first = torch.tensor([[1, 2, 63, 4, 5]])

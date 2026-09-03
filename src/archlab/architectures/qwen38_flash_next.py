@@ -555,6 +555,9 @@ class QwenSparseAttention(nn.Module):
         # top-k boundary itself is intentionally discrete.
         index_bias = index_scores.mean(dim=1).gather(-1, selected).unsqueeze(1)
         logits = logits + index_bias
+        query_positions = torch.arange(seq_len, device=x.device).view(1, seq_len, 1)
+        selected_is_causal = selected <= query_positions
+        logits = logits.masked_fill(~selected_is_causal.unsqueeze(1), -torch.inf)
         probabilities = F.softmax(logits.float(), dim=-1).to(v.dtype)
         output = torch.einsum("bhtk,btkhd->bthd", probabilities, selected_v)
         return self.out(output.flatten(-2))
