@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from archlab.architectures.qwen38_27b import Qwen38DenseConfig
-from archlab.megatron.qwen38_27b_train import _megatron_argv, _parser
+from archlab.megatron.qwen38_27b_train import (
+    _megatron_argv,
+    _native_muon_contract,
+    _parser,
+)
 
 
 def test_qwen38_27b_training_defaults_are_long_run_bf16(tmp_path: Path):
@@ -21,6 +25,8 @@ def test_qwen38_27b_training_defaults_are_long_run_bf16(tmp_path: Path):
     assert args.global_batch_size == 512
     assert args.target_train_tokens == 100_000_000_000
     assert args.checkpoint_interval_tokens == 10_000_000_000
+    assert args.learning_rate == 5e-5
+    assert args.minimum_learning_rate == 5e-6
     assert args.resume is True
 
 
@@ -51,6 +57,7 @@ def test_qwen38_27b_megatron_argv_uses_dense_geometry_muon_and_speedups(
         "--muon-momentum": "0.95",
         "--muon-scale-mode": "spectral",
         "--muon-extra-scale-factor": "0.2",
+        "--muon-fp32-matmul-prec": "highest",
         "--muon-coefficient-type": "polar_express",
         "--muon-num-ns-steps": "8",
     }
@@ -63,9 +70,18 @@ def test_qwen38_27b_megatron_argv_uses_dense_geometry_muon_and_speedups(
         "--overlap-grad-reduce",
         "--overlap-param-gather",
         "--ddp-pad-buckets-for-high-nccl-busbw",
-        "--optimizer-cuda-graph",
     ):
         assert flag in argv
+    assert "--optimizer-cuda-graph" not in argv
+
+
+def test_qwen38_27b_uses_container_owned_native_muon():
+    contract = _native_muon_contract()
+
+    assert contract["fp32_matmul_precision"] == "highest"
+    assert "TensorParallelMuon" in str(contract["implementation"])
+    assert "no repository-local optimizer adapter" in str(contract["integration"])
+    assert contract["optimizer_cuda_graph"] is False
 
 
 def test_qwen38_27b_probe_does_not_write_a_large_checkpoint(tmp_path: Path, monkeypatch):

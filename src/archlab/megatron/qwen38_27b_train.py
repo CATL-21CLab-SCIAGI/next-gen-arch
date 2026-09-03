@@ -23,7 +23,6 @@ from archlab.architectures.qwen38_27b import (
     Qwen38DenseConfig,
 )
 from archlab.megatron.backend import validate_runtime
-from archlab.megatron.qwen38_muon import install_qwen38_muon_adapter, muon_recipe_contract
 from archlab.megatron.qwen38_train import (
     BinaryTokenBatches,
     _architecture_from_model,
@@ -38,6 +37,27 @@ from archlab.megatron.qwen38_train import (
     _sha256,
 )
 from archlab.speedrun.precision import resolve_precision_backend
+
+NATIVE_MUON_FP32_MATMUL_PRECISION = "highest"
+
+
+def _native_muon_contract() -> dict[str, object]:
+    """Describe the container-owned Megatron Muon API consumed by this trainer."""
+    return {
+        "implementation": (
+            "container-owned megatron.core.optimizer.emerging_optimizers.TensorParallelMuon"
+        ),
+        "integration": "Megatron --optimizer muon; no repository-local optimizer adapter",
+        "momentum": 0.95,
+        "nesterov": True,
+        "coefficient_schedule": "polar_express",
+        "newton_schulz_steps": 8,
+        "matrix_partition": "one physical 2D parameter per Muon update",
+        "scale": "0.2 * Megatron spectral scale",
+        "fp32_matmul_precision": NATIVE_MUON_FP32_MATMUL_PRECISION,
+        "scalar_optimizer": "Megatron Adam fallback for embeddings, outputs, and non-matrices",
+        "optimizer_cuda_graph": False,
+    }
 
 
 def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
@@ -126,7 +146,7 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38DenseConfig) -> list[
         "--muon-extra-scale-factor",
         "0.2",
         "--muon-fp32-matmul-prec",
-        "medium",
+        NATIVE_MUON_FP32_MATMUL_PRECISION,
         "--muon-coefficient-type",
         "polar_express",
         "--muon-num-ns-steps",
@@ -150,7 +170,6 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38DenseConfig) -> list[
         "--overlap-grad-reduce",
         "--overlap-param-gather",
         "--ddp-pad-buckets-for-high-nccl-busbw",
-        "--optimizer-cuda-graph",
         "--tokenizer-type",
         "NullTokenizer",
         "--vocab-size",
@@ -250,7 +269,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None
         },
         "optimizer": {
             "name": "Qwen-style hybrid Muon/AdamW",
-            **muon_recipe_contract(),
+            **_native_muon_contract(),
             "learning_rate": args.learning_rate,
             "minimum_learning_rate": args.minimum_learning_rate,
             "warmup_fraction": args.warmup_fraction,
@@ -263,7 +282,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None
             "gated_full_attention": "PyTorch scaled_dot_product_attention causal fused backend",
             "dense_gemm": "Transformer Engine BF16",
             "cross_entropy": "Transformer Engine Triton fused cross entropy",
-            "optimizer_step": "Megatron whole-step CUDA graph after warmup",
+            "optimizer_step": "Megatron native distributed TensorParallelMuon",
             "input_pipeline": "background CPU memmap prefetch, pinned memory, nonblocking H2D",
             "distributed_overlap": [
                 "gradient reduce-scatter overlapped with backward",
@@ -321,8 +340,6 @@ def _run(args: argparse.Namespace) -> None:
     from megatron.core.transformer.module import MegatronModule
     from megatron.training import get_args
     from megatron.training.arguments import core_transformer_config_from_args
-
-    install_qwen38_muon_adapter(config)
 
     class Qwen38DenseMegatronModel(MegatronModule):
         def __init__(self, transformer_config, pg_collection):
@@ -444,8 +461,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--global-batch-size", type=int, default=512)
     parser.add_argument("--target-train-tokens", type=int, default=100_000_000_000)
     parser.add_argument("--checkpoint-interval-tokens", type=int, default=10_000_000_000)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--minimum-learning-rate", type=float, default=3e-5)
+    parser.add_argument("--learning-rate", type=float, default=5e-5)
+    parser.add_argument("--minimum-learning-rate", type=float, default=5e-6)
     parser.add_argument("--warmup-fraction", type=float, default=0.01)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--clip-grad", type=float, default=1.0)

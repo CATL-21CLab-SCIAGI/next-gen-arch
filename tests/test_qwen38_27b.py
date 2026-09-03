@@ -81,10 +81,10 @@ def test_dense_optimizer_partition_assigns_every_parameter_once():
         parameter.numel() for parameter in model.parameters()
     )
     assert gdn.qkv.weight.archlab_optimizer == "muon"
-    assert gdn.qkv.weight.archlab_muon_split_rows == model.config.linear_key_dim
+    assert not hasattr(gdn.qkv.weight, "archlab_muon_split_rows")
     assert gdn.z.weight.archlab_optimizer == "adamw"
     assert attention.q_gate.weight.archlab_optimizer == "muon"
-    assert attention.q_gate.weight.archlab_muon_split_rows == model.config.attention_head_dim
+    assert not hasattr(attention.q_gate.weight, "archlab_muon_split_rows")
     assert model.layers[0].mlp.gate.weight.archlab_optimizer == "muon"
     assert model.token_embedding.weight.archlab_optimizer == "adamw"
     assert model.lm_head.weight.archlab_optimizer == "adamw"

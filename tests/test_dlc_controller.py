@@ -140,6 +140,7 @@ def test_validate_request_accepts_dense_27b_launcher_without_data_conversion_key
         "NGA_PRECISION",
     ):
         environment.pop(key)
+    environment["NGA_PREFLIGHT_STEPS"] = "400"
 
     request = validate_request(
         payload,
@@ -149,6 +150,11 @@ def test_validate_request_accepts_dense_27b_launcher_without_data_conversion_key
     )
 
     assert request.payload["launcher"] == DENSE_27B_LAUNCHER
+    assert request.environment["NGA_PREFLIGHT_STEPS"] == "400"
+
+    environment["NGA_PREFLIGHT_STEPS"] = "0"
+    with pytest.raises(ValueError, match="NGA_PREFLIGHT_STEPS"):
+        validate_request(payload, allowed_repo_root=tmp_path / "repos")
 
 
 def test_publish_is_atomic_idempotent_and_rejects_generation_reuse(tmp_path: Path) -> None:

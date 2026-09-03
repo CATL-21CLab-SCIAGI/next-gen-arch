@@ -276,16 +276,11 @@ class Qwen38Dense(nn.Module):
         *,
         optimizer: str,
         category: str,
-        split_rows: int | None = None,
     ) -> None:
         for parameter in module.parameters():
             parameter.archlab_optimizer = optimizer
             parameter.archlab_optimizer_category = category
             parameter.is_embedding_or_output_parameter = optimizer != "muon"
-            if split_rows is not None:
-                parameter.archlab_muon_split_rows = split_rows
-            elif hasattr(parameter, "archlab_muon_split_rows"):
-                del parameter.archlab_muon_split_rows
 
     def _configure_optimizer_parameters(self) -> None:
         self._tag_optimizer_module(
@@ -309,8 +304,7 @@ class Qwen38Dense(nn.Module):
                 self._tag_optimizer_module(
                     attention.qkv,
                     optimizer="muon",
-                    category="gdn_qkv_per_head",
-                    split_rows=attention.key_dim,
+                    category="gdn_qkv",
                 )
                 self._tag_optimizer_module(
                     attention.out,
@@ -336,8 +330,7 @@ class Qwen38Dense(nn.Module):
                 self._tag_optimizer_module(
                     attention.q_gate,
                     optimizer="muon",
-                    category="attention_query_and_gate_per_head",
-                    split_rows=attention.head_dim,
+                    category="attention_query_and_gate",
                 )
                 for name in ("k", "v", "out"):
                     self._tag_optimizer_module(
@@ -367,18 +360,7 @@ class Qwen38Dense(nn.Module):
                 invalid.append(
                     f"{name}: expected 2D Muon parameter, found {tuple(parameter.shape)}"
                 )
-            split_rows = getattr(parameter, "archlab_muon_split_rows", None)
-            matrix_count = 0
-            if optimizer == "muon":
-                if split_rows is not None:
-                    output_rows = parameter.shape[-2]
-                    if output_rows % split_rows:
-                        invalid.append(
-                            f"{name}: output rows {output_rows} not divisible by {split_rows}"
-                        )
-                    matrix_count = parameter.numel() // (split_rows * parameter.shape[-1])
-                else:
-                    matrix_count = parameter.numel() // (parameter.shape[-2] * parameter.shape[-1])
+            matrix_count = 1 if optimizer == "muon" else 0
             bucket = optimizers.setdefault(
                 optimizer,
                 {"tensors": 0, "parameters": 0, "logical_matrices": 0},

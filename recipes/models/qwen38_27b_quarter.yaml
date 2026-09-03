@@ -37,3 +37,11 @@ model:
 precision:
   recipe: bf16
   dependency_policy: unmodified_container_runtime
+optimizer:
+  name: megatron_native_muon
+  scalar_fallback: adam
+  fp32_matmul_precision: highest
+  coefficient_schedule: polar_express
+  newton_schulz_steps: 8
+  peak_learning_rate: 5.0e-5
+  minimum_learning_rate: 5.0e-6

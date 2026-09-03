@@ -6,17 +6,18 @@ set -euo pipefail
 : "${MASTER_ADDR:?PAI DLC must inject MASTER_ADDR}"
 : "${MASTER_PORT:?PAI DLC must inject MASTER_PORT}"
 
-NGA_REPO_ROOT="${NGA_REPO_ROOT:-/mnt/nas/evergreen/next-gen-arch}"
+NGA_REPO_ROOT="${NGA_REPO_ROOT:-/mnt/nas/evergreen/next-gen-arch-repo}"
 NGA_EXPECTED_COMMIT="${NGA_EXPECTED_COMMIT:?set the immutable next-gen-arch commit}"
 NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100BT-qwen38-de4b8e4d43b9}"
 NGA_TOKENIZER="${NGA_TOKENIZER:-/mnt/oss/models/qwen38-flash-next-de4b8e4d43b9}"
-NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/qwen38-27b-quarter-bf16-fineweb100b-seed42}"
+NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/qwen38-27b-quarter-bf16-fp32muon-fineweb100b-seed42}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
 NGA_MEGATRON_ROOT="${NGA_MEGATRON_ROOT:-/opt/Megatron-Bridge/3rdparty/Megatron-LM}"
 NGA_EXPECTED_NODES="${NGA_EXPECTED_NODES:-4}"
 NGA_GPUS_PER_NODE="${NGA_GPUS_PER_NODE:-8}"
 NGA_RUNTIME_PREFLIGHT="${NGA_RUNTIME_PREFLIGHT:-1}"
 NGA_PREFLIGHT_DATA_ROOT="${NGA_PREFLIGHT_DATA_ROOT:-$NGA_DATA_ROOT}"
+NGA_PREFLIGHT_STEPS="${NGA_PREFLIGHT_STEPS:-400}"
 NGA_SEQUENCE_LENGTH="${NGA_SEQUENCE_LENGTH:-2048}"
 NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-4}"
 NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-512}"
@@ -44,6 +45,10 @@ for value in \
         exit 1
     fi
 done
+if ((NGA_PREFLIGHT_STEPS < 1)); then
+    echo "NGA_PREFLIGHT_STEPS must be positive" >&2
+    exit 1
+fi
 if [[ "$NGA_RUNTIME_PREFLIGHT" != "0" && "$NGA_RUNTIME_PREFLIGHT" != "1" ]]; then
     echo "NGA_RUNTIME_PREFLIGHT must be 0 or 1" >&2
     exit 1
@@ -123,14 +128,14 @@ if [[ "$NGA_RUNTIME_PREFLIGHT" = "1" && ! -f "$NGA_OUTPUT_ROOT/preflight/PROBE_C
         --data-root "$NGA_PREFLIGHT_DATA_ROOT" \
         --tokenizer "$NGA_TOKENIZER" \
         --run-dir "$NGA_OUTPUT_ROOT/preflight" \
-        --sequence-length 128 \
-        --micro-batch-size 1 \
-        --global-batch-size "$((NGA_EXPECTED_NODES * NGA_GPUS_PER_NODE))" \
-        --checkpoint-interval-tokens 1000000 \
-        --probe-steps 5 \
-        --eval-interval 5 \
+        --sequence-length "$NGA_SEQUENCE_LENGTH" \
+        --micro-batch-size "$NGA_MICRO_BATCH_SIZE" \
+        --global-batch-size "$NGA_GLOBAL_BATCH_SIZE" \
+        --checkpoint-interval-tokens "$NGA_CHECKPOINT_INTERVAL_TOKENS" \
+        --probe-steps "$NGA_PREFLIGHT_STEPS" \
+        --eval-interval "$NGA_PREFLIGHT_STEPS" \
         --eval-iters 1 \
-        --log-interval 1 \
+        --log-interval 10 \
         --seed 42 \
         2>&1 | tee -a "$NGA_OUTPUT_ROOT/logs/preflight-node-$RANK.log"
 fi

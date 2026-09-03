@@ -1,6 +1,6 @@
 # Next-Gen Architecture Lab
 
-[简体中文](README.zh-CN.md) · [Results](docs/RESULTS.md) · [Experiment contracts](docs/EXPERIMENT_CONTRACTS.md) · [Provenance](docs/PROVENANCE.md) · [Operations](docs/OPERATIONS.md) · [Runtimes](docs/RUNTIMES.md) · [Architectures](docs/ARCHITECTURES.md)
+[简体中文](README.zh-CN.md) · [Results](docs/RESULTS.md) · [Experiment contracts](docs/EXPERIMENT_CONTRACTS.md) · [Provenance](docs/PROVENANCE.md) · [Operations](docs/OPERATIONS.md) · [Runtimes](docs/RUNTIMES.md) · [Architectures](docs/ARCHITECTURES.md) · [Qwen3.8 training](docs/QWEN38_27B_TRAINING.md)
 
 [![CI](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml/badge.svg)](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
