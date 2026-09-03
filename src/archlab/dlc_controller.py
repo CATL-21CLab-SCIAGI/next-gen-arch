@@ -17,6 +17,8 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 LAUNCHER = "scripts/run_qwen38_quarter_fp4_dlc.sh"
+DENSE_27B_LAUNCHER = "scripts/run_qwen38_27b_quarter_dlc.sh"
+ALLOWED_LAUNCHERS = {LAUNCHER, DENSE_27B_LAUNCHER}
 DEFAULT_ALLOWED_REPO_ROOT = Path("/mnt/nas/evergreen")
 DEFAULT_CONTROL_ROOT = Path(
     "/mnt/nas/evergreen/next-gen-arch/qwen38-quarter-fp4-fineweb100b-control"
@@ -76,6 +78,20 @@ _REQUIRED_ENVIRONMENT_KEYS = {
     "NGA_EXPECTED_TRAIN_PARTS",
     "NGA_DATA_WAIT_SECONDS",
     "NGA_PREPARE_DATA",
+    "NGA_RUNTIME_PREFLIGHT",
+    "NGA_PREFLIGHT_DATA_ROOT",
+    "NGA_SEQUENCE_LENGTH",
+    "NGA_MICRO_BATCH_SIZE",
+    "NGA_GLOBAL_BATCH_SIZE",
+    "NGA_TARGET_TRAIN_TOKENS",
+    "NGA_CHECKPOINT_INTERVAL_TOKENS",
+}
+_DENSE_27B_REQUIRED_ENVIRONMENT_KEYS = {
+    "NGA_DATA_ROOT",
+    "NGA_TOKENIZER",
+    "NGA_OUTPUT_ROOT",
+    "NGA_EXPECTED_NODES",
+    "NGA_GPUS_PER_NODE",
     "NGA_RUNTIME_PREFLIGHT",
     "NGA_PREFLIGHT_DATA_ROOT",
     "NGA_SEQUENCE_LENGTH",
@@ -186,8 +202,9 @@ def validate_request(
     _validate_timestamp(payload["requested_at_utc"])
     if _as_str(payload["requested_from"], "requested_from") != "dsw-evergreen":
         raise ValueError("requested_from must be dsw-evergreen")
-    if payload["launcher"] != LAUNCHER:
-        raise ValueError(f"launcher must be {LAUNCHER}")
+    launcher = _as_str(payload["launcher"], "launcher")
+    if launcher not in ALLOWED_LAUNCHERS:
+        raise ValueError(f"launcher must be one of {sorted(ALLOWED_LAUNCHERS)}")
 
     repository = payload["repository"]
     if not isinstance(repository, dict):
@@ -206,7 +223,12 @@ def validate_request(
     if not isinstance(raw_environment, dict):
         raise ValueError("environment must be an object")
     _require_exact_keys(raw_environment, _ALLOWED_ENVIRONMENT_KEYS, "environment")
-    missing_environment = _REQUIRED_ENVIRONMENT_KEYS - set(raw_environment)
+    required_environment = (
+        _DENSE_27B_REQUIRED_ENVIRONMENT_KEYS
+        if launcher == DENSE_27B_LAUNCHER
+        else _REQUIRED_ENVIRONMENT_KEYS
+    )
+    missing_environment = required_environment - set(raw_environment)
     if missing_environment:
         raise ValueError(f"missing environment keys: {sorted(missing_environment)}")
     environment = {
@@ -220,14 +242,15 @@ def validate_request(
         if key in environment and (not environment[key].isdigit()):
             raise ValueError(f"{key} must be a non-negative integer")
     for key in _BOOLEAN_KEYS:
+        if key not in environment:
+            continue
         if environment[key] not in {"0", "1"}:
             raise ValueError(f"{key} must be 0 or 1")
-    if (
-        "NGA_PRECISION" in environment
-        and environment["NGA_PRECISION"] not in {"bf16", "fp4"}
-    ):
+    if "NGA_PRECISION" in environment and environment["NGA_PRECISION"] not in {"bf16", "fp4"}:
         raise ValueError("NGA_PRECISION must be bf16 or fp4")
     for key, root in _PATH_PREFIXES.items():
+        if key not in environment:
+            continue
         path = Path(environment[key])
         if not path.is_absolute() or not _is_within(path, root):
             raise ValueError(f"{key} must be under {root}")
@@ -303,7 +326,7 @@ def verify_repository(request: LaunchRequest) -> None:
     drift = [line for line in status if line not in {"?? .LAUNCH_READY", "?? repo-head.txt"}]
     if drift:
         raise RuntimeError(f"repository is not clean: {drift}")
-    launcher = root / LAUNCHER
+    launcher = root / request.payload["launcher"]
     if not launcher.is_file():
         raise RuntimeError(f"launcher is missing: {launcher}")
 
@@ -467,7 +490,7 @@ class Controller:
         child_environment["NGA_REPO_ROOT"] = str(request.repository_root)
         child_environment["NGA_EXPECTED_COMMIT"] = request.commit
         self.child = subprocess.Popen(
-            ["bash", str(request.repository_root / LAUNCHER)],
+            ["bash", str(request.repository_root / request.payload["launcher"])],
             env=child_environment,
             start_new_session=True,
         )

@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from archlab.dlc_controller import LAUNCHER, Controller, publish_request, validate_request
+from archlab.dlc_controller import (
+    DENSE_27B_LAUNCHER,
+    LAUNCHER,
+    Controller,
+    publish_request,
+    validate_request,
+)
 
 
 def _git(root: Path, *args: str) -> str:
@@ -18,10 +24,15 @@ def _git(root: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _repository(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, str]:
+def _repository(
+    tmp_path: Path,
+    *,
+    exit_code: int = 0,
+    launcher: str = LAUNCHER,
+) -> tuple[Path, str]:
     root = tmp_path / "repos" / "next-gen-arch"
     (root / "scripts").mkdir(parents=True)
-    (root / LAUNCHER).write_text(f"#!/usr/bin/env bash\nexit {exit_code}\n")
+    (root / launcher).write_text(f"#!/usr/bin/env bash\nexit {exit_code}\n")
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "test@example.com")
     _git(root, "config", "user.name", "Test")
@@ -30,7 +41,12 @@ def _repository(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, str]:
     return root, _git(root, "rev-parse", "HEAD")
 
 
-def _payload(repository: Path, commit: str) -> dict[str, object]:
+def _payload(
+    repository: Path,
+    commit: str,
+    *,
+    launcher: str = LAUNCHER,
+) -> dict[str, object]:
     return {
         "schema_version": 1,
         "generation": "20260902T200000Z-ca5e75c",
@@ -38,7 +54,7 @@ def _payload(repository: Path, commit: str) -> dict[str, object]:
         "requested_at_utc": "2026-09-02T12:00:00Z",
         "requested_from": "dsw-evergreen",
         "repository": {"root": str(repository), "commit": commit},
-        "launcher": LAUNCHER,
+        "launcher": launcher,
         "environment": {
             "NGA_SOURCE_DATA": "/mnt/oss-dataset/datasets/AI-ModelScope/fineweb-edu/sample/100BT",
             "NGA_SOURCE_MANIFEST": "/mnt/oss/datasets/fineweb/source.json",
@@ -105,6 +121,34 @@ def test_validate_request_rejects_unknown_precision(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="NGA_PRECISION"):
         validate_request(payload, allowed_repo_root=tmp_path / "repos")
+
+
+def test_validate_request_accepts_dense_27b_launcher_without_data_conversion_keys(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repos" / "next-gen-arch"
+    payload = _payload(root, "a" * 40, launcher=DENSE_27B_LAUNCHER)
+    environment = payload["environment"]
+    assert isinstance(environment, dict)
+    for key in (
+        "NGA_SOURCE_DATA",
+        "NGA_SOURCE_MANIFEST",
+        "NGA_TOKENIZER_WORKERS",
+        "NGA_EXPECTED_TRAIN_PARTS",
+        "NGA_DATA_WAIT_SECONDS",
+        "NGA_PREPARE_DATA",
+        "NGA_PRECISION",
+    ):
+        environment.pop(key)
+
+    request = validate_request(
+        payload,
+        allowed_repo_root=tmp_path / "repos",
+        expected_nodes=4,
+        expected_gpus_per_node=8,
+    )
+
+    assert request.payload["launcher"] == DENSE_27B_LAUNCHER
 
 
 def test_publish_is_atomic_idempotent_and_rejects_generation_reuse(tmp_path: Path) -> None:

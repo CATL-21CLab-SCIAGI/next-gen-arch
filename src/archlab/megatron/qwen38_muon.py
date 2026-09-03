@@ -75,8 +75,7 @@ def _filter_and_reorder_optimizer_groups(
 
     def key(group: dict[str, Any]) -> tuple[Any, ...]:
         return tuple(
-            group[name] if name in group else group[f"pre_{name}"]
-            for name in identifier_keys
+            group[name] if name in group else group[f"pre_{name}"] for name in identifier_keys
         )
 
     queues: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
@@ -232,26 +231,27 @@ def install_qwen38_muon_adapter(config) -> None:
                 logical,
                 use_bfloat16_matmul=self._qwen_use_bfloat16_matmul,
             )
-            scale = self._qwen_extra_scale_factor * math.sqrt(
-                max(split_rows, gradient.size(1))
-            )
+            scale = self._qwen_extra_scale_factor * math.sqrt(max(split_rows, gradient.size(1)))
             return (update * scale).view_as(gradient)
 
     split_rows = {
-        config.linear_key_dim,
-        config.attention_head_dim,
-        config.moe_intermediate_size,
-        config.shared_expert_intermediate_size,
+        int(getattr(config, name))
+        for name in (
+            "linear_key_dim",
+            "attention_head_dim",
+            "moe_intermediate_size",
+            "shared_expert_intermediate_size",
+        )
+        if hasattr(config, name)
     }
     overrides = dict(entry.default_param_overrides)
     overrides[ParamKey(attr="archlab_no_weight_decay")] = {"wd_mult": 0.0}
     for rows in sorted(split_rows):
         predicate = ParamPredicate(
             name=f"archlab_muon_split_rows_{rows}",
-            fn=lambda parameter, expected=rows: getattr(
-                parameter, "archlab_muon_split_rows", None
-            )
-            == expected,
+            fn=lambda parameter, expected=rows: (
+                getattr(parameter, "archlab_muon_split_rows", None) == expected
+            ),
         )
         overrides[ParamKey(predicate=predicate)] = {"archlab_muon_split_rows": rows}
 

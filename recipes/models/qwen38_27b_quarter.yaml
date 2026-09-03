@@ -1,0 +1,39 @@
+name: qwen38-27b-quarter-text
+source:
+  model: Qwen/Qwen3.8-27B
+  revision: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+  config_sha256: 191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab
+  tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+  scope: text backbone only
+scaling_contract:
+  rule: divide every divisible capacity shape by four
+  preserve:
+    - tokenizer vocabulary and token IDs
+    - maximum position reach
+    - three Gated DeltaNet layers followed by one gated full-attention layer
+    - causal convolution kernel extent
+    - one multi-token-prediction layer
+model:
+  vocab_size: 248320
+  sequence_len: 2048
+  max_position_embeddings: 262144
+  num_hidden_layers: 16
+  hidden_size: 1280
+  intermediate_size: 4352
+  attention_pattern: [gdn, gdn, gdn, full_attention]
+  full_attention:
+    query_heads: 6
+    kv_heads: 1
+    head_dim: 64
+    partial_rotary_factor: 0.25
+    output_gate: sigmoid
+  gdn:
+    qk_heads: 4
+    value_heads: 12
+    key_dim: 32
+    value_dim: 32
+    conv_kernel: 4
+  mtp_layers: 1
+precision:
+  recipe: bf16
+  dependency_policy: unmodified_container_runtime
