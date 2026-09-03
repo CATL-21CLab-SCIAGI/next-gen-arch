@@ -38,7 +38,7 @@ from archlab.megatron.qwen38_train import (
 )
 from archlab.speedrun.precision import resolve_precision_backend
 
-NATIVE_MUON_FP32_MATMUL_PRECISION = "highest"
+NATIVE_MUON_FP32_MATMUL_PRECISION = "medium"
 
 
 def _native_muon_contract() -> dict[str, object]:
@@ -47,10 +47,7 @@ def _native_muon_contract() -> dict[str, object]:
         "implementation": (
             "container-owned megatron.core.optimizer.emerging_optimizers.TensorParallelMuon"
         ),
-        "integration": (
-            "Megatron --optimizer muon with a config-container precision override; "
-            "no repository-local optimizer adapter"
-        ),
+        "integration": "Megatron --optimizer muon; no repository-local optimizer adapter",
         "momentum": 0.95,
         "nesterov": True,
         "coefficient_schedule": "polar_express",
@@ -148,6 +145,8 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38DenseConfig) -> list[
         "spectral",
         "--muon-extra-scale-factor",
         "0.2",
+        "--muon-fp32-matmul-prec",
+        NATIVE_MUON_FP32_MATMUL_PRECISION,
         "--muon-coefficient-type",
         "polar_express",
         "--muon-num-ns-steps",
@@ -441,9 +440,6 @@ def _run(args: argparse.Namespace) -> None:
         datasets_provider,
         model_provider,
         ModelType.encoder_or_decoder,
-        validated_args_overrides={
-            "muon_fp32_matmul_prec": NATIVE_MUON_FP32_MATMUL_PRECISION,
-        },
     )
 
     if _distributed_rank() == 0:

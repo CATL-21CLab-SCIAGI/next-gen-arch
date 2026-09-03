@@ -40,7 +40,7 @@ precision:
 optimizer:
   name: megatron_native_muon
   scalar_fallback: adam
-  fp32_matmul_precision: highest
+  fp32_matmul_precision: medium
   coefficient_schedule: polar_express
   newton_schulz_steps: 8
   peak_learning_rate: 5.0e-5
