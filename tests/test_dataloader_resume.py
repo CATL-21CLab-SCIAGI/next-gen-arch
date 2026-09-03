@@ -1,20 +1,8 @@
-import sys
-import types
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
-
-if "pyarrow.parquet" not in sys.modules:
-    pyarrow = types.ModuleType("pyarrow")
-    pyarrow.__path__ = []
-    sys.modules.setdefault("pyarrow", pyarrow)
-    sys.modules["pyarrow.parquet"] = types.ModuleType("pyarrow.parquet")
-if "archlab.speedrun.dataset" not in sys.modules:
-    dataset = types.ModuleType("archlab.speedrun.dataset")
-    dataset.list_parquet_files = lambda **_: []
-    sys.modules["archlab.speedrun.dataset"] = dataset
 
 import archlab.speedrun.dataloader as dataloader
 
