@@ -468,8 +468,11 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "whole_model_torch_compile": "dynamic expert token counts and host dispatch are not graph-safe",
             "nccl_user_buffers": "not enabled without a topology-specific registration preflight",
             "sparse_ngram_gradient_communication": (
-                "modded-nanogpt's custom bigram protocol is model-specific; native Megatron "
-                "requires dense gradients for this four-table PLE"
+                "not applicable: hash tables are frozen in this root-cause control; "
+                "PLE projections and convolution remain trainable"
+                if args.freeze_ngram_tables
+                else "modded-nanogpt's custom bigram protocol is model-specific; native "
+                "Megatron requires dense gradients for this four-table PLE"
             ),
             "ngram_host_offload": (
                 "the quartered 3.2B table fits B300 HBM; direct device lookup avoids host transfer"
