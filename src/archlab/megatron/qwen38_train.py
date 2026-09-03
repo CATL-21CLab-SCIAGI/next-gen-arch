@@ -188,18 +188,38 @@ def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
     return losses, partial(_loss_func, component_metrics=component_metrics)
 
 
-def _invoke_pretrain(training_module, datasets_provider, model_provider, model_type) -> None:
+def _apply_validated_args_overrides(args, overrides: dict[str, object] | None) -> None:
+    """Set constructor-facing values that Megatron's CLI cannot represent."""
+    for name, value in (overrides or {}).items():
+        if not hasattr(args, name):
+            raise RuntimeError(f"Megatron does not expose the required config field: {name}")
+        setattr(args, name, value)
+
+
+def _invoke_pretrain(
+    training_module,
+    datasets_provider,
+    model_provider,
+    model_type,
+    *,
+    validated_args_overrides: dict[str, object] | None = None,
+) -> None:
     parameters = inspect.signature(training_module.pretrain).parameters
     if "cfg_container" in parameters:
         from megatron.training.argument_utils import pretrain_cfg_container_from_args
         from megatron.training.arguments import parse_and_validate_args
 
         args = parse_and_validate_args(args_defaults={"tokenizer_type": "NullTokenizer"})
+        _apply_validated_args_overrides(args, validated_args_overrides)
         config = pretrain_cfg_container_from_args(args)
         training_module.pretrain(
             config, datasets_provider, model_provider, model_type, _forward_step
         )
         return
+    if validated_args_overrides:
+        raise RuntimeError(
+            "strict FP32 Muon requires Megatron's config-container pretrain API"
+        )
     training_module.pretrain(
         datasets_provider,
         model_provider,

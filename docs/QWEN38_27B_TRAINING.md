@@ -10,10 +10,18 @@ matrix parameters through `TensorParallelMuon` and routes embeddings, output
 weights, and non-matrix parameters through its built-in Adam fallback. The Qwen
 model tags only that routing boundary; it does not implement the optimizer.
 
+The pinned Megatron CLI exposes `low`, `medium`, and `high` for Muon matmul
+precision, while the native `TensorParallelMuon` constructor and PyTorch use
+`medium`, `high`, and `highest`. The trainer therefore omits the incompatible
+CLI flag and sets the validated Megatron config-container field to `highest`
+before Megatron constructs the optimizer. The installed Megatron and
+`emerging_optimizers` packages remain unchanged.
+
 The training contract uses:
 
 - BF16 model and activation compute with FP32 optimizer master parameters;
-- `--muon-fp32-matmul-prec highest`, keeping Muon state matrix products in FP32;
+- native Muon `fp32_matmul_prec=highest`, keeping Muon state matrix products in
+  strict FP32 rather than TF32;
 - native Polar Express coefficients with eight Newton-Schulz steps;
 - a peak learning rate of `5e-5`, with a `5e-6` minimum;
 - Megatron's distributed optimizer and gradient/parameter communication overlap;

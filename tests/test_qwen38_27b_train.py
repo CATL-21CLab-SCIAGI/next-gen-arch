@@ -57,7 +57,6 @@ def test_qwen38_27b_megatron_argv_uses_dense_geometry_muon_and_speedups(
         "--muon-momentum": "0.95",
         "--muon-scale-mode": "spectral",
         "--muon-extra-scale-factor": "0.2",
-        "--muon-fp32-matmul-prec": "highest",
         "--muon-coefficient-type": "polar_express",
         "--muon-num-ns-steps": "8",
     }
@@ -72,6 +71,7 @@ def test_qwen38_27b_megatron_argv_uses_dense_geometry_muon_and_speedups(
         "--ddp-pad-buckets-for-high-nccl-busbw",
     ):
         assert flag in argv
+    assert "--muon-fp32-matmul-prec" not in argv
     assert "--optimizer-cuda-graph" not in argv
 
 
@@ -81,6 +81,7 @@ def test_qwen38_27b_uses_container_owned_native_muon():
     assert contract["fp32_matmul_precision"] == "highest"
     assert "TensorParallelMuon" in str(contract["implementation"])
     assert "no repository-local optimizer adapter" in str(contract["integration"])
+    assert "config-container precision override" in str(contract["integration"])
     assert contract["optimizer_cuda_graph"] is False
 
 

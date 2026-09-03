@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -16,12 +17,26 @@ from archlab.megatron.qwen38_muon import (
 )
 from archlab.megatron.qwen38_train import (
     BinaryTokenBatches,
+    _apply_validated_args_overrides,
     _data_prefixes,
     _loss_func,
     _megatron_argv,
     _parser,
     _partition_prefixes,
 )
+
+
+def test_validated_args_overrides_reach_constructor_facing_config():
+    args = SimpleNamespace(muon_fp32_matmul_prec="medium")
+
+    _apply_validated_args_overrides(args, {"muon_fp32_matmul_prec": "highest"})
+
+    assert args.muon_fp32_matmul_prec == "highest"
+
+
+def test_validated_args_overrides_reject_missing_megatron_fields():
+    with pytest.raises(RuntimeError, match="does not expose"):
+        _apply_validated_args_overrides(SimpleNamespace(), {"missing_field": "value"})
 
 
 def _part(root: Path, split: str, index: int, tokens: list[int]) -> Path:
