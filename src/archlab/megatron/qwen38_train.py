@@ -346,6 +346,8 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
         return
     with torch.device("meta"):
         meta_model = Qwen38FlashNext(config, gdn_kernel=args.gdn_kernel)
+        if args.freeze_ngram_tables:
+            meta_model.freeze_ngram_tables()
         counts = meta_model.num_scaling_params()
         optimizer_partition = meta_model.optimizer_contract()
     tokens_per_step = args.global_batch_size * config.sequence_len
@@ -425,7 +427,10 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
         "qsa_training": {
             "mode": "joint from-scratch sparse-index training",
             "selection_budget": config.indexer_budget,
-            "implementation": "auditable PyTorch top-k QSA with differentiable index-score bias",
+            "implementation": (
+                "auditable PyTorch top-k indexer with gathered sparse K/V attention; "
+                "no dense value-attention matrix"
+            ),
             "source_recipe_difference": (
                 "the published Qwen3.8 model introduced QSA during continued pretraining with "
                 "dense-attention distillation; this from-scratch run has no dense teacher checkpoint"
@@ -439,6 +444,11 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
             "ple": (
                 "GPU hashed lookup, Transformer Engine key/value projections, "
                 "cuDNN dilated depthwise convolution"
+            ),
+            "ngram_table_training": (
+                "frozen forward-only root-cause control"
+                if args.freeze_ngram_tables
+                else "dense Megatron Adam gradients"
             ),
             "optimizer_step": "Megatron whole-step CUDA graph after warmup",
             "gradient_accumulation": "Megatron fusion enabled",
@@ -555,6 +565,8 @@ def _run(args: argparse.Namespace) -> None:
                 gdn_kernel=args.gdn_kernel,
             )
             self.architecture.init_weights()
+            if args.freeze_ngram_tables:
+                self.architecture.freeze_ngram_tables()
             optimizer_partition = self.architecture.optimizer_contract(
                 require_two_dimensional_muon=True
             )
@@ -661,6 +673,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--probe-steps", type=int, default=0)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--freeze-ngram-tables",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="retain PLE forward lookups but exclude the four hash tables from DDP/Adam",
+    )
     return parser
 
 

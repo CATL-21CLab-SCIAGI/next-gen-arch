@@ -71,6 +71,23 @@ def test_qwen38_training_defaults_to_bf16(tmp_path):
 
     assert args.precision == "bf16"
     assert args.gdn_kernel == "fla"
+    assert args.freeze_ngram_tables is False
+
+
+def test_qwen38_training_accepts_frozen_ngram_control(tmp_path):
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path / "data"),
+            "--tokenizer",
+            str(tmp_path / "tokenizer"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--freeze-ngram-tables",
+        ]
+    )
+
+    assert args.freeze_ngram_tables is True
 
 
 def test_megatron_argv_uses_exact_distributed_muon_and_speedups(tmp_path, monkeypatch):

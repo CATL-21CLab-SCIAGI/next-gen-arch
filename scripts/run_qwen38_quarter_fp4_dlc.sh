@@ -291,6 +291,7 @@ train_args=(
     --global-batch-size "$NGA_GLOBAL_BATCH_SIZE"
     --target-train-tokens "$NGA_TARGET_TRAIN_TOKENS"
     --checkpoint-interval-tokens "$NGA_CHECKPOINT_INTERVAL_TOKENS"
+    --freeze-ngram-tables
     --seed 42
 )
 if ((NGA_PROBE_STEPS > 0)); then

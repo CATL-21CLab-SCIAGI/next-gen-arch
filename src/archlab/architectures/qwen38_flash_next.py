@@ -538,23 +538,25 @@ class QwenSparseAttention(nn.Module):
         causal = torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device).tril()
         candidates = index_scores.masked_fill(~causal.view(1, 1, seq_len, seq_len), -torch.inf)
         selected = candidates.topk(min(self.budget, seq_len), dim=-1).indices
-        sparse_mask = torch.zeros_like(candidates, dtype=torch.bool)
-        sparse_mask.scatter_(-1, selected, True)
-        sparse_mask &= causal.view(1, 1, seq_len, seq_len)
-        sparse_mask = sparse_mask.any(dim=1, keepdim=True)
-
         if self.q_heads != self.kv_heads:
             repeat = self.q_heads // self.kv_heads
             k = k.repeat_interleave(repeat, dim=2)
             v = v.repeat_interleave(repeat, dim=2)
-        logits = torch.einsum("bthd,bshd->bhts", q, k) * self.head_dim**-0.5
-        # The selected index score is a differentiable routing bias; the top-k
-        # boundary itself intentionally remains discrete.
-        index_bias = index_scores.mean(dim=1, keepdim=True)
+
+        # Qwen's released production QSA kernel is not public.  Keep the
+        # auditable indexer, but gather only selected K/V rows instead of
+        # materializing a second dense [B,H,T,T] value-attention tensor.
+        selected = selected[:, 0]
+        batch_index = torch.arange(batch, device=x.device).view(batch, 1, 1)
+        selected_k = k[batch_index, selected]
+        selected_v = v[batch_index, selected]
+        logits = torch.einsum("bthd,btkhd->bhtk", q, selected_k) * self.head_dim**-0.5
+        # The selected index score remains a differentiable routing bias; the
+        # top-k boundary itself is intentionally discrete.
+        index_bias = index_scores.mean(dim=1).gather(-1, selected).unsqueeze(1)
         logits = logits + index_bias
-        logits = logits.masked_fill(~sparse_mask, -torch.inf)
         probabilities = F.softmax(logits.float(), dim=-1).to(v.dtype)
-        output = torch.einsum("bhts,bshd->bthd", probabilities, v)
+        output = torch.einsum("bhtk,btkhd->bthd", probabilities, selected_v)
         return self.out(output.flatten(-2))
 
 
@@ -1075,7 +1077,11 @@ class Qwen38FlashNext(nn.Module):
         categories: dict[str, dict[str, int | str]] = {}
         missing = []
         invalid = []
+        frozen_parameters = 0
         for name, parameter in self.named_parameters():
+            if not parameter.requires_grad:
+                frozen_parameters += parameter.numel()
+                continue
             optimizer = getattr(parameter, "archlab_optimizer", None)
             category = getattr(parameter, "archlab_optimizer_category", None)
             if optimizer is None or category is None:
@@ -1126,7 +1132,18 @@ class Qwen38FlashNext(nn.Module):
             "categories": categories,
             "all_trainable_parameters_assigned_once": True,
             "ngram_embedding_weight_decay": False,
+            "frozen_parameters": frozen_parameters,
         }
+
+    def freeze_ngram_tables(self) -> None:
+        """Freeze only hashed table rows while retaining trainable PLE projections.
+
+        This removes the four 5M-row tensors from Megatron DDP and the optimizer,
+        providing a controlled measurement of dense PLE gradient traffic without
+        deleting the PLE forward path.
+        """
+        for table in self.ngram.tables:
+            table.weight.requires_grad_(False)
 
     @torch.no_grad()
     def init_weights(self, std: float = 0.02) -> None:

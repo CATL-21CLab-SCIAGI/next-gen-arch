@@ -107,6 +107,23 @@ def test_optimizer_partition_matches_qwen_division_of_labour():
     assert model.ngram.conv.weight.archlab_optimizer == "adamw"
 
 
+def test_freezing_ngram_tables_removes_only_table_rows_from_optimizer_and_backward():
+    torch.manual_seed(5)
+    model = Qwen38FlashNext(tiny_config())
+    model.init_weights()
+    table_parameters = sum(table.weight.numel() for table in model.ngram.tables)
+    model.freeze_ngram_tables()
+    contract = model.optimizer_contract()
+
+    assert contract["frozen_parameters"] == table_parameters
+    assert all(not table.weight.requires_grad for table in model.ngram.tables)
+    tokens = torch.randint(0, model.config.vocab_size, (2, model.config.sequence_len))
+    model(tokens, torch.roll(tokens, -1, 1)).mean().backward()
+    assert all(table.weight.grad is None for table in model.ngram.tables)
+    assert model.ngram.key_proj.weight.grad is not None
+    assert model.ngram.value_proj.weight.grad is not None
+
+
 def test_tiny_forward_backward_and_auxiliary_loss_are_finite():
     torch.manual_seed(7)
     model = Qwen38FlashNext(tiny_config())
