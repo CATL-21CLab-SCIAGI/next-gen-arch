@@ -15,6 +15,7 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     TOKENS_PER_STEP,
     TRAIN_STEPS,
     _assert_pipeline_data_rank_layout,
+    _bind_native_moe_layer_number,
     _megatron_argv,
     _native_muon_contract,
     _parser,
@@ -43,6 +44,23 @@ def test_pipeline_sample_layout_is_checked_without_a_training_step_collective():
             data_parallel_world_size=8,
             pipeline_global_ranks=(0, 9, 16, 24),
         )
+
+
+def test_native_moe_layer_number_is_propagated_to_the_router():
+    class FakeRouter:
+        layer_number = None
+
+    class FakeMoE:
+        layer_number = None
+        router = FakeRouter()
+
+        def set_layer_number(self, layer_number):
+            self.layer_number = layer_number
+            self.router.layer_number = layer_number
+
+    moe = FakeMoE()
+    _bind_native_moe_layer_number(moe, 49)
+    assert moe.layer_number == moe.router.layer_number == 49
 
 
 class _OptimizerGroupingFixture(torch.nn.Module):

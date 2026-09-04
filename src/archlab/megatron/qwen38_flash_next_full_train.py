@@ -423,6 +423,15 @@ def _tag_native_optimizer_fallbacks(model: torch.nn.Module) -> dict[str, int]:
     return counts
 
 
+def _bind_native_moe_layer_number(moe_layer: Any, layer_number: int) -> None:
+    """Propagate the global layer number through MCore's public MoE interface."""
+    if layer_number < 1:
+        raise RuntimeError("native MoE layers require a positive global layer number")
+    moe_layer.set_layer_number(layer_number)
+    if moe_layer.layer_number != layer_number or moe_layer.router.layer_number != layer_number:
+        raise RuntimeError("native MCore did not bind the MoE router layer number")
+
+
 def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
     """Import the container runtime lazily and build its native module spec."""
     from megatron.core.extensions.transformer_engine import (
@@ -611,6 +620,7 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
                 is_mtp_layer=is_mtp_layer,
                 name=f"layers.{self.layer_number}.mlp",
             )
+            _bind_native_moe_layer_number(self.mlp, self.layer_number)
             self.ple = None
             self._ple_input_ids = None
             if not is_mtp_layer and self.layer_number == architecture_config.ngram_layer + 1:
