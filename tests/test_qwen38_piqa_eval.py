@@ -1,12 +1,25 @@
 import copy
+import importlib.util
+import sys
+from pathlib import Path
 
 import pytest
 
-from scripts.eval_qwen38_piqa_curve import (
-    _canonical_sha256,
-    _checkpoint_identity,
-    _validate_cached_result,
-)
+
+def _load_evaluator():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "eval_qwen38_piqa_curve.py"
+    spec = importlib.util.spec_from_file_location("archlab_test_piqa_evaluator", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_evaluator = _load_evaluator()
+_canonical_sha256 = _evaluator._canonical_sha256
+_checkpoint_identity = _evaluator._checkpoint_identity
+_validate_cached_result = _evaluator._validate_cached_result
 
 
 def test_piqa_cached_result_requires_exact_evaluation_identity():

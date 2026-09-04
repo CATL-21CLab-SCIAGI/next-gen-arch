@@ -79,6 +79,7 @@ def test_qwen38_27b_megatron_argv_uses_dense_geometry_muon_and_speedups(
         assert argv[argv.index(flag) + 1] == value
     for flag in (
         "--bf16",
+        "--exit-signal-handler",
         "--muon-nesterov",
         "--use-distributed-optimizer",
         "--overlap-grad-reduce",

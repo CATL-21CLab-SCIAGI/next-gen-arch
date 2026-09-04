@@ -215,6 +215,7 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38DenseConfig) -> list[
         str(save_interval),
         "--ckpt-format",
         "torch_dist",
+        "--exit-signal-handler",
         "--tensorboard-dir",
         str(args.run_dir / "tensorboard"),
     ]
@@ -408,6 +409,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None
             "effective_tokens": train_steps * tokens_per_step,
             "checkpoint_interval_steps": save_interval,
             "checkpoint_interval_tokens": save_interval * tokens_per_step,
+            "checkpoint_signal": "SIGTERM saves at the next iteration boundary and exits",
             "probe_steps": args.probe_steps,
         },
         "source_commit": os.environ.get("NGA_EXPECTED_COMMIT"),
