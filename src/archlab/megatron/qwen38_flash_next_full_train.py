@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import inspect
 import json
@@ -836,6 +837,93 @@ def _invoke_pretrain(training_module, datasets_provider, model_provider, model_t
         )
 
 
+def _execute_checkpoint_request_by_local_rank(
+    request: Any,
+    *,
+    local_rank: int,
+    local_world_size: int,
+    barrier: Any,
+) -> None:
+    """Execute one native DCP request at a time on each host.
+
+    MCore's synchronous ``torch_dist`` writer stages every tensor owned by a
+    rank to host memory before writing. The full PLE owns enough FP32 Adam
+    state that staging all eight local owners concurrently exceeds the DLC
+    node's host-memory limit. Planning, sharding, serialization, and
+    finalization remain MCore-owned; only the per-host staging order is
+    bounded here.
+    """
+    if local_world_size < 1 or not 0 <= local_rank < local_world_size:
+        raise RuntimeError(
+            f"invalid local checkpoint topology: rank={local_rank}, world={local_world_size}"
+        )
+
+    for writer_rank in range(local_world_size):
+        if local_rank == writer_rank:
+            call_args = list(request.async_fn_args)
+            if request.preload_fn is not None:
+                if len(call_args) != 3:
+                    raise RuntimeError("native DCP writer changed its request ABI")
+                call_args[1] = request.preload_fn()
+            if request.async_fn is not None:
+                request.async_fn(*call_args, **request.async_fn_kwargs)
+            del call_args
+            gc.collect()
+        barrier()
+
+    for finalize_fn in request.finalize_fns:
+        finalize_fn()
+
+
+def _install_bounded_torch_dist_staging(training_module: Any) -> None:
+    """Inject a native DCP strategy with serialized per-host tensor staging."""
+    from megatron.core import parallel_state
+    from megatron.core.dist_checkpointing.strategies.fully_parallel import (
+        FullyParallelSaveStrategyWrapper,
+    )
+    from megatron.core.dist_checkpointing.strategies.torch import (
+        TorchDistSaveShardedStrategy,
+    )
+    from megatron.training import get_args
+
+    class _BoundedTorchDistSaveShardedStrategy(TorchDistSaveShardedStrategy):
+        def save(self, sharded_state_dict, checkpoint_dir):
+            request = self.async_save(
+                sharded_state_dict, checkpoint_dir, async_strategy="mcore"
+            )
+            _execute_checkpoint_request_by_local_rank(
+                request,
+                local_rank=int(os.environ["LOCAL_RANK"]),
+                local_world_size=int(os.environ["LOCAL_WORLD_SIZE"]),
+                barrier=torch.distributed.barrier,
+            )
+            del request
+
+    original_setup = training_module.setup_model_and_optimizer
+
+    def setup_with_bounded_checkpoint_staging(*setup_args, **setup_kwargs):
+        context = setup_kwargs.get("checkpointing_context")
+        if context is None and len(setup_args) >= 3:
+            context = setup_args[2]
+        result = original_setup(*setup_args, **setup_kwargs)
+        if context is None:
+            raise RuntimeError("Megatron did not provide a checkpointing context")
+        parsed = get_args()
+        strategy: Any = _BoundedTorchDistSaveShardedStrategy(
+            cpu_shm_mode=bool(getattr(parsed, "async_ckpt_use_cpu_shm", False))
+        )
+        if parsed.ckpt_fully_parallel_save:
+            strategy = FullyParallelSaveStrategyWrapper(
+                strategy,
+                parallel_state.get_data_parallel_group(with_context_parallel=True),
+                parsed.ckpt_assume_constant_structure,
+            )
+        context["save_strategy"] = strategy
+        return result
+
+    training_module.setup_model_and_optimizer = setup_with_bounded_checkpoint_staging
+
+
 def _write_contract(args, config) -> None:
     if int(os.environ.get("RANK", "0")) != 0:
         return
@@ -873,6 +961,12 @@ def _write_contract(args, config) -> None:
             "gradient_clip": args.clip_grad,
             "fc1_layout": "distinct native TE gate/up parameters",
             "ple_tables": "Adam, zero weight decay",
+        },
+        "checkpointing": {
+            "format": "Megatron torch_dist",
+            "serialization": "container-owned distributed checkpointing",
+            "host_staging": "one local GPU rank per node at a time",
+            "reason": "bound full-PLE FP32 optimizer staging to 512 GiB host memory",
         },
         "training": {
             "seed": args.seed,
@@ -1048,6 +1142,7 @@ def _run(args: argparse.Namespace) -> None:
         return train_batches(), validation_batches(), None
 
     datasets_provider.is_distributed = True
+    _install_bounded_torch_dist_staging(training_module)
     _invoke_pretrain(
         training_module,
         datasets_provider,

@@ -16,6 +16,7 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     TRAIN_STEPS,
     _assert_pipeline_data_rank_layout,
     _bind_native_moe_layer_number,
+    _execute_checkpoint_request_by_local_rank,
     _megatron_argv,
     _native_muon_contract,
     _parser,
@@ -25,6 +26,50 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     partition_prefixes_for_dp_rank,
     shifted_mtp_targets,
 )
+
+
+def test_distributed_checkpoint_host_staging_runs_only_on_its_local_turn():
+    events = []
+
+    class Request:
+        async_fn_args = ("rank", None, "queue")
+        async_fn_kwargs = {"suffix": "written"}
+        preload_fn = staticmethod(lambda: events.append("preload") or "cpu-state")
+        finalize_fns = [lambda: events.append("finalize")]
+
+        @staticmethod
+        def async_fn(rank, state, queue, *, suffix):
+            events.append((rank, state, queue, suffix))
+
+    _execute_checkpoint_request_by_local_rank(
+        Request(),
+        local_rank=2,
+        local_world_size=4,
+        barrier=lambda: events.append("barrier"),
+    )
+
+    assert events == [
+        "barrier",
+        "barrier",
+        "preload",
+        ("rank", "cpu-state", "queue", "written"),
+        "barrier",
+        "barrier",
+        "finalize",
+    ]
+
+
+@pytest.mark.parametrize("local_rank,local_world_size", [(-1, 8), (8, 8), (0, 0)])
+def test_distributed_checkpoint_host_staging_rejects_invalid_topology(
+    local_rank, local_world_size
+):
+    with pytest.raises(RuntimeError, match="invalid local checkpoint topology"):
+        _execute_checkpoint_request_by_local_rank(
+            object(),
+            local_rank=local_rank,
+            local_world_size=local_world_size,
+            barrier=lambda: None,
+        )
 
 
 def test_pipeline_sample_layout_is_checked_without_a_training_step_collective():
