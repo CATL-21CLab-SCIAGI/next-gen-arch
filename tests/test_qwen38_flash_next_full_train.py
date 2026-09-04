@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import torch
 
 from archlab.architectures.qwen38_flash_next_full import (
@@ -13,6 +14,7 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     EFFECTIVE_TOKENS,
     TOKENS_PER_STEP,
     TRAIN_STEPS,
+    _assert_pipeline_data_rank_layout,
     _megatron_argv,
     _native_muon_contract,
     _parser,
@@ -21,6 +23,26 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     partition_prefixes_for_dp_rank,
     shifted_mtp_targets,
 )
+
+
+def test_pipeline_sample_layout_is_checked_without_a_training_step_collective():
+    for data_parallel_rank in range(8):
+        pipeline_ranks = tuple(data_parallel_rank + 8 * stage for stage in range(4))
+        for global_rank in pipeline_ranks:
+            _assert_pipeline_data_rank_layout(
+                global_rank=global_rank,
+                data_parallel_rank=data_parallel_rank,
+                data_parallel_world_size=8,
+                pipeline_global_ranks=pipeline_ranks,
+            )
+
+    with pytest.raises(RuntimeError, match="deterministic data rank"):
+        _assert_pipeline_data_rank_layout(
+            global_rank=0,
+            data_parallel_rank=0,
+            data_parallel_world_size=8,
+            pipeline_global_ranks=(0, 9, 16, 24),
+        )
 
 
 class _OptimizerGroupingFixture(torch.nn.Module):

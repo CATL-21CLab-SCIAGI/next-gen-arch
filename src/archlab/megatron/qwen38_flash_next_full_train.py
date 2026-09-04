@@ -756,34 +756,23 @@ def _loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
     return loss_sum / count.clamp_min(1), {"lm loss": torch.stack((loss_sum.detach(), count))}
 
 
-def _unwrap(model):
-    while hasattr(model, "module"):
-        model = model.module
-    return model
-
-
-def _assert_pipeline_sample_identity(tokens: torch.Tensor, model) -> None:
-    unwrapped = _unwrap(model)
-    if getattr(unwrapped, "_sample_identity_validated", False):
-        return
-    from megatron.core import parallel_state
-
-    signature = torch.stack(
-        (
-            tokens.long().sum(),
-            (tokens.long() * torch.arange(1, tokens.numel() + 1, device=tokens.device).view_as(tokens)).sum(),
-        )
-    )
-    minimum, maximum = signature.clone(), signature.clone()
-    torch.distributed.all_reduce(
-        minimum, op=torch.distributed.ReduceOp.MIN, group=parallel_state.get_pipeline_model_parallel_group()
-    )
-    torch.distributed.all_reduce(
-        maximum, op=torch.distributed.ReduceOp.MAX, group=parallel_state.get_pipeline_model_parallel_group()
-    )
-    if not torch.equal(minimum, maximum):
-        raise RuntimeError("pipeline stages received different training samples")
-    unwrapped._sample_identity_validated = True
+def _assert_pipeline_data_rank_layout(
+    *,
+    global_rank: int,
+    data_parallel_rank: int,
+    data_parallel_world_size: int,
+    pipeline_global_ranks: tuple[int, ...],
+) -> None:
+    """Validate PP sample ownership without a collective inside the pipeline schedule."""
+    if data_parallel_world_size < 1:
+        raise RuntimeError("data-parallel world size must be positive")
+    if len(pipeline_global_ranks) != 4 or global_rank not in pipeline_global_ranks:
+        raise RuntimeError("the full-model data contract requires a four-rank pipeline group")
+    projected_data_ranks = {
+        rank % data_parallel_world_size for rank in pipeline_global_ranks
+    }
+    if projected_data_ranks != {data_parallel_rank}:
+        raise RuntimeError("pipeline stages do not share one deterministic data rank")
 
 
 def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
@@ -791,7 +780,6 @@ def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
         raise NotImplementedError("the full Qwen adapter does not use schedule plans")
     batch = next(data_iterator)
     tokens, labels = batch["tokens"], batch["labels"]
-    _assert_pipeline_sample_identity(tokens, model)
     positions = torch.arange(tokens.size(1), device=tokens.device).expand_as(tokens)
     loss_mask = labels.ne(-1).float()
     losses = model(
@@ -998,6 +986,16 @@ def _run(args: argparse.Namespace) -> None:
     def datasets_provider(_sample_counts):
         dp_rank = parallel_state.get_data_parallel_rank(with_context_parallel=True)
         dp_world = parallel_state.get_data_parallel_world_size(with_context_parallel=True)
+        _assert_pipeline_data_rank_layout(
+            global_rank=torch.distributed.get_rank(),
+            data_parallel_rank=dp_rank,
+            data_parallel_world_size=dp_world,
+            pipeline_global_ranks=tuple(
+                torch.distributed.get_process_group_ranks(
+                    parallel_state.get_pipeline_model_parallel_group()
+                )
+            ),
+        )
         train = partition_prefixes_for_dp_rank(train_prefixes, dp_rank, dp_world)
         validation = partition_prefixes_for_dp_rank(
             validation_prefixes, dp_rank, dp_world, require_distinct=False
