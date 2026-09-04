@@ -432,6 +432,15 @@ def _bind_native_moe_layer_number(moe_layer: Any, layer_number: int) -> None:
         raise RuntimeError("native MCore did not bind the MoE router layer number")
 
 
+def _resolve_qwen_layer_number(
+    local_layer_number: int, *, is_mtp_layer: bool, backbone_offset: int
+) -> int:
+    """Keep MTP depth-local numbering; MCore adds the backbone offset when logging it."""
+    if local_layer_number < 1 or backbone_offset < 0:
+        raise RuntimeError("Qwen layer numbers and backbone offsets must be valid")
+    return local_layer_number if is_mtp_layer else local_layer_number + backbone_offset
+
+
 def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
     """Import the container runtime lazily and build its native module spec."""
     from megatron.core.extensions.transformer_engine import (
@@ -592,10 +601,14 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
             self.is_mtp_layer = is_mtp_layer
             self.tp_group = pg_collection.tp
             pp_rank = get_pg_rank(pg_collection.pp)
-            self.layer_number = (
-                config.num_layers + 1
-                if is_mtp_layer
-                else layer_number + get_transformer_layer_offset(config, vp_stage, pp_rank)
+            self.layer_number = _resolve_qwen_layer_number(
+                layer_number,
+                is_mtp_layer=is_mtp_layer,
+                backbone_offset=(
+                    0
+                    if is_mtp_layer
+                    else get_transformer_layer_offset(config, vp_stage, pp_rank)
+                ),
             )
             self.attention_kind = (
                 "dense"

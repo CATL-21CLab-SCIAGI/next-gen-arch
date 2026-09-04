@@ -19,6 +19,7 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     _megatron_argv,
     _native_muon_contract,
     _parser,
+    _resolve_qwen_layer_number,
     _tag_native_optimizer_fallbacks,
     mtp_weighted_mean,
     partition_prefixes_for_dp_rank,
@@ -61,6 +62,11 @@ def test_native_moe_layer_number_is_propagated_to_the_router():
     moe = FakeMoE()
     _bind_native_moe_layer_number(moe, 49)
     assert moe.layer_number == moe.router.layer_number == 49
+
+
+def test_repeated_mtp_keeps_the_depth_local_layer_number_for_native_metrics():
+    assert _resolve_qwen_layer_number(1, is_mtp_layer=True, backbone_offset=0) == 1
+    assert _resolve_qwen_layer_number(2, is_mtp_layer=False, backbone_offset=12) == 14
 
 
 class _OptimizerGroupingFixture(torch.nn.Module):
