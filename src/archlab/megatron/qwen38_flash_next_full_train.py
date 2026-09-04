@@ -358,6 +358,7 @@ def _megatron_argv(
         str(args.clip_grad),
         "--bf16",
         "--use-distributed-optimizer",
+        "--no-use-layer-wise-param-layout",
         "--overlap-grad-reduce",
         "--overlap-param-gather",
         "--tokenizer-type",

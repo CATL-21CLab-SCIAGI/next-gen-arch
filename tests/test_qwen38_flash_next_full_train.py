@@ -94,6 +94,7 @@ def test_megatron_argv_uses_pp4_ep8_native_muon_and_native_mtp(tmp_path: Path):
         "--muon-nesterov",
         "--bf16",
         "--use-distributed-optimizer",
+        "--no-use-layer-wise-param-layout",
         "--exit-signal-handler",
     ):
         assert flag in argv
