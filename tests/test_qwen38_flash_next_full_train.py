@@ -262,8 +262,10 @@ def test_three_shifted_targets_mean_before_scaling_and_early_backbone_gradient()
 def test_legacy_full_launcher_is_a_narrow_flash_next_forwarder():
     root = Path(__file__).resolve().parents[1]
     launcher = (root / "scripts" / "run_qwen38_27b_full_dlc.sh").read_text()
+    supported_launcher = (root / "scripts" / "run_qwen38_flash_next_full_dlc.sh").read_text()
 
     assert "100000595968" in launcher
     assert "NGA_GLOBAL_BATCH_SIZE:-}" in launcher
     assert "run_qwen38_flash_next_full_dlc.sh" in launcher
     assert "run_qwen38_27b_quarter_dlc.sh" not in launcher
+    assert "export NGA_EXPECTED_NODES NGA_GPUS_PER_NODE" in supported_launcher
