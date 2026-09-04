@@ -1,0 +1,63 @@
+{
+  "batch": {
+    "full": {
+      "global_batch_sequences": 512,
+      "micro_batch_sequences": 1,
+      "sequence_length": 2048,
+      "tokens_per_step": 1048576
+    },
+    "quarter": {
+      "global_batch_sequences": 512,
+      "micro_batch_sequences": 4,
+      "sequence_length": 2048,
+      "tokens_per_step": 1048576
+    }
+  },
+  "caveat": "This is not a pure parameter-scaling ablation: the historical quarter run uses the 0fdc753 quarter MTP and sigmoid attention gate, while the full run uses the 344e678 source-faithful full MTP and SiLU gate.",
+  "common_window": {
+    "full_endpoint_mean": 8.742809295654297,
+    "full_minus_quarter_endpoint": -2.4618299961090084,
+    "persistent_smoothed_crossover_step": 119,
+    "persistent_smoothed_crossover_tokens": 124780544,
+    "quarter_endpoint_mean": 11.204639291763305,
+    "steps": 252,
+    "tokens": 264241152
+  },
+  "comparison_metric": "causal cross entropy; MTP contribution excluded",
+  "parameter_count": {
+    "full": {
+      "embeddings_and_head": 2542796800,
+      "mtp": 424699392,
+      "text_backbone": 24353201664,
+      "total": 27320697856
+    },
+    "quarter": {
+      "embeddings_and_head": 635699200,
+      "mtp": 18352768,
+      "text_backbone": 296010144,
+      "total": 950062112
+    }
+  },
+  "same_wall_time": {
+    "full_cross_entropy_smoothed": 8.742809295654297,
+    "full_step": 252,
+    "full_tokens": 264241152,
+    "quarter_cross_entropy_smoothed": 3.528810179233551,
+    "quarter_step": 4089,
+    "quarter_tokens": 4287627264,
+    "seconds": 1988.5252730846405
+  },
+  "snapshot_at_unix": 1788489654.292346,
+  "source_commit": {
+    "full": "344e678d83c6b5330aa27303e9f3e8dd56e52c93",
+    "quarter": "0fdc7535a480f7baa0615b2f7416844fb8341b69"
+  },
+  "throughput": {
+    "full_median_seconds_per_step": 7.921255469322205,
+    "full_to_quarter_step_time_ratio": 16.20845383265912,
+    "full_tokens_per_second": 132374.97566654332,
+    "quarter_median_seconds_per_step": 0.4887113571166992,
+    "quarter_tokens_per_second": 2145593.681690542
+  },
+  "tokens_per_step": 1048576
+}
