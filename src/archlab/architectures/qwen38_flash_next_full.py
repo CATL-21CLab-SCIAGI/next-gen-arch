@@ -581,7 +581,7 @@ class OwnerShardedPLEEmbedding(nn.Module):
         returned = recv_values.new_empty((send_ids.numel(), self.embedding_dim))
         from torch.distributed.nn.functional import all_to_all_single
 
-        all_to_all_single(
+        returned = all_to_all_single(
             returned,
             recv_values,
             output_split_sizes=send_counts.tolist(),

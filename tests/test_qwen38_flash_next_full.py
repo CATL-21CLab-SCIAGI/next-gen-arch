@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 import torch
+from torch.distributed.nn import functional as dist_nn_functional
 
 from archlab.architectures.qwen38_flash_next_full import (
     DistributedPLE,
@@ -111,6 +112,31 @@ def test_owner_sharding_is_balanced_and_local_lookup_preserves_global_order():
             + partition * 100_000
         )
     assert torch.equal(output.flatten(0, 1), torch.stack(expected))
+
+
+def test_owner_sharded_remote_return_keeps_the_autograd_graph(monkeypatch):
+    config = replace(Qwen38FlashNextFullConfig.tiny(), ngram_partitions=2)
+    embedding = OwnerShardedPLEEmbedding(config, owner_rank=0, owner_world_size=2)
+    embedding.reset_parameters()
+
+    def copy_all_to_all(output, inputs, **_kwargs):
+        output.copy_(inputs)
+
+    def differentiable_all_to_all(_output, inputs, **_kwargs):
+        return inputs.clone()
+
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "all_to_all_single", copy_all_to_all)
+    monkeypatch.setattr(
+        dist_nn_functional,
+        "all_to_all_single",
+        differentiable_all_to_all,
+    )
+    output = embedding(torch.tensor([0, 1]))
+    assert output.requires_grad
+    output.sum().backward()
+    assert embedding.tables[0].grad is not None
+    assert embedding.tables[0].grad.abs().sum() > 0
 
 
 def test_four_stream_gr_matches_explicit_official_equations_and_backpropagates():
