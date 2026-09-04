@@ -214,6 +214,34 @@ def test_megatron_argv_uses_pp4_ep8_native_muon_and_native_mtp(tmp_path: Path):
     assert "--muon-no-split-qkv" not in argv
 
 
+def test_probe_resume_overrides_only_the_probe_scheduler_horizon(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    marker = run_dir / "checkpoints" / "latest_checkpointed_iteration.txt"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("1")
+    common = [
+        "--data-root",
+        str(tmp_path / "data"),
+        "--tokenizer",
+        str(tmp_path / "tokenizer"),
+        "--run-dir",
+        str(run_dir),
+    ]
+
+    production_argv = _megatron_argv(
+        _parser().parse_args(common), Qwen38FlashNextFullConfig()
+    )
+    probe_argv = _megatron_argv(
+        _parser().parse_args([*common, "--probe-steps", "2"]),
+        Qwen38FlashNextFullConfig(),
+    )
+
+    assert "--load" in production_argv
+    assert "--override-opt-param-scheduler" not in production_argv
+    assert "--load" in probe_argv
+    assert "--override-opt-param-scheduler" in probe_argv
+
+
 def test_native_muon_contract_records_known_deviations():
     contract = _native_muon_contract()
 

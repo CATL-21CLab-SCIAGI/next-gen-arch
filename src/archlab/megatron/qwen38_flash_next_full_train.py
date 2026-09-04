@@ -403,6 +403,12 @@ def _megatron_argv(
     marker = args.run_dir / "checkpoints" / "latest_checkpointed_iteration.txt"
     if args.resume and marker.is_file():
         argv.extend(("--load", str(args.run_dir / "checkpoints")))
+        if args.probe_steps:
+            # Probe horizons are intentionally short and may grow between the
+            # save and reload gates. Keep the checkpoint's optimizer tensors,
+            # but use the resumed probe's native scheduler horizon. Production
+            # always retains the fixed 11,921-step contract and never overrides.
+            argv.append("--override-opt-param-scheduler")
     return argv
 
 
