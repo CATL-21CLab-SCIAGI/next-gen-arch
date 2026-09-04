@@ -10,6 +10,8 @@ an intermediate Hugging Face export is not required.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import inspect
 import json
 import math
@@ -31,6 +33,7 @@ from archlab.architectures.qwen38_27b import Qwen38Dense, Qwen38DenseConfig
 PROMPT_TEMPLATE = "Question: {goal}\nAnswer:"
 TARGET_DELIMITER = " "
 LM_EVAL_VERSION = "0.4.13"
+EVALUATION_IDENTITY_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,100 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     os.replace(temporary, path)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _canonical_sha256(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _checkpoint_identity(checkpoint: Path) -> dict[str, Any]:
+    checkpoint = checkpoint.expanduser().resolve()
+    if not checkpoint.is_dir():
+        raise RuntimeError(f"checkpoint directory is missing: {checkpoint}")
+    metadata = checkpoint / ".metadata"
+    if not metadata.is_file():
+        raise RuntimeError(f"distributed checkpoint metadata is missing: {metadata}")
+    files = sorted(path for path in checkpoint.rglob("*") if path.is_file())
+    if not files:
+        raise RuntimeError(f"checkpoint directory is empty: {checkpoint}")
+    return {
+        "path": str(checkpoint),
+        "metadata_sha256": _sha256(metadata),
+        "files": [
+            {
+                "path": str(path.relative_to(checkpoint)),
+                "size": path.stat().st_size,
+                "mtime_ns": path.stat().st_mtime_ns,
+            }
+            for path in files
+        ],
+    }
+
+
+def _evaluation_identity(args: argparse.Namespace, checkpoint: Path) -> dict[str, Any]:
+    tokenizer = args.tokenizer.expanduser().resolve()
+    piqa_arrow = args.piqa_arrow.expanduser().resolve()
+    evaluator = Path(__file__).resolve()
+    architecture = Path(inspect.getfile(Qwen38Dense)).resolve()
+    for label, path in (("tokenizer", tokenizer), ("PIQA Arrow", piqa_arrow)):
+        if not path.is_file():
+            raise RuntimeError(f"{label} artifact is missing: {path}")
+    return {
+        "schema_version": EVALUATION_IDENTITY_SCHEMA_VERSION,
+        "checkpoint": _checkpoint_identity(checkpoint),
+        "tokenizer": {"path": str(tokenizer), "sha256": _sha256(tokenizer)},
+        "piqa": {"path": str(piqa_arrow), "sha256": _sha256(piqa_arrow)},
+        "evaluator": {"path": str(evaluator), "sha256": _sha256(evaluator)},
+        "architecture": {"path": str(architecture), "sha256": _sha256(architecture)},
+        "protocol": {
+            "lm_eval_version": LM_EVAL_VERSION,
+            "prompt_template": PROMPT_TEMPLATE,
+            "target_delimiter": TARGET_DELIMITER,
+            "tokens_per_iteration": args.tokens_per_iteration,
+            "sequence_length": args.sequence_length,
+            "batch_size": args.batch_size,
+            "gdn_kernel": args.gdn_kernel,
+            "pad_token_id": args.pad_token_id,
+        },
+        "runtime": {
+            "torch": torch.__version__,
+            "pyarrow": pa.__version__,
+            "tokenizers": importlib.metadata.version("tokenizers"),
+        },
+    }
+
+
+def _validate_cached_result(
+    result: dict[str, Any],
+    expected_identity: dict[str, Any],
+) -> None:
+    stored_identity = result.get("evaluation_identity")
+    stored_sha256 = result.get("evaluation_identity_sha256")
+    expected_sha256 = _canonical_sha256(expected_identity)
+    if (
+        not isinstance(stored_identity, dict)
+        or stored_sha256 != _canonical_sha256(stored_identity)
+        or stored_sha256 != expected_sha256
+        or stored_identity != expected_identity
+    ):
+        raise RuntimeError(
+            "cached PIQA result identity does not match the requested evaluation; "
+            "pass --overwrite to recompute it"
+        )
 
 
 def _read_piqa(path: Path) -> list[dict[str, Any]]:
@@ -192,6 +289,7 @@ def _result_payload(
     elapsed_seconds: float,
     load_stats: dict[str, Any],
     source_commit: str | None,
+    evaluation_identity: dict[str, Any],
 ) -> dict[str, Any]:
     pairs = [[math.nan, math.nan] for _ in examples]
     for request, score in zip(requests, scores, strict=True):
@@ -244,6 +342,8 @@ def _result_payload(
         "elapsed_seconds": elapsed_seconds,
         "checkpoint_load": load_stats,
         "architecture_source_commit": source_commit,
+        "evaluation_identity": evaluation_identity,
+        "evaluation_identity_sha256": _canonical_sha256(evaluation_identity),
         "sample_records": sample_records,
     }
 
@@ -433,8 +533,10 @@ def main() -> None:
     for iteration in iterations:
         checkpoint = args.checkpoint_root / f"iter_{iteration:07d}"
         output = args.output_dir / f"checkpoint-{iteration:07d}.json"
+        evaluation_identity = _evaluation_identity(args, checkpoint)
         if output.is_file() and not args.overwrite:
             result = json.loads(output.read_text())
+            _validate_cached_result(result, evaluation_identity)
         else:
             started = time.monotonic()
             load_stats = _load_model_state(model, checkpoint)
@@ -454,6 +556,7 @@ def main() -> None:
                 elapsed_seconds=time.monotonic() - started,
                 load_stats=load_stats,
                 source_commit=source_commit,
+                evaluation_identity=evaluation_identity,
             )
             _atomic_json(output, result)
         if iteration == args.validation_iteration:

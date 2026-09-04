@@ -1,11 +1,24 @@
+import json
 from pathlib import Path
+
+import pytest
 
 from archlab.architectures.qwen38_27b import Qwen38DenseConfig
 from archlab.megatron.qwen38_27b_train import (
+    RESUME_IMMUTABLE_FIELDS,
+    _attach_resume_contract,
     _megatron_argv,
     _native_muon_contract,
     _parser,
+    _record_run_contract,
 )
+
+
+def _contract_payload() -> dict[str, object]:
+    payload = {field: {"value": field} for field in RESUME_IMMUTABLE_FIELDS}
+    payload["created_at_unix"] = 1.0
+    _attach_resume_contract(payload)
+    return payload
 
 
 def test_qwen38_27b_training_defaults_are_long_run_bf16(tmp_path: Path):
@@ -132,3 +145,36 @@ def test_qwen38_27b_probe_does_not_write_a_large_checkpoint(tmp_path: Path, monk
 
     assert argv[argv.index("--train-iters") + 1] == "5"
     assert argv[argv.index("--save-interval") + 1] == "6"
+
+
+def test_resume_contract_retains_attempts_without_overwriting_canonical(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    payload = _contract_payload()
+    _record_run_contract(run_dir, payload, resume=True)
+    canonical = (run_dir / "RUN_CONTRACT.json").read_bytes()
+
+    compatible = json.loads(json.dumps(payload))
+    compatible["created_at_unix"] = 2.0
+    _record_run_contract(run_dir, compatible, resume=True)
+
+    assert (run_dir / "RUN_CONTRACT.json").read_bytes() == canonical
+    assert len(list((run_dir / "contracts").glob("attempt-*.json"))) == 2
+
+
+def test_resume_contract_rejects_immutable_drift_before_checkpoint_load(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    payload = _contract_payload()
+    _record_run_contract(run_dir, payload, resume=True)
+    canonical = (run_dir / "RUN_CONTRACT.json").read_bytes()
+    checkpoint_marker = run_dir / "checkpoints" / "latest_checkpointed_iteration.txt"
+    checkpoint_marker.parent.mkdir(parents=True)
+    checkpoint_marker.write_text("10")
+
+    incompatible = json.loads(json.dumps(payload))
+    incompatible["model_config"] = {"value": "changed"}
+    _attach_resume_contract(incompatible)
+    with pytest.raises(RuntimeError, match="model_config"):
+        _record_run_contract(run_dir, incompatible, resume=True)
+
+    assert (run_dir / "RUN_CONTRACT.json").read_bytes() == canonical
+    assert len(list((run_dir / "contracts").glob("attempt-*.json"))) == 2

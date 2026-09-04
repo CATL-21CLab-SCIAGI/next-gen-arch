@@ -56,6 +56,7 @@ class BinaryTokenBatches:
         sequence_len: int,
         start_batch: int,
         device: torch.device,
+        repeat_window_batches: int | None = None,
     ):
         if not prefixes:
             raise ValueError("at least one indexed-data prefix is required")
@@ -65,12 +66,18 @@ class BinaryTokenBatches:
         self.batch_size = batch_size
         self.sequence_len = sequence_len
         self.batch_index = start_batch
+        self.start_batch = start_batch
+        if repeat_window_batches is not None and repeat_window_batches < 1:
+            raise ValueError("repeat_window_batches must be positive")
+        self.repeat_window_batches = repeat_window_batches
         self.device = device
         self._executor: ThreadPoolExecutor | None = None
         self._future: Future | None = None
         if self.device.type == "cuda":
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="token-prefetch")
-            self._future = self._executor.submit(self._cpu_batch, self.batch_index)
+            self._future = self._executor.submit(
+                self._cpu_batch, self._source_batch_index(self.batch_index)
+            )
 
     @staticmethod
     def _cyclic_slice(array: np.memmap, start: int, length: int) -> np.ndarray:
@@ -90,6 +97,13 @@ class BinaryTokenBatches:
     def __iter__(self):
         return self
 
+    def _source_batch_index(self, batch_index: int) -> int:
+        if self.repeat_window_batches is None:
+            return batch_index
+        return self.start_batch + (
+            (batch_index - self.start_batch) % self.repeat_window_batches
+        )
+
     def _cpu_batch(self, batch_index: int) -> tuple[torch.Tensor, torch.Tensor]:
         array = self.arrays[batch_index % len(self.arrays)]
         flat_tokens = self.batch_size * self.sequence_len
@@ -105,12 +119,14 @@ class BinaryTokenBatches:
 
     def __next__(self) -> dict[str, torch.Tensor]:
         if self._future is None:
-            tokens, labels = self._cpu_batch(self.batch_index)
+            tokens, labels = self._cpu_batch(self._source_batch_index(self.batch_index))
         else:
             tokens, labels = self._future.result()
         self.batch_index += 1
         if self._executor is not None:
-            self._future = self._executor.submit(self._cpu_batch, self.batch_index)
+            self._future = self._executor.submit(
+                self._cpu_batch, self._source_batch_index(self.batch_index)
+            )
         return {
             "tokens": tokens.to(self.device, non_blocking=True),
             "labels": labels.to(self.device, non_blocking=True),
@@ -134,7 +150,22 @@ def _distributed_world_size() -> int:
     return int(os.environ.get("WORLD_SIZE", "1"))
 
 
-def _partition_prefixes(prefixes: list[Path], rank: int, world_size: int) -> list[Path]:
+def _partition_prefixes(
+    prefixes: list[Path],
+    rank: int,
+    world_size: int,
+    *,
+    require_distinct: bool = True,
+) -> list[Path]:
+    if not prefixes:
+        raise ValueError("at least one indexed-data prefix is required")
+    if world_size < 1 or not 0 <= rank < world_size:
+        raise ValueError(f"invalid rank/world size: {rank}/{world_size}")
+    if require_distinct and len(prefixes) < world_size:
+        raise ValueError(
+            f"training requires at least one distinct indexed-data part per rank: "
+            f"parts={len(prefixes)}, world_size={world_size}"
+        )
     assigned = prefixes[rank::world_size]
     if assigned:
         return assigned
@@ -146,9 +177,49 @@ def _data_prefixes(data_root: Path, split: str) -> list[Path]:
     if not prefixes:
         raise FileNotFoundError(f"no {split} part-*.bin files under {data_root}")
     for prefix in prefixes:
-        if not Path(f"{prefix}.idx").is_file() or not Path(f"{prefix}.json").is_file():
-            raise FileNotFoundError(f"incomplete indexed-data prefix: {prefix}")
+        for suffix in (".bin", ".idx", ".json"):
+            artifact = Path(f"{prefix}{suffix}")
+            if not artifact.is_file() or artifact.stat().st_size <= 0:
+                raise FileNotFoundError(f"missing or empty indexed-data artifact: {artifact}")
     return prefixes
+
+
+def _validated_data_prefixes(data_root: Path) -> tuple[list[Path], list[Path]]:
+    """Return artifacts only when DATA_READY declares their exact membership."""
+    data_root = data_root.expanduser().resolve()
+    ready_path = data_root / "DATA_READY.json"
+    try:
+        ready = json.loads(ready_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"invalid indexed-data manifest: {ready_path}") from error
+    if not isinstance(ready, dict):
+        raise RuntimeError(f"indexed-data manifest must contain an object: {ready_path}")
+
+    validated = []
+    for split, manifest_key in (("train", "train_parts"), ("val", "valid_parts")):
+        declared_values = ready.get(manifest_key)
+        if not isinstance(declared_values, list) or not declared_values:
+            raise RuntimeError(f"indexed-data manifest lacks nonempty {manifest_key}")
+        if not all(isinstance(value, str) and value for value in declared_values):
+            raise RuntimeError(f"indexed-data manifest has invalid {manifest_key}")
+        declared = []
+        for value in declared_values:
+            prefix = Path(value).expanduser()
+            if not prefix.is_absolute():
+                prefix = data_root / prefix
+            declared.append(prefix.resolve())
+        if len(set(declared)) != len(declared):
+            raise RuntimeError(f"indexed-data manifest has duplicate {manifest_key}")
+        discovered = [prefix.resolve() for prefix in _data_prefixes(data_root, split)]
+        if set(declared) != set(discovered):
+            missing = sorted(str(path) for path in set(declared) - set(discovered))
+            undeclared = sorted(str(path) for path in set(discovered) - set(declared))
+            raise RuntimeError(
+                f"indexed-data manifest membership changed for {split}: "
+                f"missing={missing}, undeclared={undeclared}"
+            )
+        validated.append(discovered)
+    return validated[0], validated[1]
 
 
 def _current_iteration() -> int:
@@ -528,8 +599,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> 
 
 def _run(args: argparse.Namespace) -> None:
     config = Qwen38FlashNextConfig(sequence_len=args.sequence_length)
-    _data_prefixes(args.data_root, "train")
-    _data_prefixes(args.data_root, "val")
+    train_prefixes, validation_prefixes = _validated_data_prefixes(args.data_root)
     _write_contract(args, config)
     sys.argv = _megatron_argv(args, config)
 
@@ -612,8 +682,13 @@ def _run(args: argparse.Namespace) -> None:
 
     def datasets_provider(_sample_counts):
         rank, world_size = _distributed_rank(), _distributed_world_size()
-        train = _partition_prefixes(_data_prefixes(args.data_root, "train"), rank, world_size)
-        validation = _partition_prefixes(_data_prefixes(args.data_root, "val"), rank, world_size)
+        train = _partition_prefixes(train_prefixes, rank, world_size)
+        validation = _partition_prefixes(
+            validation_prefixes,
+            rank,
+            world_size,
+            require_distinct=False,
+        )
         accumulation = args.global_batch_size // (world_size * args.micro_batch_size)
 
         def train_batches():
@@ -627,12 +702,14 @@ def _run(args: argparse.Namespace) -> None:
             )
 
         def validation_batches():
+            window_batches = args.eval_iters * accumulation
             yield from BinaryTokenBatches(
                 validation,
                 batch_size=args.micro_batch_size,
                 sequence_len=config.sequence_len,
-                start_batch=rank * args.eval_iters * accumulation,
+                start_batch=rank * window_batches,
                 device=torch.device("cuda", torch.cuda.current_device()),
+                repeat_window_batches=window_batches,
             )
 
         return train_batches(), validation_batches(), None

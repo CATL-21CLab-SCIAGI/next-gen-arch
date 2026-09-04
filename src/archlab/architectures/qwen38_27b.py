@@ -69,22 +69,22 @@ class Qwen38DenseConfig:
             return replace(cls(), **overrides)
         if scale != "full":
             raise ValueError(f"unsupported Qwen3.8-27B scale: {scale}")
-        return replace(
-            cls(),
-            num_hidden_layers=64,
-            hidden_size=5_120,
-            intermediate_size=17_408,
-            attention_heads=24,
-            attention_kv_heads=4,
-            attention_head_dim=256,
-            linear_qk_heads=16,
-            linear_v_heads=48,
-            linear_key_dim=128,
-            linear_value_dim=128,
-            mtp_fusion=True,
-            arch_family="qwen38_27b_text",
-            **overrides,
-        )
+        values = {
+            "num_hidden_layers": 64,
+            "hidden_size": 5_120,
+            "intermediate_size": 17_408,
+            "attention_heads": 24,
+            "attention_kv_heads": 4,
+            "attention_head_dim": 256,
+            "linear_qk_heads": 16,
+            "linear_v_heads": 48,
+            "linear_key_dim": 128,
+            "linear_value_dim": 128,
+            "mtp_fusion": True,
+            "arch_family": "qwen38_27b_text",
+        }
+        values.update(overrides)
+        return replace(cls(), **values)
 
     def __post_init__(self) -> None:
         positive = (
@@ -183,7 +183,7 @@ class Qwen38DenseAttention(nn.Module):
             dropout_p=0.0,
             is_causal=True,
         ).transpose(1, 2)
-        attended = attended * F.silu(gate)
+        attended = attended * torch.sigmoid(gate)
         return self.out(attended.reshape(batch, seq_len, q_width))
 
 

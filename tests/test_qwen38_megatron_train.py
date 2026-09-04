@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,7 @@ from archlab.megatron.qwen38_train import (
     _megatron_argv,
     _parser,
     _partition_prefixes,
+    _validated_data_prefixes,
 )
 
 
@@ -50,11 +52,59 @@ def test_binary_batches_shift_labels_and_wrap(tmp_path):
     assert second["tokens"].tolist() == [[2, 3, 4, 5]]
 
 
+def test_binary_validation_batches_repeat_the_exact_window(tmp_path):
+    prefix = _part(tmp_path, "val", 0, list(range(40)))
+    batches = BinaryTokenBatches(
+        [prefix],
+        batch_size=1,
+        sequence_len=4,
+        start_batch=1,
+        device=torch.device("cpu"),
+        repeat_window_batches=2,
+    )
+
+    first_window = [next(batches) for _ in range(2)]
+    second_window = [next(batches) for _ in range(2)]
+
+    for first, second in zip(first_window, second_window, strict=True):
+        assert torch.equal(first["tokens"], second["tokens"])
+        assert torch.equal(first["labels"], second["labels"])
+
+
 def test_prefix_validation_and_rank_partition(tmp_path):
     prefixes = [_part(tmp_path, "train", i, list(range(8))) for i in range(4)]
     assert _data_prefixes(tmp_path, "train") == prefixes
     assert _partition_prefixes(prefixes, 1, 2) == [prefixes[1], prefixes[3]]
-    assert _partition_prefixes(prefixes, 7, 8) == [prefixes[3]]
+    with pytest.raises(ValueError, match="one distinct indexed-data part per rank"):
+        _partition_prefixes(prefixes, 7, 8)
+    assert _partition_prefixes(prefixes, 7, 8, require_distinct=False) == [prefixes[3]]
+
+
+def test_data_manifest_requires_exact_nonempty_artifact_membership(tmp_path):
+    train = [_part(tmp_path, "train", i, list(range(8))) for i in range(2)]
+    validation = [_part(tmp_path, "val", 0, list(range(8)))]
+    (tmp_path / "DATA_READY.json").write_text(
+        json.dumps(
+            {
+                "train_parts": [str(prefix) for prefix in train],
+                "valid_parts": [str(prefix) for prefix in validation],
+            }
+        )
+    )
+
+    assert _validated_data_prefixes(tmp_path) == (train, validation)
+
+    _part(tmp_path, "train", 2, list(range(8)))
+    with pytest.raises(RuntimeError, match="undeclared"):
+        _validated_data_prefixes(tmp_path)
+
+
+def test_data_prefixes_reject_empty_artifacts(tmp_path):
+    prefix = _part(tmp_path, "train", 0, list(range(8)))
+    Path(f"{prefix}.idx").write_bytes(b"")
+
+    with pytest.raises(FileNotFoundError, match="missing or empty"):
+        _data_prefixes(tmp_path, "train")
 
 
 def test_qwen38_training_defaults_to_bf16(tmp_path):

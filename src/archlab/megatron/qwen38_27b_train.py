@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import inspect
 import json
 import math
 import os
@@ -28,17 +30,31 @@ from archlab.megatron.qwen38_train import (
     _architecture_from_model,
     _atomic_json,
     _current_iteration,
-    _data_prefixes,
     _distributed_rank,
     _distributed_world_size,
     _invoke_pretrain,
     _loss_func,
     _partition_prefixes,
     _sha256,
+    _validated_data_prefixes,
 )
 from archlab.speedrun.precision import resolve_precision_backend
 
 NATIVE_MUON_FP32_MATMUL_PRECISION = "medium"
+RESUME_CONTRACT_SCHEMA_VERSION = 1
+RESUME_IMMUTABLE_FIELDS = (
+    "model_config",
+    "source",
+    "precision",
+    "optimizer",
+    "kernel_acceleration",
+    "parallelism",
+    "batch",
+    "training",
+    "tokenizer_sha256",
+    "data_ready_sha256",
+    "implementation_sha256",
+)
 
 
 def _native_muon_contract() -> dict[str, object]:
@@ -208,6 +224,95 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38DenseConfig) -> list[
     return argv
 
 
+def _canonical_sha256(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _attach_resume_contract(payload: dict[str, object]) -> None:
+    immutable = {field: payload[field] for field in RESUME_IMMUTABLE_FIELDS}
+    payload["resume_contract"] = {
+        "schema_version": RESUME_CONTRACT_SCHEMA_VERSION,
+        "immutable": immutable,
+        "sha256": _canonical_sha256(immutable),
+    }
+
+
+def _resume_contract(payload: dict[str, object], *, label: str) -> dict[str, object]:
+    contract = payload.get("resume_contract")
+    if not isinstance(contract, dict):
+        raise RuntimeError(
+            f"{label} lacks a resume compatibility contract; use a new run directory"
+        )
+    immutable = contract.get("immutable")
+    if contract.get("schema_version") != RESUME_CONTRACT_SCHEMA_VERSION or not isinstance(
+        immutable, dict
+    ):
+        raise RuntimeError(f"{label} has an unsupported resume compatibility contract")
+    expected = _canonical_sha256(immutable)
+    if contract.get("sha256") != expected:
+        raise RuntimeError(f"{label} resume compatibility contract is corrupt")
+    return contract
+
+
+def _validate_resume_compatibility(
+    previous: dict[str, object],
+    candidate: dict[str, object],
+) -> None:
+    previous_contract = _resume_contract(previous, label="stored RUN_CONTRACT.json")
+    candidate_contract = _resume_contract(candidate, label="candidate run contract")
+    if previous_contract["sha256"] == candidate_contract["sha256"]:
+        return
+    previous_immutable = previous_contract["immutable"]
+    candidate_immutable = candidate_contract["immutable"]
+    changed = sorted(
+        field
+        for field in set(previous_immutable) | set(candidate_immutable)
+        if previous_immutable.get(field) != candidate_immutable.get(field)
+    )
+    raise RuntimeError(
+        "resume contract mismatch before checkpoint load; "
+        f"immutable fields changed: {changed}"
+    )
+
+
+def _record_run_contract(
+    run_dir: Path,
+    payload: dict[str, object],
+    *,
+    resume: bool,
+) -> None:
+    """Retain the attempt and preserve a compatible canonical run contract."""
+    _resume_contract(payload, label="candidate run contract")
+    attempt = run_dir / "contracts" / f"attempt-{time.time_ns()}-{os.getpid()}.json"
+    _atomic_json(attempt, payload)
+
+    canonical = run_dir / "RUN_CONTRACT.json"
+    checkpoint_marker = run_dir / "checkpoints" / "latest_checkpointed_iteration.txt"
+    if checkpoint_marker.is_file() and not resume:
+        raise RuntimeError("checkpoint exists but resume is disabled; use a new run directory")
+    if not canonical.is_file():
+        if checkpoint_marker.is_file():
+            raise RuntimeError("checkpoint exists without RUN_CONTRACT.json; refusing unsafe resume")
+        _atomic_json(canonical, payload)
+        return
+
+    try:
+        previous = json.loads(canonical.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"invalid canonical run contract: {canonical}") from error
+    if not isinstance(previous, dict):
+        raise RuntimeError(f"canonical run contract must contain an object: {canonical}")
+    if not resume:
+        raise RuntimeError("run directory already has a contract; use a new run directory")
+    _validate_resume_compatibility(previous, payload)
+
+
 def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None:
     if int(os.environ.get("RANK", "0")) != 0:
         return
@@ -310,19 +415,24 @@ def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None
         "tokenizer_sha256": tokenizer_sha256,
         "data_root": str(args.data_root),
         "data_ready_sha256": _sha256(data_ready),
+        "implementation_sha256": {
+            "architecture": _sha256(Path(inspect.getfile(Qwen38Dense)).resolve()),
+            "data_iterator": _sha256(Path(inspect.getfile(BinaryTokenBatches)).resolve()),
+            "trainer": _sha256(Path(__file__).resolve()),
+        },
         "runtime": runtime,
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
         "python": platform.python_version(),
         "created_at_unix": time.time(),
     }
-    _atomic_json(args.run_dir / "RUN_CONTRACT.json", payload)
+    _attach_resume_contract(payload)
+    _record_run_contract(args.run_dir, payload, resume=args.resume)
 
 
 def _run(args: argparse.Namespace) -> None:
     config = Qwen38DenseConfig.for_scale(args.model_scale, sequence_len=args.sequence_length)
-    _data_prefixes(args.data_root, "train")
-    _data_prefixes(args.data_root, "val")
+    train_prefixes, validation_prefixes = _validated_data_prefixes(args.data_root)
     _write_contract(args, config)
     sys.argv = _megatron_argv(args, config)
 
@@ -401,8 +511,13 @@ def _run(args: argparse.Namespace) -> None:
 
     def datasets_provider(_sample_counts):
         rank, world_size = _distributed_rank(), _distributed_world_size()
-        train = _partition_prefixes(_data_prefixes(args.data_root, "train"), rank, world_size)
-        validation = _partition_prefixes(_data_prefixes(args.data_root, "val"), rank, world_size)
+        train = _partition_prefixes(train_prefixes, rank, world_size)
+        validation = _partition_prefixes(
+            validation_prefixes,
+            rank,
+            world_size,
+            require_distinct=False,
+        )
         accumulation = args.global_batch_size // (world_size * args.micro_batch_size)
 
         def train_batches():
@@ -416,12 +531,14 @@ def _run(args: argparse.Namespace) -> None:
             )
 
         def validation_batches():
+            window_batches = args.eval_iters * accumulation
             yield from BinaryTokenBatches(
                 validation,
                 batch_size=args.micro_batch_size,
                 sequence_len=config.sequence_len,
-                start_batch=rank * args.eval_iters * accumulation,
+                start_batch=rank * window_batches,
                 device=torch.device("cuda", torch.cuda.current_device()),
+                repeat_window_batches=window_batches,
             )
 
         return train_batches(), validation_batches(), None

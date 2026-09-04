@@ -123,6 +123,33 @@ def test_dense_full_attention_is_causal():
     assert torch.allclose(output[:, 0], perturbed_output[:, 0], atol=1e-5, rtol=1e-5)
 
 
+def test_dense_full_attention_uses_sigmoid_output_gate(monkeypatch):
+    torch.manual_seed(19)
+    config = tiny_config()
+    attention = Qwen38DenseAttention(config, runtime_backend="native")
+    for parameter in attention.parameters():
+        torch.nn.init.normal_(parameter)
+    x = torch.randn(2, config.sequence_len, config.hidden_size)
+    rotary = torch.zeros(1, config.sequence_len, 1, 2)
+
+    monkeypatch.setattr(
+        torch.nn.functional,
+        "scaled_dot_product_attention",
+        lambda query, _key, _value, **_kwargs: torch.ones_like(query),
+    )
+    actual = attention(x, rotary.cos(), rotary.sin())
+    _, gate = (
+        attention.q_gate(x)
+        .view(2, config.sequence_len, config.attention_heads, 2 * config.attention_head_dim)
+        .chunk(2, dim=-1)
+    )
+    expected = attention.out(torch.sigmoid(gate).reshape(2, config.sequence_len, -1))
+    silu_result = attention.out(torch.nn.functional.silu(gate).reshape(2, config.sequence_len, -1))
+
+    assert torch.allclose(actual, expected)
+    assert not torch.allclose(actual, silu_result)
+
+
 def test_default_dense_model_constructs_on_meta_at_about_one_billion_parameters():
     with torch.device("meta"):
         model = Qwen38Dense(Qwen38DenseConfig())
@@ -150,6 +177,21 @@ def test_full_config_matches_released_qwen38_text_shapes_and_mtp_fusion():
     assert model.mtp.fc.weight.shape == (5_120, 10_240)
     assert model.mtp.block.attention.q_gate.weight.shape == (12_288, 5_120)
     assert 27_000_000_000 < counts["total"] < 28_000_000_000
+
+
+def test_full_config_allows_overriding_released_shape_defaults():
+    config = Qwen38DenseConfig.for_scale(
+        "full",
+        hidden_size=64,
+        intermediate_size=96,
+        attention_heads=4,
+        attention_kv_heads=2,
+        attention_head_dim=16,
+    )
+
+    assert config.hidden_size == 64
+    assert config.intermediate_size == 96
+    assert config.num_hidden_layers == 64
 
 
 def test_full_mtp_fusion_forward_backward_is_finite():

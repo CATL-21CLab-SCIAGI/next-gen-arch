@@ -102,6 +102,19 @@ jq -e \
      and (.valid_parts | length == 1)
      and (.train_tokens >= $target)' \
     "$NGA_DATA_ROOT/DATA_READY.json" >/dev/null
+PYTHONPATH="$NGA_REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$NGA_PYTHON" -c '
+import sys
+from pathlib import Path
+from archlab.megatron.qwen38_train import _validated_data_prefixes
+
+train, validation = _validated_data_prefixes(Path(sys.argv[1]))
+if len(train) != 32 or len(validation) != 1:
+    raise SystemExit(
+        f"indexed-data membership must be exactly 32 train and 1 validation parts; "
+        f"found {len(train)} and {len(validation)}"
+    )
+' "$NGA_DATA_ROOT"
 test "$(git -C "$NGA_REPO_ROOT" rev-parse HEAD)" = "$NGA_EXPECTED_COMMIT"
 repo_drift="$({ git -C "$NGA_REPO_ROOT" status --porcelain=v1 --untracked-files=all || true; } \
     | grep -Ev '^\?\? (\.LAUNCH_READY|repo-head\.txt)$' || true)"
