@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The resident four-node controller predates the dedicated Flash-Next launcher
+# and only admits this historical path. Keep the exception narrow: the validated
+# compatibility handle is rechecked by the forwarding launcher before any work.
+case "${NGA_OUTPUT_ROOT:-}" in
+    /mnt/nas/evergreen/next-gen-arch/compat-qwen38-flash-next-*)
+        exec bash "$(dirname "$0")/run_qwen38_27b_full_dlc.sh"
+        ;;
+esac
+
 : "${RANK:?PAI DLC must inject the node RANK}"
 : "${WORLD_SIZE:?PAI DLC must inject the node WORLD_SIZE}"
 : "${MASTER_ADDR:?PAI DLC must inject MASTER_ADDR}"

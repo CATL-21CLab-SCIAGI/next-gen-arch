@@ -320,3 +320,11 @@ def test_legacy_full_launcher_is_a_narrow_flash_next_forwarder():
     assert "run_qwen38_flash_next_full_dlc.sh" in launcher
     assert "run_qwen38_27b_quarter_dlc.sh" not in launcher
     assert "export NGA_EXPECTED_NODES NGA_GPUS_PER_NODE" in supported_launcher
+
+
+def test_resident_controller_launcher_dispatches_only_the_flash_next_handle():
+    root = Path(__file__).resolve().parents[1]
+    launcher = (root / "scripts" / "run_qwen38_27b_quarter_dlc.sh").read_text()
+
+    assert "/compat-qwen38-flash-next-*" in launcher
+    assert "run_qwen38_27b_full_dlc.sh" in launcher
