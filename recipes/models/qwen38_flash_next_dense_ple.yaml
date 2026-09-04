@@ -1,0 +1,66 @@
+name: qwen38-flash-next-dense-ple
+variant: true
+source:
+  model: Qwen/Qwen3.8-Flash-Next
+  revision: 34567a4712bc9766c4449e2e98e4468bfa24d915
+  config_sha256: 889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b
+  tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+  initialize: random_seed_42
+  weights_loaded: false
+  scope: text_only
+model:
+  vocab_size: 248320
+  sequence_length: 2048
+  layers: 48
+  hidden_size: 2560
+  layer_pattern: [gdn, gdn, gdn, dense_attention]
+  dense_attention: {query_heads: 24, kv_heads: 2, head_dim: 256, rotary_fraction: 0.25}
+  gdn: {qk_heads: 16, value_heads: 48, key_dim: 128, value_dim: 128, conv_kernel: 4}
+  moe:
+    routed_experts: 512
+    experts_per_token: 10
+    expert_intermediate_size: 640
+    shared_expert_intermediate_size: 640
+    router_aux_loss_coefficient: 0.001
+    router_z_loss_coefficient: 0.0
+  gated_residual: {streams: 4, low_rank: 320, pipeline_representation: packed}
+  ple:
+    layer: 2
+    parameters: 51200245760
+    ngram_size: 3
+    heads_per_ngram: 8
+    base_vocab_size: 20000000
+    partitions: 128
+    owners: 8
+  mtp: {depths: 3, repeated_shared_layer: true, loss_scaling_factor: 0.1}
+parallelism:
+  tensor: 1
+  pipeline: 4
+  expert: 8
+  context: 1
+  pipeline_layers: [12, 13, 13, 10]
+training:
+  global_batch_sequences: 4096
+  tokens_per_step: 8388608
+  steps: 11921
+  effective_tokens: 100000595968
+  peak_lr: 0.00176
+  minimum_lr: 0.000176
+  warmup_fraction: 0.01
+  schedule: cosine
+  gradient_clip: 0.5
+  checkpoint_interval_steps: 1192
+optimizer:
+  native_megatron_muon:
+    momentum: 0.95
+    nesterov: true
+    coefficient: polar_express
+    newton_schulz_steps: 8
+    scale_mode: spectral
+    extra_scale_factor: 0.2
+    fp32_matmul_precision: medium
+  scalar_optimizer: adamw
+  ple_tables: {optimizer: adam, weight_decay: 0.0}
+  qkv_split_note: Megatron query-group Q/K/V splitting is coarser than Qwen per-head splitting
+  canzona: unavailable
+output_root: env:NGA_OUTPUT_ROOT

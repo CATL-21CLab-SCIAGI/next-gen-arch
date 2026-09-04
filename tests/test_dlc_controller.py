@@ -8,6 +8,7 @@ import pytest
 
 from archlab.dlc_controller import (
     DENSE_27B_LAUNCHER,
+    FLASH_NEXT_FULL_LAUNCHER,
     FULL_DENSE_27B_LAUNCHER,
     LAUNCHER,
     Controller,
@@ -185,6 +186,26 @@ def test_validate_request_accepts_full_dense_27b_launcher(tmp_path: Path) -> Non
 
     assert request.payload["launcher"] == FULL_DENSE_27B_LAUNCHER
     assert request.environment["NGA_MICRO_BATCH_SIZE"] == "1"
+
+
+def test_validate_request_accepts_direct_flash_next_launcher_with_oss_output(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repos" / "next-gen-arch"
+    payload = _payload(root, "a" * 40, launcher=FLASH_NEXT_FULL_LAUNCHER)
+    environment = payload["environment"]
+    assert isinstance(environment, dict)
+    environment["NGA_OUTPUT_ROOT"] = "/mnt/oss/evergreen/next-gen-arch/generation-1"
+    environment["NGA_GLOBAL_BATCH_SIZE"] = "4096"
+    environment["NGA_TARGET_TRAIN_TOKENS"] = "100000595968"
+    environment["NGA_CHECKPOINT_INTERVAL_TOKENS"] = "100000595968"
+
+    request = validate_request(payload, allowed_repo_root=tmp_path / "repos")
+
+    assert request.payload["launcher"] == FLASH_NEXT_FULL_LAUNCHER
+    environment["NGA_OUTPUT_ROOT"] = "/mnt/nas/evergreen/wrong-root"
+    with pytest.raises(ValueError, match="NGA_OUTPUT_ROOT"):
+        validate_request(payload, allowed_repo_root=tmp_path / "repos")
 
 
 def test_publish_is_atomic_idempotent_and_rejects_generation_reuse(tmp_path: Path) -> None:

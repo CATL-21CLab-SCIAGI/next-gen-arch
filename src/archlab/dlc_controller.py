@@ -19,8 +19,9 @@ SCHEMA_VERSION = 1
 LAUNCHER = "scripts/run_qwen38_quarter_fp4_dlc.sh"
 DENSE_27B_LAUNCHER = "scripts/run_qwen38_27b_quarter_dlc.sh"
 FULL_DENSE_27B_LAUNCHER = "scripts/run_qwen38_27b_full_dlc.sh"
+FLASH_NEXT_FULL_LAUNCHER = "scripts/run_qwen38_flash_next_full_dlc.sh"
 DENSE_27B_LAUNCHERS = {DENSE_27B_LAUNCHER, FULL_DENSE_27B_LAUNCHER}
-ALLOWED_LAUNCHERS = {LAUNCHER, *DENSE_27B_LAUNCHERS}
+ALLOWED_LAUNCHERS = {LAUNCHER, FLASH_NEXT_FULL_LAUNCHER, *DENSE_27B_LAUNCHERS}
 DEFAULT_ALLOWED_REPO_ROOT = Path("/mnt/nas/evergreen")
 DEFAULT_CONTROL_ROOT = Path(
     "/mnt/nas/evergreen/next-gen-arch/qwen38-quarter-fp4-fineweb100b-control"
@@ -229,7 +230,7 @@ def validate_request(
     _require_exact_keys(raw_environment, _ALLOWED_ENVIRONMENT_KEYS, "environment")
     required_environment = (
         _DENSE_27B_REQUIRED_ENVIRONMENT_KEYS
-        if launcher in DENSE_27B_LAUNCHERS
+        if launcher in {*DENSE_27B_LAUNCHERS, FLASH_NEXT_FULL_LAUNCHER}
         else _REQUIRED_ENVIRONMENT_KEYS
     )
     missing_environment = required_environment - set(raw_environment)
@@ -252,7 +253,10 @@ def validate_request(
             raise ValueError(f"{key} must be 0 or 1")
     if "NGA_PRECISION" in environment and environment["NGA_PRECISION"] not in {"bf16", "fp4"}:
         raise ValueError("NGA_PRECISION must be bf16 or fp4")
-    for key, root in _PATH_PREFIXES.items():
+    path_prefixes = dict(_PATH_PREFIXES)
+    if launcher == FLASH_NEXT_FULL_LAUNCHER:
+        path_prefixes["NGA_OUTPUT_ROOT"] = Path("/mnt/oss/evergreen/next-gen-arch")
+    for key, root in path_prefixes.items():
         if key not in environment:
             continue
         path = Path(environment[key])
@@ -282,6 +286,18 @@ def validate_request(
         raise ValueError("global batch must divide by the distributed micro batch")
     if checkpoint_tokens > target_tokens or target_tokens % checkpoint_tokens:
         raise ValueError("checkpoint interval must evenly divide target train tokens")
+    if launcher == FLASH_NEXT_FULL_LAUNCHER:
+        exact = {
+            "NGA_EXPECTED_NODES": "4",
+            "NGA_GPUS_PER_NODE": "8",
+            "NGA_SEQUENCE_LENGTH": "2048",
+            "NGA_MICRO_BATCH_SIZE": "1",
+            "NGA_GLOBAL_BATCH_SIZE": "4096",
+            "NGA_TARGET_TRAIN_TOKENS": "100000595968",
+        }
+        drift = {key: environment[key] for key, value in exact.items() if environment[key] != value}
+        if drift:
+            raise ValueError(f"Flash-Next full-model contract drift: {drift}")
 
     return LaunchRequest(
         generation=generation,
