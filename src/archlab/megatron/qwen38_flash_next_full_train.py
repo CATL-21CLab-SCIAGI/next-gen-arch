@@ -40,6 +40,8 @@ CHECKPOINT_INTERVAL_STEPS = 1_192
 CHECKPOINT_WRITER_THREADS = 8
 DISTRIBUTED_TIMEOUT_MINUTES = 60
 NATIVE_MUON_FP32_MATMUL_PRECISION = "medium"
+FULL_MODEL_VARIANT = "full"
+QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT = "quarter-depth48-no-mtp"
 
 
 def _sha256(path: Path) -> str:
@@ -86,7 +88,9 @@ class DPRankTokenBatches:
         if repeat_window_batches is not None and repeat_window_batches < 1:
             raise ValueError("repeat_window_batches must be positive")
         if device.type == "cuda":
-            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dp-token-prefetch")
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="dp-token-prefetch"
+            )
             self._future = self._executor.submit(self._cpu_batch, self._source_index(start_batch))
 
     @staticmethod
@@ -184,7 +188,11 @@ def _validated_data_prefixes(data_root: Path) -> tuple[list[Path], list[Path]]:
     validated = []
     for split, key in (("train", "train_parts"), ("val", "valid_parts")):
         values = ready.get(key)
-        if not isinstance(values, list) or not values or not all(isinstance(x, str) for x in values):
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(x, str) for x in values)
+        ):
             raise RuntimeError(f"indexed-data manifest lacks valid {key}")
         declared = []
         for value in values:
@@ -230,9 +238,7 @@ def _native_muon_contract() -> dict[str, Any]:
     }
 
 
-def _megatron_argv(
-    args: argparse.Namespace, config: Qwen38FlashNextFullConfig
-) -> list[str]:
+def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) -> list[str]:
     tokens_per_step = args.global_batch_size * config.sequence_len
     if args.global_batch_size < args.micro_batch_size:
         raise ValueError("global batch must be at least one microbatch")
@@ -247,7 +253,7 @@ def _megatron_argv(
         train_steps = TRAIN_STEPS
         save_interval = CHECKPOINT_INTERVAL_STEPS
     argv = [
-        "qwen38-flash-next-dense-ple-bf16",
+        f"qwen38-flash-next-{config.arch_family}-bf16",
         "--use-mcore-models",
         "--num-layers",
         str(config.num_hidden_layers),
@@ -293,9 +299,9 @@ def _megatron_argv(
         "--pipeline-model-parallel-size",
         "4",
         "--decoder-first-pipeline-num-layers",
-        "12",
+        str(config.pipeline_layers[0]),
         "--decoder-last-pipeline-num-layers",
-        "10",
+        str(config.pipeline_layers[-1]),
         "--expert-model-parallel-size",
         "8",
         "--context-parallel-size",
@@ -321,11 +327,6 @@ def _megatron_argv(
         str(config.router_aux_loss_coefficient),
         "--moe-token-dispatcher-type",
         "alltoall",
-        "--mtp-num-layers",
-        str(config.mtp_num_layers),
-        "--mtp-use-repeated-layer",
-        "--mtp-loss-scaling-factor",
-        str(config.mtp_loss_scaling_factor),
         "--optimizer",
         "muon",
         "--adam-beta1",
@@ -403,6 +404,18 @@ def _megatron_argv(
         "--seed",
         str(args.seed),
     ]
+    if config.router_z_loss_coefficient:
+        argv.extend(("--moe-z-loss-coeff", str(config.router_z_loss_coefficient)))
+    if config.mtp_num_layers:
+        argv.extend(
+            (
+                "--mtp-num-layers",
+                str(config.mtp_num_layers),
+                "--mtp-use-repeated-layer",
+                "--mtp-loss-scaling-factor",
+                str(config.mtp_loss_scaling_factor),
+            )
+        )
     marker = args.run_dir / "checkpoints" / "latest_checkpointed_iteration.txt"
     if args.resume and marker.is_file():
         argv.extend(("--load", str(args.run_dir / "checkpoints")))
@@ -536,9 +549,7 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
             state = {}
             for child_name, child in self.named_children():
                 state.update(
-                    child.sharded_state_dict(
-                        f"{prefix}{child_name}.", sharded_offsets, metadata
-                    )
+                    child.sharded_state_dict(f"{prefix}{child_name}.", sharded_offsets, metadata)
                 )
             return state
 
@@ -618,9 +629,7 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
                 layer_number,
                 is_mtp_layer=is_mtp_layer,
                 backbone_offset=(
-                    0
-                    if is_mtp_layer
-                    else get_transformer_layer_offset(config, vp_stage, pp_rank)
+                    0 if is_mtp_layer else get_transformer_layer_offset(config, vp_stage, pp_rank)
                 ),
             )
             self.attention_kind = (
@@ -700,8 +709,11 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
         ):
             if hidden_states.size(-1) == architecture_config.hidden_size:
                 hidden_states = hidden_states.repeat(1, 1, architecture_config.residual_streams)
-            if hidden_states.size(-1) != architecture_config.hidden_size * 4:
-                raise RuntimeError("pipeline tensor does not contain four packed GR streams")
+            expected_width = architecture_config.hidden_size * architecture_config.residual_streams
+            if hidden_states.size(-1) != expected_width:
+                raise RuntimeError(
+                    "pipeline tensor does not contain the configured packed GR streams"
+                )
             if self.ple is not None:
                 if self._ple_input_ids is None:
                     raise RuntimeError("Layer-2 PLE input IDs were not bound by the GPT adapter")
@@ -772,13 +784,15 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
             layer_specs=[layer_spec] * local_layers,
             layer_norm=None,
         )
-        mtp_spec = get_gpt_mtp_block_spec_for_backend(
-            config=config,
-            spec=block_spec,
-            backend=backend,
-            vp_stage=vp_stage,
-            pp_rank=pp_rank,
-        )
+        mtp_spec = None
+        if architecture_config.mtp_num_layers:
+            mtp_spec = get_gpt_mtp_block_spec_for_backend(
+                config=config,
+                spec=block_spec,
+                backend=backend,
+                vp_stage=vp_stage,
+                pp_rank=pp_rank,
+            )
         return block_spec, mtp_spec
 
     return QwenFlashNextGPT, specs_for
@@ -804,9 +818,7 @@ def _assert_pipeline_data_rank_layout(
         raise RuntimeError("data-parallel world size must be positive")
     if len(pipeline_global_ranks) != 4 or global_rank not in pipeline_global_ranks:
         raise RuntimeError("the full-model data contract requires a four-rank pipeline group")
-    projected_data_ranks = {
-        rank % data_parallel_world_size for rank in pipeline_global_ranks
-    }
+    projected_data_ranks = {rank % data_parallel_world_size for rank in pipeline_global_ranks}
     if projected_data_ranks != {data_parallel_rank}:
         raise RuntimeError("pipeline stages do not share one deterministic data rank")
 
@@ -914,9 +926,7 @@ def _install_bounded_torch_dist_staging(training_module: Any) -> None:
 
     class _BoundedTorchDistSaveShardedStrategy(TorchDistSaveShardedStrategy):
         def save(self, sharded_state_dict, checkpoint_dir):
-            request = self.async_save(
-                sharded_state_dict, checkpoint_dir, async_strategy="mcore"
-            )
+            request = self.async_save(sharded_state_dict, checkpoint_dir, async_strategy="mcore")
             _execute_checkpoint_request_by_local_rank(
                 request,
                 local_rank=int(os.environ["LOCAL_RANK"]),
@@ -959,8 +969,27 @@ def _write_contract(args, config) -> None:
     if tokenizer_hash != TOKENIZER_SHA256 or config_hash != SOURCE_CONFIG_SHA256:
         raise RuntimeError("pinned Qwen source/tokenizer hash drift")
     runtime = validate_runtime(require_pretrain=False)
+    if args.model_variant == FULL_MODEL_VARIANT:
+        model_name = "Qwen3.8-Flash-Next dense-attention owner-sharded-PLE variant"
+        variant_differences = [
+            "dense global attention at 2K instead of QSA",
+            "three MTP depths sharing one physical layer",
+            "Megatron-native Muon instead of private Canzona",
+            "GPU-owner-sharded PLE instead of unpublished host prefetch",
+        ]
+    else:
+        model_name = "Qwen3.8-Flash-Next quarter-shape depth-48 no-MTP variant"
+        variant_differences = [
+            "divisible width, head, expert, GR, and PLE shapes quartered",
+            "all 48 backbone layers retained with an even PP4 split",
+            "MTP module and auxiliary objective disabled",
+            "dense global attention at 2K instead of QSA",
+            "quarter-shape router stability coefficients use auxiliary 0.01 and z-loss 0.001",
+            "Megatron-native Muon instead of private Canzona",
+            "GPU-owner-sharded PLE instead of unpublished host prefetch",
+        ]
     payload = {
-        "model": "Qwen3.8-Flash-Next dense-attention owner-sharded-PLE variant",
+        "model": model_name,
         "source": {
             "model": SOURCE_MODEL,
             "revision": SOURCE_REVISION,
@@ -971,14 +1000,9 @@ def _write_contract(args, config) -> None:
         },
         "model_config": config.to_dict(),
         "parameter_count": parameter_count_contract(config),
-        "variant_differences": [
-            "dense global attention at 2K instead of QSA",
-            "three MTP depths sharing one physical layer",
-            "Megatron-native Muon instead of private Canzona",
-            "GPU-owner-sharded PLE instead of unpublished host prefetch",
-        ],
+        "variant_differences": variant_differences,
         "parallelism": {"tensor": 1, "pipeline": 4, "expert": 8, "context": 1},
-        "pipeline_layers": [12, 13, 13, 10],
+        "pipeline_layers": list(config.pipeline_layers),
         "optimizer": {
             **_native_muon_contract(),
             "peak_lr": args.learning_rate,
@@ -994,7 +1018,7 @@ def _write_contract(args, config) -> None:
             "serialization": "container-owned distributed checkpointing",
             "host_staging": "one local GPU rank per node at a time",
             "files_per_rank": CHECKPOINT_WRITER_THREADS,
-            "reason": "bound full-PLE FP32 optimizer staging to 512 GiB host memory",
+            "reason": "bound owner-sharded PLE optimizer staging to host memory",
         },
         "training": {
             "seed": args.seed,
@@ -1023,9 +1047,7 @@ def _write_contract(args, config) -> None:
         "precision": "BF16 model/compute; FP32 optimizer and Muon orthogonalization",
         "source_commit": os.environ.get("NGA_EXPECTED_COMMIT"),
         "implementation_sha256": {
-            "architecture": _sha256(
-                Path(inspect.getfile(Qwen38FlashNextFullConfig)).resolve()
-            ),
+            "architecture": _sha256(Path(inspect.getfile(Qwen38FlashNextFullConfig)).resolve()),
             "trainer": _sha256(Path(__file__).resolve()),
         },
         "runtime": runtime,
@@ -1050,7 +1072,10 @@ def _current_iteration() -> int:
 
 
 def _run(args: argparse.Namespace) -> None:
-    config = Qwen38FlashNextFullConfig(sequence_len=args.sequence_length)
+    if args.model_variant == FULL_MODEL_VARIANT:
+        config = Qwen38FlashNextFullConfig(sequence_len=args.sequence_length)
+    else:
+        config = Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
     train_prefixes, validation_prefixes = _validated_data_prefixes(args.data_root)
     _write_contract(args, config)
     sys.argv = _megatron_argv(args, config)
@@ -1111,7 +1136,7 @@ def _run(args: argparse.Namespace) -> None:
                 None,
             )
             if early_parameter is None:
-                raise RuntimeError("the full probe could not identify an early GDN parameter")
+                raise RuntimeError("the Flash-Next probe could not identify an early GDN parameter")
             probe_gradient_state["expected"] = True
 
             def record_early_gradient(gradient):
@@ -1191,7 +1216,7 @@ def _run(args: argparse.Namespace) -> None:
         expected, seen, nonfinite = gradient_evidence.tolist()
         if expected != 8 or seen != expected or nonfinite:
             raise RuntimeError(
-                "full probe early-backbone gradient rejection: "
+                "Flash-Next probe early-backbone gradient rejection: "
                 f"expected={expected}, seen={seen}, nonfinite={nonfinite}"
             )
         if torch.distributed.get_rank() == 0:
@@ -1217,6 +1242,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", required=True, type=Path)
     parser.add_argument("--tokenizer", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
+    parser.add_argument(
+        "--model-variant",
+        choices=(FULL_MODEL_VARIANT, QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT),
+        default=FULL_MODEL_VARIANT,
+    )
     parser.add_argument("--sequence-length", type=int, default=2_048)
     parser.add_argument("--micro-batch-size", type=int, default=1)
     parser.add_argument("--global-batch-size", type=int, default=4_096)
@@ -1238,15 +1268,18 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _parser().parse_args()
-    if min(
-        args.sequence_length,
-        args.micro_batch_size,
-        args.global_batch_size,
-        args.target_train_tokens,
-        args.eval_interval,
-        args.eval_iters,
-        args.log_interval,
-    ) < 1:
+    if (
+        min(
+            args.sequence_length,
+            args.micro_batch_size,
+            args.global_batch_size,
+            args.target_train_tokens,
+            args.eval_interval,
+            args.eval_iters,
+            args.log_interval,
+        )
+        < 1
+    ):
         raise SystemExit("all integer training controls must be positive")
     if args.sequence_length != 2_048:
         raise SystemExit("the supported training recipe is fixed at 2,048 tokens")

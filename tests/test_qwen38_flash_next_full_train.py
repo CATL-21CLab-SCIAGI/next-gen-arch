@@ -13,6 +13,7 @@ from archlab.architectures.qwen38_flash_next_full import (
 from archlab.megatron.qwen38_flash_next_full_train import (
     CHECKPOINT_INTERVAL_STEPS,
     EFFECTIVE_TOKENS,
+    QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT,
     TOKENS_PER_STEP,
     TRAIN_STEPS,
     _assert_pipeline_data_rank_layout,
@@ -81,9 +82,7 @@ def test_distributed_checkpoint_host_staging_rejects_changed_preload_abi():
 
 
 @pytest.mark.parametrize("local_rank,local_world_size", [(-1, 8), (8, 8), (0, 0)])
-def test_distributed_checkpoint_host_staging_rejects_invalid_topology(
-    local_rank, local_world_size
-):
+def test_distributed_checkpoint_host_staging_rejects_invalid_topology(local_rank, local_world_size):
     with pytest.raises(RuntimeError, match="invalid local checkpoint topology"):
         _execute_checkpoint_request_by_local_rank(
             object(),
@@ -215,6 +214,38 @@ def test_megatron_argv_uses_pp4_ep8_native_muon_and_native_mtp(tmp_path: Path):
     assert "--muon-no-split-qkv" not in argv
 
 
+def test_quarter_depth48_argv_has_even_pipeline_and_no_mtp(tmp_path: Path):
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path / "data"),
+            "--tokenizer",
+            str(tmp_path / "tokenizer"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--model-variant",
+            QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT,
+        ]
+    )
+    config = Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
+    argv = _megatron_argv(args, config)
+
+    pairs = {
+        "--num-layers": "48",
+        "--hidden-size": "640",
+        "--decoder-first-pipeline-num-layers": "12",
+        "--decoder-last-pipeline-num-layers": "12",
+        "--num-experts": "128",
+        "--moe-router-topk": "3",
+        "--moe-ffn-hidden-size": "160",
+        "--moe-aux-loss-coeff": "0.01",
+        "--moe-z-loss-coeff": "0.001",
+    }
+    for flag, value in pairs.items():
+        assert argv[argv.index(flag) + 1] == value
+    assert not any(flag.startswith("--mtp-") for flag in argv)
+
+
 def test_probe_resume_overrides_only_the_probe_scheduler_horizon(tmp_path: Path):
     run_dir = tmp_path / "run"
     marker = run_dir / "checkpoints" / "latest_checkpointed_iteration.txt"
@@ -229,9 +260,7 @@ def test_probe_resume_overrides_only_the_probe_scheduler_horizon(tmp_path: Path)
         str(run_dir),
     ]
 
-    production_argv = _megatron_argv(
-        _parser().parse_args(common), Qwen38FlashNextFullConfig()
-    )
+    production_argv = _megatron_argv(_parser().parse_args(common), Qwen38FlashNextFullConfig())
     probe_argv = _megatron_argv(
         _parser().parse_args([*common, "--probe-steps", "2"]),
         Qwen38FlashNextFullConfig(),
@@ -328,3 +357,15 @@ def test_resident_controller_launcher_dispatches_only_the_flash_next_handle():
 
     assert "/compat-qwen38-flash-next-*" in launcher
     assert "run_qwen38_27b_full_dlc.sh" in launcher
+    assert "/mnt/nas/evergreen/compat-qwen38-flash-next-*" in launcher
+
+
+def test_compatibility_launcher_selects_depth48_quarter_without_mtp():
+    root = Path(__file__).resolve().parents[1]
+    launcher = (root / "scripts" / "run_qwen38_27b_full_dlc.sh").read_text()
+    supported_launcher = (root / "scripts" / "run_qwen38_flash_next_full_dlc.sh").read_text()
+
+    assert "qwen38-flash-next-quarter-depth48-nomtp-*" in launcher
+    assert "NGA_FLASH_NEXT_MODEL_VARIANT=quarter-depth48-no-mtp" in launcher
+    assert "NGA_PROBE_SAVE_INTERVAL=1" in launcher
+    assert '--model-variant "$NGA_FLASH_NEXT_MODEL_VARIANT"' in supported_launcher

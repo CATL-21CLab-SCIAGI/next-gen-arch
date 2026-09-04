@@ -1,0 +1,70 @@
+name: qwen38-flash-next-quarter-depth48-no-mtp
+variant: true
+source:
+  model: Qwen/Qwen3.8-Flash-Next
+  revision: 34567a4712bc9766c4449e2e98e4468bfa24d915
+  config_sha256: 889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b
+  tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+  initialize: random_seed_42
+  weights_loaded: false
+  scope: text_only
+scaling_contract:
+  rule: divide divisible shape hyperparameters by four
+  depth_exception: retain all 48 backbone layers
+  routed_experts_per_token: round 10 / 4 to 3
+  tokenizer_vocabulary: preserve token identity
+  mtp: disabled
+model:
+  vocab_size: 248320
+  sequence_length: 2048
+  layers: 48
+  hidden_size: 640
+  layer_pattern: [gdn, gdn, gdn, dense_attention]
+  dense_attention: {query_heads: 6, kv_heads: 1, head_dim: 64, rotary_fraction: 0.25}
+  gdn: {qk_heads: 4, value_heads: 12, key_dim: 32, value_dim: 32, conv_kernel: 4}
+  moe:
+    routed_experts: 128
+    experts_per_token: 3
+    expert_intermediate_size: 160
+    shared_expert_intermediate_size: 160
+    router_aux_loss_coefficient: 0.01
+    router_z_loss_coefficient: 0.001
+  gated_residual: {streams: 1, low_rank: 80}
+  ple:
+    layer: 2
+    parameters: 3200040960
+    ngram_size: 3
+    heads_per_ngram: 2
+    base_vocab_size: 5000000
+    partitions: 32
+  mtp: {depths: 0, loss_scaling_factor: 0.0}
+  parameter_count: 5474884576
+parallelism:
+  tensor: 1
+  pipeline: 4
+  expert: 8
+  context: 1
+  pipeline_layers: [12, 12, 12, 12]
+training:
+  global_batch_sequences: 4096
+  tokens_per_step: 8388608
+  steps: 11921
+  effective_tokens: 100000595968
+  peak_lr: 0.00176
+  minimum_lr: 0.000176
+  warmup_fraction: 0.01
+  schedule: cosine
+  gradient_clip: 0.5
+  checkpoint_interval_steps: 1192
+optimizer:
+  native_megatron_muon:
+    momentum: 0.95
+    nesterov: true
+    coefficient: polar_express
+    newton_schulz_steps: 8
+    scale_mode: spectral
+    extra_scale_factor: 0.2
+    fp32_matmul_precision: medium
+  scalar_optimizer: adamw
+  ple_tables: {optimizer: adam, weight_decay: 0.0}
+output_root: env:NGA_OUTPUT_ROOT

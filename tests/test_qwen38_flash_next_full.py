@@ -46,6 +46,38 @@ def test_full_geometry_and_exact_parameter_contract():
     }
 
 
+def test_quarter_geometry_retains_depth_and_removes_mtp_exactly():
+    config = Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
+    counts = parameter_count_contract(config)
+
+    assert config.num_hidden_layers == 48
+    assert config.hidden_size == 640
+    assert config.pipeline_layers == (12, 12, 12, 12)
+    assert config.attention_heads == 6
+    assert config.attention_kv_heads == 1
+    assert config.attention_head_dim == 64
+    assert config.linear_qk_heads == 4
+    assert config.linear_v_heads == 12
+    assert config.linear_key_dim == config.linear_value_dim == 32
+    assert config.num_experts == 128
+    assert config.num_experts_per_token == 3
+    assert config.residual_streams == 1
+    assert config.residual_low_rank == 80
+    assert config.ngram_partitions == 32
+    assert config.mtp_num_layers == 0
+    assert config.mtp_use_repeated_layer is False
+    assert config.mtp_loss_scaling_factor == 0
+    assert counts == {
+        "embeddings_and_head": 317_849_600,
+        "ple_tables": 3_200_040_960,
+        "ple_projection": 823_680,
+        "backbone": 1_956_170_336,
+        "shared_mtp_inner": 0,
+        "native_mtp_wrapper": 0,
+        "total": 5_474_884_576,
+    }
+
+
 def test_ple_prime_sizes_padding_and_hash_multipliers_match_pinned_source():
     config = Qwen38FlashNextFullConfig()
 
@@ -99,9 +131,7 @@ def test_owner_sharding_is_balanced_and_local_lookup_preserves_global_order():
         assert table.archlab_no_weight_decay is True
         assert table.allreduce is False
 
-    ids = torch.tensor(
-        [[0, config.ngram_rows_per_partition + 2, config.ngram_padded_rows - 1]]
-    )
+    ids = torch.tensor([[0, config.ngram_rows_per_partition + 2, config.ngram_padded_rows - 1]])
     output = embedding(ids)
     expected = []
     for value in ids.flatten().tolist():
@@ -150,12 +180,13 @@ def test_four_stream_gr_matches_explicit_official_equations_and_backpropagates()
     latent = torch.nn.functional.silu(
         residual.input_mix_weight_down(normalized) / config.residual_streams
     )
-    weights = residual.input_mix_weight_up(latent).sigmoid().unflatten(
-        -1, (config.residual_streams, config.hidden_size)
+    weights = (
+        residual.input_mix_weight_up(latent)
+        .sigmoid()
+        .unflatten(-1, (config.residual_streams, config.hidden_size))
     )
     expected = (
-        weights
-        * normalized.unflatten(-1, (config.residual_streams, config.hidden_size))
+        weights * normalized.unflatten(-1, (config.residual_streams, config.hidden_size))
     ).mean(-2)
     expected_injection = 2 * torch.sigmoid(
         residual.block_inject_weight(normalized) / config.residual_streams

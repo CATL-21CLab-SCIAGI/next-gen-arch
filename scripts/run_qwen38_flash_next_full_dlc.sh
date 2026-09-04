@@ -21,6 +21,7 @@ NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-4096}"
 NGA_TARGET_TRAIN_TOKENS="${NGA_TARGET_TRAIN_TOKENS:-100000595968}"
 NGA_PROBE_STEPS="${NGA_PROBE_STEPS:-0}"
 NGA_PROBE_SAVE_INTERVAL="${NGA_PROBE_SAVE_INTERVAL:-0}"
+NGA_FLASH_NEXT_MODEL_VARIANT="${NGA_FLASH_NEXT_MODEL_VARIANT:-full}"
 export NGA_EXPECTED_NODES NGA_GPUS_PER_NODE
 
 SOURCE_CONFIG_SHA256="889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b"
@@ -50,6 +51,11 @@ if ((NGA_PROBE_STEPS == 0)); then
 fi
 if ((NGA_PROBE_STEPS < 0 || NGA_PROBE_SAVE_INTERVAL < 0)); then
     echo "probe controls must be non-negative" >&2
+    exit 1
+fi
+if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" != "full" && \
+      "$NGA_FLASH_NEXT_MODEL_VARIANT" != "quarter-depth48-no-mtp" ]]; then
+    echo "unsupported Flash-Next model variant: $NGA_FLASH_NEXT_MODEL_VARIANT" >&2
     exit 1
 fi
 case "$NGA_OUTPUT_ROOT" in
@@ -111,6 +117,7 @@ train_args=(
     --data-root "$NGA_DATA_ROOT"
     --tokenizer "$NGA_TOKENIZER"
     --run-dir "$NGA_OUTPUT_ROOT"
+    --model-variant "$NGA_FLASH_NEXT_MODEL_VARIANT"
     --sequence-length "$NGA_SEQUENCE_LENGTH"
     --micro-batch-size "$NGA_MICRO_BATCH_SIZE"
     --global-batch-size "$NGA_GLOBAL_BATCH_SIZE"

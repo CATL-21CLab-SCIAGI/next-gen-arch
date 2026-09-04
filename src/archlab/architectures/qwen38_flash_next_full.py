@@ -20,6 +20,8 @@ SOURCE_MODEL = "Qwen/Qwen3.8-Flash-Next"
 SOURCE_REVISION = "34567a4712bc9766c4449e2e98e4468bfa24d915"
 SOURCE_CONFIG_SHA256 = "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b"
 TOKENIZER_SHA256 = "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+FULL_ARCH_FAMILY = "qwen38_flash_next_dense_ple"
+QUARTER_DEPTH48_NO_MTP_ARCH_FAMILY = "qwen38_flash_next_dense_ple_quarter_depth48_no_mtp"
 
 _MASK64 = (1 << 64) - 1
 _SPLITMIX_GAMMA = 0x9E3779B97F4A7C15
@@ -119,7 +121,7 @@ class Qwen38FlashNextFullConfig:
     mtp_use_repeated_layer: bool = True
     mtp_loss_scaling_factor: float = 0.1
     pipeline_layers: tuple[int, ...] = (12, 13, 13, 10)
-    arch_family: str = "qwen38_flash_next_dense_ple"
+    arch_family: str = FULL_ARCH_FAMILY
 
     def __post_init__(self) -> None:
         positive = (
@@ -146,7 +148,6 @@ class Qwen38FlashNextFullConfig:
             self.ngram_vocab_size_base,
             self.ngram_embedding_dim,
             self.ngram_partitions,
-            self.mtp_num_layers,
         )
         if min(positive) < 1:
             raise ValueError("Qwen3.8-Flash-Next dimensions must be positive")
@@ -154,20 +155,61 @@ class Qwen38FlashNextFullConfig:
             raise ValueError("attention KV heads must divide query heads")
         if self.linear_v_heads % self.linear_qk_heads:
             raise ValueError("GDN QK heads must divide value heads")
-        if self.residual_streams != 4:
-            raise ValueError("the full-model contract requires four residual streams")
+        if self.mtp_num_layers < 0:
+            raise ValueError("MTP layer count must be non-negative")
         if not 0 < self.num_experts_per_token <= self.num_experts:
             raise ValueError("invalid routed expert count")
         if self.ngram_embedding_dim % self.ngram_heads:
             raise ValueError("PLE embedding width must divide its hash heads")
         if sum(self.pipeline_layers) != self.num_hidden_layers:
             raise ValueError("pipeline layer layout must contain every backbone layer")
-        if self.pipeline_layers != (12, 13, 13, 10):
-            raise ValueError("the supported PP4 layout is fixed at 12/13/13/10")
-        if not self.mtp_use_repeated_layer or self.mtp_num_layers != 3:
-            raise ValueError("the supported variant repeats one MTP layer at three depths")
-        if self.router_z_loss_coefficient != 0:
-            raise ValueError("the supported variant has no router z-loss")
+        if self.arch_family == FULL_ARCH_FAMILY:
+            if self.residual_streams != 4:
+                raise ValueError("the full-model contract requires four residual streams")
+            if self.pipeline_layers != (12, 13, 13, 10):
+                raise ValueError("the full-model PP4 layout is fixed at 12/13/13/10")
+            if not self.mtp_use_repeated_layer or self.mtp_num_layers != 3:
+                raise ValueError("the full-model variant repeats one MTP layer at three depths")
+            if self.router_z_loss_coefficient != 0:
+                raise ValueError("the full-model variant has no router z-loss")
+        elif self.arch_family == QUARTER_DEPTH48_NO_MTP_ARCH_FAMILY:
+            expected = {
+                "num_hidden_layers": 48,
+                "hidden_size": 640,
+                "attention_heads": 6,
+                "attention_kv_heads": 1,
+                "attention_head_dim": 64,
+                "linear_qk_heads": 4,
+                "linear_v_heads": 12,
+                "linear_key_dim": 32,
+                "linear_value_dim": 32,
+                "num_experts": 128,
+                "num_experts_per_token": 3,
+                "moe_intermediate_size": 160,
+                "shared_expert_intermediate_size": 160,
+                "router_aux_loss_coefficient": 0.01,
+                "router_z_loss_coefficient": 0.001,
+                "residual_streams": 1,
+                "residual_low_rank": 80,
+                "ngram_heads_per_order": 2,
+                "ngram_vocab_size_base": 5_000_000,
+                "ngram_embedding_dim": 640,
+                "ngram_partitions": 32,
+                "mtp_num_layers": 0,
+            }
+            drift = {
+                field: getattr(self, field)
+                for field, value in expected.items()
+                if getattr(self, field) != value
+            }
+            if drift:
+                raise ValueError(f"quarter-depth48-no-MTP contract drift: {drift}")
+            if self.pipeline_layers != (12, 12, 12, 12):
+                raise ValueError("quarter-depth48-no-MTP PP4 layout must be 12/12/12/12")
+            if self.mtp_use_repeated_layer or self.mtp_loss_scaling_factor != 0:
+                raise ValueError("quarter-depth48-no-MTP must not construct or weight MTP")
+        else:
+            raise ValueError(f"unsupported Flash-Next architecture family: {self.arch_family}")
 
     @property
     def ngram_heads(self) -> int:
@@ -232,6 +274,38 @@ class Qwen38FlashNextFullConfig:
         )
         return replace(config, **overrides)
 
+    @classmethod
+    def quarter_depth48_no_mtp(cls) -> Qwen38FlashNextFullConfig:
+        """Quarter divisible shapes while retaining all 48 backbone layers."""
+        return cls(
+            num_hidden_layers=48,
+            hidden_size=640,
+            attention_heads=6,
+            attention_kv_heads=1,
+            attention_head_dim=64,
+            linear_qk_heads=4,
+            linear_v_heads=12,
+            linear_key_dim=32,
+            linear_value_dim=32,
+            num_experts=128,
+            num_experts_per_token=3,
+            moe_intermediate_size=160,
+            shared_expert_intermediate_size=160,
+            router_aux_loss_coefficient=0.01,
+            router_z_loss_coefficient=0.001,
+            residual_streams=1,
+            residual_low_rank=80,
+            ngram_heads_per_order=2,
+            ngram_vocab_size_base=5_000_000,
+            ngram_embedding_dim=640,
+            ngram_partitions=32,
+            mtp_num_layers=0,
+            mtp_use_repeated_layer=False,
+            mtp_loss_scaling_factor=0.0,
+            pipeline_layers=(12, 12, 12, 12),
+            arch_family=QUARTER_DEPTH48_NO_MTP_ARCH_FAMILY,
+        )
+
 
 class GroupRMSNorm(nn.Module):
     """RMS-normalize each packed residual stream independently."""
@@ -254,7 +328,7 @@ class GroupRMSNorm(nn.Module):
 
 
 class FourStreamGatedResidual(nn.Module):
-    """Official four-stream hyper-connection with one packed pipeline tensor."""
+    """Official gated residual with the configured packed stream count."""
 
     def __init__(self, config: Qwen38FlashNextFullConfig, *, combine: bool = True):
         super().__init__()
@@ -441,9 +515,7 @@ class PLEHash(nn.Module):
         self.heads_per_order = config.ngram_heads_per_order
         self.eos_token_id = config.eos_token_id
         sizes = torch.tensor(config.ngram_head_vocab_sizes, dtype=torch.long)
-        offsets = torch.tensor(
-            [0, *torch.cumsum(sizes, dim=0)[:-1].tolist()], dtype=torch.long
-        )
+        offsets = torch.tensor([0, *torch.cumsum(sizes, dim=0)[:-1].tolist()], dtype=torch.long)
         self.register_buffer("head_vocab_sizes", sizes, persistent=True)
         self.register_buffer("head_offsets", offsets, persistent=True)
         self.register_buffer(
@@ -464,7 +536,9 @@ class PLEHash(nn.Module):
         positions = torch.arange(sequence, device=token_ids.device, dtype=torch.long)
         eos_positions = torch.where(token_ids == self.eos_token_id, positions, -1)
         previous_inclusive = torch.cummax(eos_positions, dim=1).values
-        previous = torch.cat((eos_positions.new_full((batch, 1), -1), previous_inclusive[:, :-1]), 1)
+        previous = torch.cat(
+            (eos_positions.new_full((batch, 1), -1), previous_inclusive[:, :-1]), 1
+        )
         position_in_segment = positions.unsqueeze(0) - (previous + 1)
         source = positions - shift
         shifted = token_ids.gather(1, source.clamp_min(0).expand(batch, -1))
@@ -473,7 +547,9 @@ class PLEHash(nn.Module):
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         token_ids = token_ids.long()
-        shifted = [self._shift_right_ignore_eos(token_ids, shift) for shift in range(self.ngram_size)]
+        shifted = [
+            self._shift_right_ignore_eos(token_ids, shift) for shift in range(self.ngram_size)
+        ]
         blocks = []
         for order in range(2, self.ngram_size + 1):
             start = (order - 2) * self.heads_per_order
@@ -515,7 +591,9 @@ class OwnerShardedPLEEmbedding(nn.Module):
         self.owner_rank = owner_rank
         self.owner_world_size = owner_world_size
         self.process_group = process_group
-        self.global_partitions = ple_partition_ownership(self.partitions, owner_world_size)[owner_rank]
+        self.global_partitions = ple_partition_ownership(self.partitions, owner_world_size)[
+            owner_rank
+        ]
         self.tables = nn.ParameterList()
         for _partition in self.global_partitions:
             # A flattened parameter deliberately selects native Adam and zero
@@ -534,9 +612,7 @@ class OwnerShardedPLEEmbedding(nn.Module):
 
     def _local_lookup(self, encoded_ids: torch.Tensor) -> torch.Tensor:
         output = self.tables[0].new_empty((encoded_ids.numel(), self.embedding_dim))
-        local_partition = torch.div(
-            encoded_ids, self.rows_per_partition, rounding_mode="floor"
-        )
+        local_partition = torch.div(encoded_ids, self.rows_per_partition, rounding_mode="floor")
         local_row = torch.remainder(encoded_ids, self.rows_per_partition)
         for slot, table in enumerate(self.tables):
             selected = torch.nonzero(local_partition == slot, as_tuple=False).flatten()
@@ -667,9 +743,7 @@ class DistributedPLE(nn.Module):
         key = self.norm_key(self.key_proj(embeddings)).unflatten(
             -1, (self.streams, self.hidden_size)
         )
-        query = self.norm_query(packed_batch).unflatten(
-            -1, (self.streams, self.hidden_size)
-        )
+        query = self.norm_query(packed_batch).unflatten(-1, (self.streams, self.hidden_size))
         value = self.value_proj(embeddings)
         gate = (key * query).sum(dim=-1, keepdim=True) / math.sqrt(self.hidden_size)
         gate = gate.abs().clamp_min(1e-6).sqrt() * gate.sign()
@@ -716,10 +790,14 @@ def parameter_count_contract(
     moe = h * config.num_experts + routed + shared
     residual = streams * h + streams * h * rank + rank * streams * h + streams * h * streams
     final_mixer = streams * h + streams * h * rank + rank * streams * h
-    attention = h * (
-        config.attention_heads * config.attention_head_dim
-        + 2 * config.attention_kv_heads * config.attention_head_dim
-    ) + config.attention_heads * config.attention_head_dim * h
+    attention = (
+        h
+        * (
+            config.attention_heads * config.attention_head_dim
+            + 2 * config.attention_kv_heads * config.attention_head_dim
+        )
+        + config.attention_heads * config.attention_head_dim * h
+    )
     q_width = config.linear_qk_heads * config.linear_key_dim
     v_width = config.linear_v_heads * config.linear_value_dim
     gdn = (
@@ -751,6 +829,9 @@ def parameter_count_contract(
     # Native repeated-MTP owns two input norms, a 2H->H projection, and one final norm.
     mtp_wrapper = 2 * h + 2 * h * h + h
     embeddings_and_head = 2 * config.vocab_size * h
+    if not config.mtp_num_layers:
+        mtp_inner = 0
+        mtp_wrapper = 0
     total = ple_tables + ple_projection + embeddings_and_head + backbone + mtp_inner + mtp_wrapper
     return {
         "embeddings_and_head": embeddings_and_head,

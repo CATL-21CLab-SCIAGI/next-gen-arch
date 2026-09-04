@@ -5,7 +5,8 @@ set -euo pipefail
 # and only admits this historical path. Keep the exception narrow: the validated
 # compatibility handle is rechecked by the forwarding launcher before any work.
 case "${NGA_OUTPUT_ROOT:-}" in
-    /mnt/nas/evergreen/next-gen-arch/compat-qwen38-flash-next-*)
+    /mnt/nas/evergreen/next-gen-arch/compat-qwen38-flash-next-*|\
+    /mnt/nas/evergreen/compat-qwen38-flash-next-*)
         exec bash "$(dirname "$0")/run_qwen38_27b_full_dlc.sh"
         ;;
 esac
