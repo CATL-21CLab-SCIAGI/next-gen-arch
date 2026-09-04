@@ -1,3 +1,4 @@
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -31,10 +32,14 @@ from archlab.megatron.qwen38_flash_next_full_train import (
 def test_distributed_checkpoint_host_staging_runs_only_on_its_local_turn():
     events = []
 
+    def preload(write_buckets, non_blocking=True):
+        events.append(("preload", write_buckets, non_blocking))
+        return "cpu-state"
+
     class Request:
         async_fn_args = ("rank", None, "queue")
         async_fn_kwargs = {"suffix": "written"}
-        preload_fn = staticmethod(lambda: events.append("preload") or "cpu-state")
+        preload_fn = partial(preload, "write-buckets", True)
         finalize_fns = [lambda: events.append("finalize")]
 
         @staticmethod
@@ -51,12 +56,28 @@ def test_distributed_checkpoint_host_staging_runs_only_on_its_local_turn():
     assert events == [
         "barrier",
         "barrier",
-        "preload",
+        ("preload", "write-buckets", False),
         ("rank", "cpu-state", "queue", "written"),
         "barrier",
         "barrier",
         "finalize",
     ]
+
+
+def test_distributed_checkpoint_host_staging_rejects_changed_preload_abi():
+    class Request:
+        async_fn_args = ("rank", None, "queue")
+        async_fn_kwargs = {}
+        preload_fn = staticmethod(lambda: None)
+        finalize_fns = []
+
+    with pytest.raises(RuntimeError, match="preload function changed its ABI"):
+        _execute_checkpoint_request_by_local_rank(
+            Request(),
+            local_rank=0,
+            local_world_size=1,
+            barrier=lambda: None,
+        )
 
 
 @pytest.mark.parametrize("local_rank,local_world_size", [(-1, 8), (8, 8), (0, 0)])
@@ -172,6 +193,7 @@ def test_megatron_argv_uses_pp4_ep8_native_muon_and_native_mtp(tmp_path: Path):
         "--moe-router-topk": "10",
         "--mtp-num-layers": "3",
         "--mtp-loss-scaling-factor": "0.1",
+        "--dist-ckpt-workers": "8",
         "--muon-momentum": "0.95",
         "--muon-coefficient-type": "polar_express",
         "--muon-num-ns-steps": "8",

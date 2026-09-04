@@ -37,6 +37,7 @@ TRAIN_STEPS = 11_921
 TOKENS_PER_STEP = 8_388_608
 EFFECTIVE_TOKENS = TRAIN_STEPS * TOKENS_PER_STEP
 CHECKPOINT_INTERVAL_STEPS = 1_192
+CHECKPOINT_WRITER_THREADS = 8
 NATIVE_MUON_FP32_MATMUL_PRECISION = "medium"
 
 
@@ -391,6 +392,8 @@ def _megatron_argv(
         str(save_interval),
         "--ckpt-format",
         "torch_dist",
+        "--dist-ckpt-workers",
+        str(CHECKPOINT_WRITER_THREADS),
         "--exit-signal-handler",
         "--tensorboard-dir",
         str(args.run_dir / "tensorboard"),
@@ -864,7 +867,21 @@ def _execute_checkpoint_request_by_local_rank(
             if request.preload_fn is not None:
                 if len(call_args) != 3:
                     raise RuntimeError("native DCP writer changed its request ABI")
-                call_args[1] = request.preload_fn()
+                preload = request.preload_fn
+                if (
+                    not isinstance(preload, partial)
+                    or len(preload.args) != 2
+                    or preload.args[1] is not True
+                    or preload.keywords
+                    or "non_blocking" not in inspect.signature(preload.func).parameters
+                ):
+                    raise RuntimeError("native DCP preload function changed its ABI")
+                # The frozen PyTorch host allocator has no Python cache-release API.
+                # Its nonblocking D2H path therefore retains every rank's staged
+                # tensors in pinned memory until process exit. Use the same native
+                # MCore preload implementation synchronously so GC can return the
+                # pageable storage before the next local rank takes its turn.
+                call_args[1] = preload.func(preload.args[0], non_blocking=False)
             if request.async_fn is not None:
                 request.async_fn(*call_args, **request.async_fn_kwargs)
             del call_args
@@ -910,7 +927,8 @@ def _install_bounded_torch_dist_staging(training_module: Any) -> None:
             raise RuntimeError("Megatron did not provide a checkpointing context")
         parsed = get_args()
         strategy: Any = _BoundedTorchDistSaveShardedStrategy(
-            cpu_shm_mode=bool(getattr(parsed, "async_ckpt_use_cpu_shm", False))
+            thread_count=parsed.dist_ckpt_workers,
+            cpu_shm_mode=bool(getattr(parsed, "async_ckpt_use_cpu_shm", False)),
         )
         if parsed.ckpt_fully_parallel_save:
             strategy = FullyParallelSaveStrategyWrapper(
@@ -966,6 +984,7 @@ def _write_contract(args, config) -> None:
             "format": "Megatron torch_dist",
             "serialization": "container-owned distributed checkpointing",
             "host_staging": "one local GPU rank per node at a time",
+            "files_per_rank": CHECKPOINT_WRITER_THREADS,
             "reason": "bound full-PLE FP32 optimizer staging to 512 GiB host memory",
         },
         "training": {
