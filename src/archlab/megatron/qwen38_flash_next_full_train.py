@@ -38,6 +38,7 @@ TOKENS_PER_STEP = 8_388_608
 EFFECTIVE_TOKENS = TRAIN_STEPS * TOKENS_PER_STEP
 CHECKPOINT_INTERVAL_STEPS = 1_192
 CHECKPOINT_WRITER_THREADS = 8
+DISTRIBUTED_TIMEOUT_MINUTES = 60
 NATIVE_MUON_FP32_MATMUL_PRECISION = "medium"
 
 
@@ -301,6 +302,8 @@ def _megatron_argv(
         "1",
         "--distributed-backend",
         "nccl",
+        "--distributed-timeout-minutes",
+        str(DISTRIBUTED_TIMEOUT_MINUTES),
         "--transformer-impl",
         "transformer_engine",
         "--num-experts",

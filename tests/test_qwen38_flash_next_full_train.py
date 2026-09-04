@@ -194,6 +194,7 @@ def test_megatron_argv_uses_pp4_ep8_native_muon_and_native_mtp(tmp_path: Path):
         "--mtp-num-layers": "3",
         "--mtp-loss-scaling-factor": "0.1",
         "--dist-ckpt-workers": "8",
+        "--distributed-timeout-minutes": "60",
         "--muon-momentum": "0.95",
         "--muon-coefficient-type": "polar_express",
         "--muon-num-ns-steps": "8",
