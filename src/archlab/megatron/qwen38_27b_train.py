@@ -1,4 +1,4 @@
-"""Megatron lifecycle adapter for quarter-shape Qwen3.8-27B text pretraining."""
+"""Megatron lifecycle adapter for Qwen3.8-27B text pretraining."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38DenseConfig) -> list[
     # hidden partition (1280 / 64); the model itself retains six Q heads.
     megatron_validation_heads = config.hidden_size // config.attention_head_dim
     argv = [
-        "qwen38-27b-quarter-bf16",
+        f"qwen38-27b-{args.model_scale}-bf16",
         "--use-mcore-models",
         "--num-layers",
         str(config.num_hidden_layers),
@@ -229,7 +229,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None
     if tokenizer_sha256 != TOKENIZER_SHA256:
         raise RuntimeError(f"Qwen3.8-27B tokenizer drift: {tokenizer_sha256} != {TOKENIZER_SHA256}")
     payload = {
-        "model": "Qwen3.8-27B quarter-shape text pretraining",
+        "model": f"Qwen3.8-27B {args.model_scale} text pretraining",
         "model_config": config.to_dict(),
         "parameter_count": counts,
         "source": {
@@ -239,19 +239,11 @@ def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None
             "tokenizer_sha256": TOKENIZER_SHA256,
             "scope": "text backbone only; the source vision encoder is excluded from FineWeb-Edu pretraining",
         },
-        "quarter_scaling": {
-            "divided_by_four": [
-                "text layers 64 -> 16",
-                "hidden width 5120 -> 1280",
-                "FFN width 17408 -> 4352",
-                "full-attention Q heads 24 -> 6",
-                "full-attention KV heads 4 -> 1",
-                "full-attention head dimension 256 -> 64",
-                "GDN QK heads 16 -> 4",
-                "GDN value heads 48 -> 12",
-                "GDN key/value head dimensions 128 -> 32",
-            ],
-            "preserved": [
+        "geometry": {
+            "scale": args.model_scale,
+            "source_shapes_preserved": args.model_scale == "full",
+            "quarter_divisor": 4 if args.model_scale == "quarter" else None,
+            "preserved_in_both": [
                 "248320-token vocabulary and token IDs",
                 "262144-position limit",
                 "three GDN layers then one gated full-attention layer",
@@ -328,7 +320,7 @@ def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None
 
 
 def _run(args: argparse.Namespace) -> None:
-    config = Qwen38DenseConfig(sequence_len=args.sequence_length)
+    config = Qwen38DenseConfig.for_scale(args.model_scale, sequence_len=args.sequence_length)
     _data_prefixes(args.data_root, "train")
     _data_prefixes(args.data_root, "val")
     _write_contract(args, config)
@@ -455,6 +447,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", required=True, type=Path)
     parser.add_argument("--tokenizer", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
+    parser.add_argument("--model-scale", choices=("quarter", "full"), default="quarter")
     parser.add_argument("--gdn-kernel", choices=("fla",), default="fla")
     parser.add_argument("--sequence-length", type=int, default=2_048)
     parser.add_argument("--micro-batch-size", type=int, default=4)

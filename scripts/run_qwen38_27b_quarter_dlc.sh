@@ -24,6 +24,7 @@ NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-512}"
 NGA_TARGET_TRAIN_TOKENS="${NGA_TARGET_TRAIN_TOKENS:-100000000000}"
 NGA_CHECKPOINT_INTERVAL_TOKENS="${NGA_CHECKPOINT_INTERVAL_TOKENS:-10000000000}"
 NGA_PROBE_STEPS="${NGA_PROBE_STEPS:-0}"
+NGA_MODEL_SCALE="${NGA_MODEL_SCALE:-quarter}"
 
 SOURCE_REVISION="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
 TOKENIZER_SHA256="0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
@@ -128,6 +129,7 @@ if [[ "$NGA_RUNTIME_PREFLIGHT" = "1" && ! -f "$NGA_OUTPUT_ROOT/preflight/PROBE_C
         --data-root "$NGA_PREFLIGHT_DATA_ROOT" \
         --tokenizer "$NGA_TOKENIZER" \
         --run-dir "$NGA_OUTPUT_ROOT/preflight" \
+        --model-scale "$NGA_MODEL_SCALE" \
         --sequence-length "$NGA_SEQUENCE_LENGTH" \
         --micro-batch-size "$NGA_MICRO_BATCH_SIZE" \
         --global-batch-size "$NGA_GLOBAL_BATCH_SIZE" \
@@ -147,6 +149,7 @@ train_args=(
     --data-root "$NGA_DATA_ROOT"
     --tokenizer "$NGA_TOKENIZER"
     --run-dir "$NGA_OUTPUT_ROOT"
+    --model-scale "$NGA_MODEL_SCALE"
     --sequence-length "$NGA_SEQUENCE_LENGTH"
     --micro-batch-size "$NGA_MICRO_BATCH_SIZE"
     --global-batch-size "$NGA_GLOBAL_BATCH_SIZE"

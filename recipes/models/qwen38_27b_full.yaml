@@ -1,0 +1,38 @@
+name: qwen38-27b-full-text
+source:
+  model: Qwen/Qwen3.8-27B
+  revision: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+  config_sha256: 191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab
+  tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+  scope: text backbone only
+model:
+  vocab_size: 248320
+  sequence_len: 2048
+  max_position_embeddings: 262144
+  num_hidden_layers: 64
+  hidden_size: 5120
+  intermediate_size: 17408
+  attention_pattern: [gdn, gdn, gdn, full_attention]
+  full_attention:
+    query_heads: 24
+    kv_heads: 4
+    head_dim: 256
+    partial_rotary_factor: 0.25
+    output_gate: silu
+  gdn:
+    qk_heads: 16
+    value_heads: 48
+    key_dim: 128
+    value_dim: 128
+    conv_kernel: 4
+  mtp:
+    layers: 1
+    dedicated_embeddings: false
+    fusion: rmsnorm_concat_linear
+training:
+  mtp_loss_weight: 0.1
+  mtp_loss_weight_provenance: local fixed coefficient; not present in the released inference config
+precision:
+  recipe: bf16
+  optimizer: megatron_native_muon_medium_fp32_matmuls
+  dependency_policy: unmodified_container_runtime

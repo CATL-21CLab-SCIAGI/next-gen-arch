@@ -8,6 +8,7 @@ import pytest
 
 from archlab.dlc_controller import (
     DENSE_27B_LAUNCHER,
+    FULL_DENSE_27B_LAUNCHER,
     LAUNCHER,
     Controller,
     publish_request,
@@ -155,6 +156,35 @@ def test_validate_request_accepts_dense_27b_launcher_without_data_conversion_key
     environment["NGA_PREFLIGHT_STEPS"] = "0"
     with pytest.raises(ValueError, match="NGA_PREFLIGHT_STEPS"):
         validate_request(payload, allowed_repo_root=tmp_path / "repos")
+
+
+def test_validate_request_accepts_full_dense_27b_launcher(tmp_path: Path) -> None:
+    root = tmp_path / "repos" / "next-gen-arch"
+    payload = _payload(root, "a" * 40, launcher=FULL_DENSE_27B_LAUNCHER)
+    environment = payload["environment"]
+    assert isinstance(environment, dict)
+    for key in (
+        "NGA_SOURCE_DATA",
+        "NGA_SOURCE_MANIFEST",
+        "NGA_TOKENIZER_WORKERS",
+        "NGA_EXPECTED_TRAIN_PARTS",
+        "NGA_DATA_WAIT_SECONDS",
+        "NGA_PREPARE_DATA",
+        "NGA_PRECISION",
+    ):
+        environment.pop(key)
+    environment["NGA_PREFLIGHT_STEPS"] = "5"
+    environment["NGA_MICRO_BATCH_SIZE"] = "1"
+
+    request = validate_request(
+        payload,
+        allowed_repo_root=tmp_path / "repos",
+        expected_nodes=4,
+        expected_gpus_per_node=8,
+    )
+
+    assert request.payload["launcher"] == FULL_DENSE_27B_LAUNCHER
+    assert request.environment["NGA_MICRO_BATCH_SIZE"] == "1"
 
 
 def test_publish_is_atomic_idempotent_and_rejects_generation_reuse(tmp_path: Path) -> None:

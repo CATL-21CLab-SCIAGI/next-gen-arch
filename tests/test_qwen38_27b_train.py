@@ -21,6 +21,7 @@ def test_qwen38_27b_training_defaults_are_long_run_bf16(tmp_path: Path):
     )
 
     assert args.gdn_kernel == "fla"
+    assert args.model_scale == "quarter"
     assert args.micro_batch_size == 4
     assert args.global_batch_size == 512
     assert args.target_train_tokens == 100_000_000_000
@@ -82,6 +83,34 @@ def test_qwen38_27b_uses_container_owned_native_muon():
     assert "TensorParallelMuon" in str(contract["implementation"])
     assert "no repository-local optimizer adapter" in str(contract["integration"])
     assert contract["optimizer_cuda_graph"] is False
+
+
+def test_qwen38_27b_full_megatron_argv_uses_released_geometry(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("WORLD_SIZE", "32")
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path / "data"),
+            "--tokenizer",
+            str(tmp_path / "tokenizer"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--model-scale",
+            "full",
+            "--micro-batch-size",
+            "1",
+        ]
+    )
+    config = Qwen38DenseConfig.for_scale("full")
+    argv = _megatron_argv(args, config)
+
+    assert argv[0] == "qwen38-27b-full-bf16"
+    assert argv[argv.index("--num-layers") + 1] == "64"
+    assert argv[argv.index("--hidden-size") + 1] == "5120"
+    assert argv[argv.index("--ffn-hidden-size") + 1] == "17408"
+    assert argv[argv.index("--num-attention-heads") + 1] == "20"
 
 
 def test_qwen38_27b_probe_does_not_write_a_large_checkpoint(tmp_path: Path, monkeypatch):

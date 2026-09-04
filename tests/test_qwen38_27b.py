@@ -130,3 +130,39 @@ def test_default_dense_model_constructs_on_meta_at_about_one_billion_parameters(
 
     assert 850_000_000 < counts["total"] < 1_100_000_000
     assert counts["embeddings_and_head"] > counts["text_backbone"]
+
+
+def test_full_config_matches_released_qwen38_text_shapes_and_mtp_fusion():
+    config = Qwen38DenseConfig.for_scale("full")
+    with torch.device("meta"):
+        model = Qwen38Dense(config)
+    counts = model.num_scaling_params()
+
+    assert config.num_hidden_layers == 64
+    assert config.hidden_size == 5_120
+    assert config.intermediate_size == 17_408
+    assert config.attention_heads == 24
+    assert config.attention_kv_heads == 4
+    assert config.attention_head_dim == 256
+    assert config.linear_qk_heads == 16
+    assert config.linear_v_heads == 48
+    assert config.linear_key_dim == config.linear_value_dim == 128
+    assert model.mtp.fc.weight.shape == (5_120, 10_240)
+    assert model.mtp.block.attention.q_gate.weight.shape == (12_288, 5_120)
+    assert 27_000_000_000 < counts["total"] < 28_000_000_000
+
+
+def test_full_mtp_fusion_forward_backward_is_finite():
+    torch.manual_seed(11)
+    config = replace(tiny_config(), mtp_fusion=True, arch_family="qwen38_27b_text")
+    model = Qwen38Dense(config)
+    model.init_weights()
+    tokens = torch.randint(0, config.vocab_size, (2, config.sequence_len))
+    labels = torch.roll(tokens, shifts=-1, dims=1)
+    labels[:, -1] = -1
+
+    loss = model(tokens, labels)
+
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert torch.isfinite(model.mtp.fc.weight.grad).all()

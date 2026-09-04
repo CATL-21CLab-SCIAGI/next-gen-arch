@@ -18,7 +18,9 @@ from typing import Any
 SCHEMA_VERSION = 1
 LAUNCHER = "scripts/run_qwen38_quarter_fp4_dlc.sh"
 DENSE_27B_LAUNCHER = "scripts/run_qwen38_27b_quarter_dlc.sh"
-ALLOWED_LAUNCHERS = {LAUNCHER, DENSE_27B_LAUNCHER}
+FULL_DENSE_27B_LAUNCHER = "scripts/run_qwen38_27b_full_dlc.sh"
+DENSE_27B_LAUNCHERS = {DENSE_27B_LAUNCHER, FULL_DENSE_27B_LAUNCHER}
+ALLOWED_LAUNCHERS = {LAUNCHER, *DENSE_27B_LAUNCHERS}
 DEFAULT_ALLOWED_REPO_ROOT = Path("/mnt/nas/evergreen")
 DEFAULT_CONTROL_ROOT = Path(
     "/mnt/nas/evergreen/next-gen-arch/qwen38-quarter-fp4-fineweb100b-control"
@@ -227,7 +229,7 @@ def validate_request(
     _require_exact_keys(raw_environment, _ALLOWED_ENVIRONMENT_KEYS, "environment")
     required_environment = (
         _DENSE_27B_REQUIRED_ENVIRONMENT_KEYS
-        if launcher == DENSE_27B_LAUNCHER
+        if launcher in DENSE_27B_LAUNCHERS
         else _REQUIRED_ENVIRONMENT_KEYS
     )
     missing_environment = required_environment - set(raw_environment)

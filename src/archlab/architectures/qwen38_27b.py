@@ -1,14 +1,14 @@
-"""Quarter-shape text backbone derived from ``Qwen/Qwen3.8-27B``.
+"""Full and quarter-shape text backbones derived from ``Qwen/Qwen3.8-27B``.
 
 The released checkpoint is multimodal, but FineWeb-Edu pretraining exercises only
-its dense Qwen3.5-family text backbone.  Vocabulary identity, context length,
-the 3:1 Gated DeltaNet/full-attention cadence, and the convolution kernel are
-preserved.  Divisible capacity dimensions are reduced by four.
+its dense Qwen3.5-family text backbone. The full configuration preserves its released
+geometry; the historical quarter variant divides capacity dimensions by four while
+retaining vocabulary identity, context reach, layer cadence, and convolution extent.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 import torch
 import torch.nn as nn
@@ -58,8 +58,33 @@ class Qwen38DenseConfig:
     # The released training config retains one multi-token-prediction layer.
     mtp_layers: int = 1
     mtp_loss_weight: float = 0.1
+    mtp_fusion: bool = False
     tie_word_embeddings: bool = False
     arch_family: str = "qwen38_27b_quarter_text"
+
+    @classmethod
+    def for_scale(cls, scale: str, **overrides) -> Qwen38DenseConfig:
+        """Build either the historical quarter geometry or released full text geometry."""
+        if scale == "quarter":
+            return replace(cls(), **overrides)
+        if scale != "full":
+            raise ValueError(f"unsupported Qwen3.8-27B scale: {scale}")
+        return replace(
+            cls(),
+            num_hidden_layers=64,
+            hidden_size=5_120,
+            intermediate_size=17_408,
+            attention_heads=24,
+            attention_kv_heads=4,
+            attention_head_dim=256,
+            linear_qk_heads=16,
+            linear_v_heads=48,
+            linear_key_dim=128,
+            linear_value_dim=128,
+            mtp_fusion=True,
+            arch_family="qwen38_27b_text",
+            **overrides,
+        )
 
     def __post_init__(self) -> None:
         positive = (
@@ -81,7 +106,7 @@ class Qwen38DenseConfig:
             self.mtp_layers,
         )
         if min(positive) < 1:
-            raise ValueError("Qwen3.8-27B quarter dimensions must be positive")
+            raise ValueError("Qwen3.8-27B dimensions must be positive")
         if self.attention_heads % self.attention_kv_heads:
             raise ValueError("attention KV heads must divide query heads")
         if self.linear_v_heads % self.linear_qk_heads:
@@ -158,7 +183,7 @@ class Qwen38DenseAttention(nn.Module):
             dropout_p=0.0,
             is_causal=True,
         ).transpose(1, 2)
-        attended = attended * torch.sigmoid(gate)
+        attended = attended * F.silu(gate)
         return self.out(attended.reshape(batch, seq_len, q_width))
 
 
@@ -221,6 +246,50 @@ class Qwen38DenseBlock(nn.Module):
         return x + self.mlp(self.mlp_norm(x))
 
 
+class Qwen38MTP(nn.Module):
+    """Released Qwen3.8 MTP fusion followed by one full-attention block."""
+
+    def __init__(
+        self,
+        config: Qwen38DenseConfig,
+        *,
+        runtime_backend: str,
+        gdn_kernel: str,
+    ):
+        super().__init__()
+        self.pre_fc_norm_embedding = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.pre_fc_norm_hidden = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.fc = _linear(
+            2 * config.hidden_size,
+            config.hidden_size,
+            runtime_backend=runtime_backend,
+        )
+        self.block = Qwen38DenseBlock(
+            config,
+            config.num_hidden_layers,
+            runtime_backend=runtime_backend,
+            gdn_kernel=gdn_kernel,
+            force_full_attention=True,
+        )
+        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+
+    def forward(
+        self,
+        hidden: torch.Tensor,
+        shifted_embedding: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+    ) -> torch.Tensor:
+        fused = torch.cat(
+            (
+                self.pre_fc_norm_hidden(hidden),
+                self.pre_fc_norm_embedding(shifted_embedding),
+            ),
+            dim=-1,
+        )
+        return self.norm(self.block(self.fc(fused), cos, sin))
+
+
 class Qwen38Dense(nn.Module):
     def __init__(
         self,
@@ -251,13 +320,22 @@ class Qwen38Dense(nn.Module):
             config.vocab_size,
             runtime_backend=runtime_backend,
         )
-        self.mtp_block = Qwen38DenseBlock(
-            config,
-            config.num_hidden_layers,
-            runtime_backend=runtime_backend,
-            gdn_kernel=gdn_kernel,
-            force_full_attention=True,
-        )
+        if config.mtp_fusion:
+            self.mtp = Qwen38MTP(
+                config,
+                runtime_backend=runtime_backend,
+                gdn_kernel=gdn_kernel,
+            )
+        else:
+            # Retain the historical quarter-run state-dict layout. Full-scale runs
+            # use the released normalized concatenation and projection above.
+            self.mtp_block = Qwen38DenseBlock(
+                config,
+                config.num_hidden_layers,
+                runtime_backend=runtime_backend,
+                gdn_kernel=gdn_kernel,
+                force_full_attention=True,
+            )
         self._configure_optimizer_parameters()
         self.last_loss_metrics: dict[str, torch.Tensor] = {}
 
@@ -298,7 +376,8 @@ class Qwen38Dense(nn.Module):
             optimizer="adamw",
             category="output_head",
         )
-        for block in (*self.layers, self.mtp_block):
+        mtp_block = self.mtp.block if self.config.mtp_fusion else self.mtp_block
+        for block in (*self.layers, mtp_block):
             attention = block.attention
             if isinstance(attention, GatedDeltaAttention):
                 self._tag_optimizer_module(
@@ -344,6 +423,12 @@ class Qwen38Dense(nn.Module):
                     optimizer="muon",
                     category=f"dense_mlp_{name}",
                 )
+        if self.config.mtp_fusion:
+            self._tag_optimizer_module(
+                self.mtp.fc,
+                optimizer="muon",
+                category="mtp_fusion",
+            )
 
     def optimizer_contract(self, *, require_two_dimensional_muon: bool = False) -> dict:
         optimizers: dict[str, dict[str, int]] = {}
@@ -430,7 +515,8 @@ class Qwen38Dense(nn.Module):
 
     def num_scaling_params(self) -> dict[str, int]:
         embeddings = self.token_embedding.weight.numel() + self.lm_head.weight.numel()
-        mtp = sum(parameter.numel() for parameter in self.mtp_block.parameters())
+        mtp_module = self.mtp if self.config.mtp_fusion else self.mtp_block
+        mtp = sum(parameter.numel() for parameter in mtp_module.parameters())
         total = sum(parameter.numel() for parameter in self.parameters())
         return {
             "embeddings_and_head": embeddings,
@@ -470,9 +556,22 @@ class Qwen38Dense(nn.Module):
         cross_entropy_losses = self._token_cross_entropy(logits, labels)
         mtp_contribution = torch.zeros_like(cross_entropy_losses)
         if seq_len > 1:
-            mtp_input = hidden[:, :-1] + self.token_embedding(input_ids[:, 1:]).to(hidden.dtype)
-            mtp_hidden = self.mtp_block(mtp_input, cos[:, :-1], sin[:, :-1])
-            mtp_logits = self.lm_head(self.final_norm(mtp_hidden)).float()
+            shifted_embedding = self.token_embedding(input_ids[:, 1:]).to(hidden.dtype)
+            if self.config.mtp_fusion:
+                mtp_hidden = self.mtp(
+                    hidden[:, :-1],
+                    shifted_embedding,
+                    cos[:, :-1],
+                    sin[:, :-1],
+                )
+                mtp_logits = self.lm_head(mtp_hidden).float()
+            else:
+                mtp_hidden = self.mtp_block(
+                    hidden[:, :-1] + shifted_embedding,
+                    cos[:, :-1],
+                    sin[:, :-1],
+                )
+                mtp_logits = self.lm_head(self.final_norm(mtp_hidden)).float()
             mtp_losses = self._token_cross_entropy(mtp_logits, labels[:, 1:])
             mtp_contribution[:, :-1] = self.config.mtp_loss_weight * mtp_losses
         valid = labels.ne(-1)
