@@ -1,0 +1,64 @@
+name: qwen38-w320-simplicial-dsw-controlled-pilot
+status: preflight-implemented-training-not-launched
+base_model: package:recipes/models/qwen38_flash_next_w320_e32.yaml
+scope:
+  change_layers_1based: [8, 16, 24, 32, 40, 48]
+  unchanged_global_layers_1based: [4, 12, 20, 28, 36, 44]
+  unchanged_gdn_layers: 36
+  hidden_size: 320
+  query_heads: 24
+  kv_heads: 2
+  head_dim: 32
+  output_gate: sigmoid
+  qk_norm: per_head_zero_centered_rmsnorm
+  extra_key_norm: per_head_zero_centered_rmsnorm
+  residual_streams: 4
+  routed_experts: 32
+  active_routed_experts: 10
+  shared_experts: 1
+  ple: unchanged
+  mtp: disabled
+arms:
+  A: unchanged-global-gated-attention
+  B: local-gated-dot-product-attention
+  C: local-gated-simplicial-attention
+attention_core:
+  implementation: project-owned-stock-triton
+  logits: sum_d(q_i_d * k1_j_d * k2_k_d) / sqrt(head_dim)
+  softmax_axes: [j, k]
+  values: v1_j * v2_k
+  causal: both-key-axes
+  diagonal_pairs: included
+  kv_bias: none
+  positional_encoding: pending-user-choice
+  windows_benchmarked: [[8, 64], [16, 128], [32, 512]]
+  selected_training_windows: pending
+  extra_parameters_six_layers: 245952
+  backward_accumulation: fp32-atomic-not-bitwise-deterministic
+preflight:
+  entry: archlab.benchmarks.simplicial_attention
+  precision: [fp32, bf16]
+  oracle_precision: fp64
+  oracle_tests: [forward, all-five-input-gradients, both-axis-causality, window-boundaries, batch-and-kv-group-isolation]
+  shape: {batch: 4, sequence: 2048, query_heads: 24, kv_heads: 2, head_dim: 32}
+  warmup_iterations_each_path: 4
+  timed_repetitions: 20
+  memory_fraction_limit: 0.25
+  runtime_changes: forbidden
+  stop_existing_services: forbidden
+  dlc_mutations: forbidden
+training:
+  enabled: false
+  runtime: pending-user-choice-container-python-lacks-fla
+  initialization: paired-common-weight-initialization-plus-isolated-new-projection-rng
+  topology: {data: 1, tensor: 1, pipeline: 1, expert: 1, context: 1}
+  effective_global_batch_sequences: 4096
+  micro_batch_sequences: 4
+  accumulation_steps: 1024
+  context: 2048
+  pilot_steps_proposed: 358
+  pilot_tokens_proposed: 3003121664
+  lr_schedule: unchanged-prefix-of-100B-baseline-schedule
+  primary_metric: heldout-cross-entropy-vs-consumed-tokens
+  secondary_metric: heldout-cross-entropy-vs-gpu-hours
+  required_before_launch: [runtime-choice, positional-encoding-choice, full-model-construction, shared-initialization-hashes, optimizer-grouping, checkpoint-roundtrip, data-order-and-heldout-split]
