@@ -1251,6 +1251,15 @@ def _current_iteration() -> int:
     return int(getattr(parsed, "curr_iteration", getattr(parsed, "iteration", 0)))
 
 
+def _completed_checkpoint_iteration(run_dir: Path) -> int:
+    """Native cfg-container training does not refresh get_args()' startup cursor."""
+    marker = run_dir / "checkpoints" / "latest_checkpointed_iteration.txt"
+    iteration = int(marker.read_text().strip())
+    if iteration < 1:
+        raise RuntimeError("completion requires a positive completed checkpoint iteration")
+    return iteration
+
+
 def _probe_parameter_counts(model, *, data_replicas: int, expert_replicas: int):
     counts = [0, 0]
     for parameter in model.parameters():
@@ -1553,7 +1562,10 @@ def _run(args: argparse.Namespace) -> None:
         _atomic_json(
             args.run_dir
             / ("PROBE_COMPLETE.json" if args.probe_steps else "TRAINING_COMPLETE.json"),
-            {"iteration": _current_iteration(), "completed_at_unix": time.time()},
+            {
+                "iteration": _completed_checkpoint_iteration(args.run_dir),
+                "completed_at_unix": time.time(),
+            },
         )
 
 

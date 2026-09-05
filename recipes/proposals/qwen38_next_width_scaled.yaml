@@ -1,7 +1,8 @@
 name: qwen38-next-width-scaled-proposals-v1
-status: proposed_not_launchable
+status: proposal_catalog_with_selected_implementation
 scope: text_only_random_initialization
-implementation_status: native_adapter_wiring_and_distributed_tests_pending
+implementation_status: next_ratio_e32_w320_validated_other_candidates_unimplemented
+selected_contract: recipes/models/qwen38_flash_next_w320_e32.yaml
 source:
   model: Qwen/Qwen3.8-Flash-Next
   revision: 34567a4712bc9766c4449e2e98e4468bfa24d915
@@ -136,7 +137,7 @@ candidates:
   - name: next-ratio-e32-w320
     profile: next_ratio_e32
     hidden_size: 320
-    recommended_role: current_width320_reduced_expert_proposal_pending_selection
+    recommended_role: selected_width320_reduced_expert_variant
     parameter_count_analytical: 387680960
     ple_padded_rows: 2622720
   - name: next-ratio-e64-w320
@@ -162,11 +163,12 @@ candidates:
     ple_padded_rows: 3934208
 
 restoration_status:
-  attention_output_gate: included_in_proposal_and_counts_not_yet_wired
-  qk_rmsnorm: included_in_proposal_and_counts_not_yet_wired
-  four_residual_streams: included_in_proposal_existing_general_mechanism
-  source_norm_parameterization: requires_new_variant_scoped_implementation
-  sixteen_ple_hash_heads: included_in_proposal_existing_general_mechanism
+  scope: selected_next_ratio_e32_w320_only
+  attention_output_gate: wired_and_native_forward_backward_validated
+  qk_rmsnorm: wired_and_native_forward_backward_validated
+  four_residual_streams: restored_and_dp32_gradient_replica_validated
+  source_norm_parameterization: variant_scoped_zero_centered_gr_ple_qk
+  sixteen_ple_hash_heads: restored_with_all_partitions_local_per_dp_replica
 
 launch_gates:
   - explicit_candidate_selection

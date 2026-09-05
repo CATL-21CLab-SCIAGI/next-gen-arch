@@ -111,8 +111,10 @@ The previous microbatch 4 is only a starting candidate pending memory checks:
 restoring four residual streams and projected attention widths changes activation
 memory even though total parameters are lower.
 
-Before launch, implement a separate named variant and verify actual construction
-counts, attention gate execution, QK/GR/PLE normalization, forward/backward numerical
-oracles, native Muon grouping of gated QKV and separate expert matrices, DP gradient
-equivalence, checkpoint round-trip, memory and measured throughput. These are
-pending; no speedup or quality improvement is established by these counts.
+The separate named variant is implemented. Native construction counts, attention
+gate execution, QK/GR/PLE normalization, numerical forward/backward oracles, DP
+gradient equivalence, native optimizer steps and checkpoint save/reload gates have
+passed. Actual native groups are DP32 with all model-parallel groups of size one.
+Detailed operational evidence is retained locally with the run artifacts.
+See `docs/QWEN38_NEXT_W320_REVIEW_GUIDE.md` for the source and test review map.
+No speedup or quality improvement is established by these counts or short probes.

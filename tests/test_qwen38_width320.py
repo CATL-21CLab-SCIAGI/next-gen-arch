@@ -17,10 +17,22 @@ from archlab.architectures.qwen38_flash_next_full import (
     parameter_count_contract,
 )
 from archlab.megatron.qwen38_flash_next_full_train import (
+    _completed_checkpoint_iteration,
     _effective_probe_gradient,
     _megatron_argv,
     _parser,
 )
+
+
+def test_completion_uses_native_checkpoint_marker_not_startup_cursor(tmp_path):
+    checkpoint_root = tmp_path / "checkpoints"
+    checkpoint_root.mkdir()
+    marker = checkpoint_root / "latest_checkpointed_iteration.txt"
+    marker.write_text("2\n")
+    assert _completed_checkpoint_iteration(tmp_path) == 2
+    marker.write_text("0")
+    with pytest.raises(RuntimeError, match="positive completed checkpoint"):
+        _completed_checkpoint_iteration(tmp_path)
 
 
 def test_probe_uses_native_te_main_gradient_not_autograd_placeholder():
