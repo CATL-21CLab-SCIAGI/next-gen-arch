@@ -23,6 +23,7 @@ TOKENIZER_SHA256 = "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229
 FULL_ARCH_FAMILY = "qwen38_flash_next_dense_ple"
 QUARTER_DEPTH48_NO_MTP_ARCH_FAMILY = "qwen38_flash_next_dense_ple_quarter_depth48_no_mtp"
 BILLION_DEPTH48_NO_MTP_ARCH_FAMILY = "qwen38_flash_next_dense_ple_1b_depth48_no_mtp"
+WIDTH320_E32_ARCH_FAMILY = "qwen38_flash_next_w320_e32_depth48_no_mtp"
 
 _MASK64 = (1 << 64) - 1
 _SPLITMIX_GAMMA = 0x9E3779B97F4A7C15
@@ -91,6 +92,9 @@ class Qwen38FlashNextFullConfig:
     attention_heads: int = 24
     attention_kv_heads: int = 2
     attention_head_dim: int = 256
+    attention_output_gate: bool = False
+    qk_layernorm: bool = False
+    zero_centered_gamma: bool = False
 
     linear_qk_heads: int = 16
     linear_v_heads: int = 48
@@ -113,6 +117,7 @@ class Qwen38FlashNextFullConfig:
     ngram_vocab_size_base: int = 20_000_000
     ngram_embedding_dim: int = 2_560
     ngram_partitions: int = 128
+    ngram_padding_multiple: int | None = None
     ngram_layer: int = 1
     ngram_conv_kernel: int = 4
     ngram_hash_seed: int = 1_234
@@ -162,6 +167,10 @@ class Qwen38FlashNextFullConfig:
             raise ValueError("invalid routed expert count")
         if self.ngram_embedding_dim % self.ngram_heads:
             raise ValueError("PLE embedding width must divide its hash heads")
+        if self.ngram_padding_multiple is not None and (
+            self.ngram_padding_multiple < 1 or self.ngram_padding_multiple % self.ngram_partitions
+        ):
+            raise ValueError("PLE padding multiple must divide into physical partitions")
         if sum(self.pipeline_layers) != self.num_hidden_layers:
             raise ValueError("pipeline layer layout must contain every backbone layer")
         if self.arch_family == FULL_ARCH_FAMILY:
@@ -176,6 +185,7 @@ class Qwen38FlashNextFullConfig:
         elif self.arch_family in (
             QUARTER_DEPTH48_NO_MTP_ARCH_FAMILY,
             BILLION_DEPTH48_NO_MTP_ARCH_FAMILY,
+            WIDTH320_E32_ARCH_FAMILY,
         ):
             expected = {
                 "num_hidden_layers": 48,
@@ -213,6 +223,33 @@ class Qwen38FlashNextFullConfig:
                     ngram_embedding_dim=384,
                 )
                 expected_pipeline = (48,)
+            if self.arch_family == WIDTH320_E32_ARCH_FAMILY:
+                expected.update(
+                    hidden_size=320,
+                    attention_heads=24,
+                    attention_kv_heads=2,
+                    attention_head_dim=32,
+                    attention_output_gate=True,
+                    qk_layernorm=True,
+                    zero_centered_gamma=True,
+                    linear_qk_heads=16,
+                    linear_v_heads=48,
+                    linear_key_dim=16,
+                    linear_value_dim=16,
+                    num_experts=32,
+                    num_experts_per_token=10,
+                    moe_intermediate_size=80,
+                    shared_expert_intermediate_size=80,
+                    router_aux_loss_coefficient=0.001,
+                    router_z_loss_coefficient=0.0,
+                    residual_streams=4,
+                    residual_low_rank=40,
+                    ngram_heads_per_order=8,
+                    ngram_vocab_size_base=163_840,
+                    ngram_embedding_dim=320,
+                    ngram_padding_multiple=128,
+                )
+                expected_pipeline = (48,)
             drift = {
                 field: getattr(self, field)
                 for field, value in expected.items()
@@ -248,7 +285,8 @@ class Qwen38FlashNextFullConfig:
 
     @property
     def ngram_padded_rows(self) -> int:
-        return math.ceil(self.ngram_total_rows / self.ngram_partitions) * self.ngram_partitions
+        multiple = self.ngram_padding_multiple or self.ngram_partitions
+        return math.ceil(self.ngram_total_rows / multiple) * multiple
 
     @property
     def ngram_rows_per_partition(self) -> int:
@@ -256,6 +294,15 @@ class Qwen38FlashNextFullConfig:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        # Preserve historical serialized contracts (including checkpoint resume).
+        for field in (
+            "attention_output_gate",
+            "qk_layernorm",
+            "zero_centered_gamma",
+            "ngram_padding_multiple",
+        ):
+            if not payload[field]:
+                del payload[field]
         payload["pipeline_layers"] = list(self.pipeline_layers)
         payload["ngram_head_vocab_sizes"] = list(self.ngram_head_vocab_sizes)
         payload["ngram_total_rows"] = self.ngram_total_rows
@@ -289,6 +336,33 @@ class Qwen38FlashNextFullConfig:
             eos_token_id=63,
         )
         return replace(config, **overrides)
+
+    @classmethod
+    def width320_e32_depth48_no_mtp(cls) -> Qwen38FlashNextFullConfig:
+        """Approved source-ratio 388M backbone; all feature widths derive from H."""
+        h = 320
+        return cls(
+            hidden_size=h,
+            attention_head_dim=h // 10,
+            attention_output_gate=True,
+            qk_layernorm=True,
+            zero_centered_gamma=True,
+            linear_key_dim=h // 20,
+            linear_value_dim=h // 20,
+            num_experts=32,
+            moe_intermediate_size=h // 4,
+            shared_expert_intermediate_size=h // 4,
+            residual_low_rank=h // 8,
+            ngram_vocab_size_base=512 * h,
+            ngram_embedding_dim=h,
+            ngram_partitions=32,
+            ngram_padding_multiple=128,
+            mtp_num_layers=0,
+            mtp_use_repeated_layer=False,
+            mtp_loss_scaling_factor=0.0,
+            pipeline_layers=(48,),
+            arch_family=WIDTH320_E32_ARCH_FAMILY,
+        )
 
     @classmethod
     def billion_depth48_no_mtp(cls) -> Qwen38FlashNextFullConfig:
@@ -342,17 +416,29 @@ class Qwen38FlashNextFullConfig:
 class GroupRMSNorm(nn.Module):
     """RMS-normalize each packed residual stream independently."""
 
-    def __init__(self, hidden_size: int, streams: int, eps: float):
+    def __init__(self, hidden_size: int, streams: int, eps: float, *, zero_centered=False):
         super().__init__()
         self.hidden_size = hidden_size
         self.streams = streams
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(streams * hidden_size))
+        self.zero_centered = zero_centered
+        self.weight = nn.Parameter(
+            torch.zeros(streams * hidden_size)
+            if zero_centered
+            else torch.ones(streams * hidden_size)
+        )
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         if inputs.size(-1) != self.streams * self.hidden_size:
             raise ValueError("invalid packed residual width")
         grouped = inputs.unflatten(-1, (self.streams, self.hidden_size))
+        if self.zero_centered:
+            grouped_fp32 = grouped.float()
+            normalized = grouped_fp32 * torch.rsqrt(
+                grouped_fp32.square().mean(dim=-1, keepdim=True) + self.eps
+            )
+            weight = self.weight.float().unflatten(0, (self.streams, self.hidden_size))
+            return (normalized * (1 + weight)).flatten(-2).to(inputs.dtype)
         weight = self.weight.unflatten(0, (self.streams, self.hidden_size)).to(inputs.dtype)
         variance = grouped.float().square().mean(dim=-1, keepdim=True)
         normalized = grouped * torch.rsqrt(variance + self.eps).to(grouped.dtype)
@@ -367,7 +453,12 @@ class FourStreamGatedResidual(nn.Module):
         self.hidden_size = config.hidden_size
         self.streams = config.residual_streams
         packed_size = self.hidden_size * self.streams
-        self.norm = GroupRMSNorm(self.hidden_size, self.streams, config.rms_norm_eps)
+        self.norm = GroupRMSNorm(
+            self.hidden_size,
+            self.streams,
+            config.rms_norm_eps,
+            zero_centered=config.zero_centered_gamma,
+        )
         self.input_mix_weight_down = nn.Linear(packed_size, config.residual_low_rank, bias=False)
         self.input_mix_weight_up = nn.Linear(config.residual_low_rank, packed_size, bias=False)
         self.block_inject_weight = (
@@ -757,9 +848,18 @@ class DistributedPLE(nn.Module):
         )
         self.key_proj = nn.Linear(config.ngram_embedding_dim, packed_size, bias=False)
         self.value_proj = nn.Linear(config.ngram_embedding_dim, self.hidden_size, bias=False)
-        self.norm_key = GroupRMSNorm(self.hidden_size, self.streams, config.rms_norm_eps)
-        self.norm_query = GroupRMSNorm(self.hidden_size, self.streams, config.rms_norm_eps)
-        self.norm_conv = GroupRMSNorm(self.hidden_size, self.streams, config.rms_norm_eps)
+
+        def norm():
+            return GroupRMSNorm(
+                self.hidden_size,
+                self.streams,
+                config.rms_norm_eps,
+                zero_centered=config.zero_centered_gamma,
+            )
+
+        self.norm_key = norm()
+        self.norm_query = norm()
+        self.norm_conv = norm()
         self.conv = CausalDepthwiseConv1d(
             packed_size,
             config.ngram_conv_kernel,
@@ -838,6 +938,10 @@ def parameter_count_contract(
         + config.attention_heads * config.attention_head_dim * h
     )
     q_width = config.linear_qk_heads * config.linear_key_dim
+    if config.attention_output_gate:
+        attention += h * config.attention_heads * config.attention_head_dim
+    if config.qk_layernorm:
+        attention += 2 * config.attention_head_dim
     v_width = config.linear_v_heads * config.linear_value_dim
     gdn = (
         h * (2 * q_width + v_width)

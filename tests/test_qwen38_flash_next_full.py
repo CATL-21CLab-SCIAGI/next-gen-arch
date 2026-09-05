@@ -226,9 +226,10 @@ def test_owner_sharded_remote_return_keeps_the_autograd_graph(monkeypatch):
     assert embedding.tables[0].grad.abs().sum() > 0
 
 
-def test_four_stream_gr_matches_explicit_official_equations_and_backpropagates():
+@pytest.mark.parametrize("zero_centered", [False, True])
+def test_four_stream_gr_matches_explicit_official_equations_and_backpropagates(zero_centered):
     torch.manual_seed(3)
-    config = Qwen38FlashNextFullConfig.tiny()
+    config = Qwen38FlashNextFullConfig.tiny(zero_centered_gamma=zero_centered)
     residual = FourStreamGatedResidual(config)
     packed = torch.randn(2, 3, 4 * config.hidden_size, requires_grad=True)
 

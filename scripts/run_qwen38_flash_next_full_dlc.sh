@@ -38,7 +38,7 @@ if [[ "$NGA_EXPECTED_NODES" != "4" || "$NGA_GPUS_PER_NODE" != "8" ]]; then
     exit 1
 fi
 expected_micro_batch=1
-if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" ]]; then
+if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" || "$NGA_FLASH_NEXT_MODEL_VARIANT" == "w320-e32-depth48-no-mtp" ]]; then
     expected_micro_batch=4
 fi
 if [[ "$NGA_SEQUENCE_LENGTH" != "2048" || "$NGA_MICRO_BATCH_SIZE" != "$expected_micro_batch" ]]; then
@@ -61,7 +61,8 @@ if ((NGA_PROBE_STEPS < 0 || NGA_PROBE_SAVE_INTERVAL < 0)); then
 fi
 if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" != "full" && \
       "$NGA_FLASH_NEXT_MODEL_VARIANT" != "quarter-depth48-no-mtp" && \
-      "$NGA_FLASH_NEXT_MODEL_VARIANT" != "1b-depth48-no-mtp" ]]; then
+      "$NGA_FLASH_NEXT_MODEL_VARIANT" != "1b-depth48-no-mtp" && \
+      "$NGA_FLASH_NEXT_MODEL_VARIANT" != "w320-e32-depth48-no-mtp" ]]; then
     echo "unsupported Flash-Next model variant: $NGA_FLASH_NEXT_MODEL_VARIANT" >&2
     exit 1
 fi
@@ -103,7 +104,7 @@ export CPATH="$CUDA_HOME/targets/x86_64-linux/include${CPATH:+:$CPATH}"
 export TRITON_PTXAS_PATH="${TRITON_PTXAS_PATH:-$CUDA_HOME/bin/ptxas}"
 export PYTHONPATH="$NGA_REPO_ROOT/src:$NGA_MEGATRON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
-if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" ]]; then
+if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" || "$NGA_FLASH_NEXT_MODEL_VARIANT" == "w320-e32-depth48-no-mtp" ]]; then
     # DP-only has no TP/SP overlap ordering requirement. Allow native TE's
     # small expert GEMMs to use independent CUDA work queues.
     export CUDA_DEVICE_MAX_CONNECTIONS=32
@@ -136,7 +137,7 @@ train_args=(
     --target-train-tokens "$NGA_TARGET_TRAIN_TOKENS"
     --seed 42
 )
-if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" ]]; then
+if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" || "$NGA_FLASH_NEXT_MODEL_VARIANT" == "w320-e32-depth48-no-mtp" ]]; then
     train_args+=(--parallelism dp-only --fused-moe --fused-cross-entropy)
 fi
 if ((NGA_PROBE_STEPS > 0)); then

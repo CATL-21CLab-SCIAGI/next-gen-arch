@@ -1,0 +1,182 @@
+name: qwen38-next-width-scaled-proposals-v1
+status: proposed_not_launchable
+scope: text_only_random_initialization
+implementation_status: native_adapter_wiring_and_distributed_tests_pending
+source:
+  model: Qwen/Qwen3.8-Flash-Next
+  revision: 34567a4712bc9766c4449e2e98e4468bfa24d915
+  config_sha256: 889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b
+
+scaling:
+  base: hidden_size
+  admitted_hidden_sizes: [320, 480, 640]
+  width_multiple: 160
+  rounding: reject_fractional_feature_dimensions_no_silent_rounding
+  interpretation: >-
+    Feature dimensions are fixed rational multiples of hidden_size. Depth,
+    connectivity counts, tokenizer vocabulary, context and convolution kernels
+    are explicit fixed architectural constants, not additional width-scaled axes.
+  attention_head_dim: {numerator: 1, denominator: 10}
+  gdn_key_head_dim: {numerator: 1, denominator: 20}
+  gdn_value_head_dim: {numerator: 1, denominator: 20}
+  residual_low_rank: {numerator: 1, denominator: 8}
+  ple_embedding_dim: {numerator: 1, denominator: 1}
+  ple_branch_dim: {numerator: 1, denominator: 16}
+  ple_vocab_size_base: {numerator: 512, denominator: 1}
+
+fixed:
+  layers: 48
+  layer_pattern: [gdn, gdn, gdn, dense_attention]
+  vocab_size: 248320
+  sequence_length: 2048
+  max_position_embeddings: 262144
+  attention:
+    query_heads: 24
+    kv_heads: 2
+    output_gate: sigmoid
+    qk_normalization: per_head_rmsnorm
+    qk_zero_centered_gamma: true
+    rotary_fraction: 0.25
+    rope_theta: 10000000
+    bias: false
+    qsa_indexer: false
+  gdn:
+    qk_heads: 16
+    value_heads: 48
+    conv_kernel: 4
+    output_gate: sigmoid
+  residual:
+    streams: 4
+    zero_centered_gamma: true
+    final_mixer: true
+  ple:
+    layer: 2
+    ngram_size: 3
+    heads_per_order: 8
+    hash_heads: 16
+    hash_seed: 1234
+    conv_kernel: 4
+    zero_centered_gamma: true
+    padding_multiple: 128
+    physical_partitions: 32
+    row_rule: >-
+      Take 16 successive primes >= 512 * hidden_size, sum them, and pad
+      the sum to a multiple of 128. All partitions are local on every DP replica.
+  moe:
+    shared_experts: 1
+    shared_output_gate: sigmoid
+    score_function: softmax
+    normalize_selected_probabilities: true
+    token_dropping: false
+    auxiliary_loss_coefficient: 0.001
+    z_loss_coefficient: 0.0
+    expert_gate_up_optimizer_matrices: separate
+  mtp:
+    layers: 0
+    loss_weight: 0.0
+  parallelism: {dp: 32, tp: 1, pp: 1, ep: 1, expert_tp: 1, cp: 1}
+  runtime:
+    profile: nemo-26.06
+    vendor_runtime_changes: forbidden
+  train:
+    initialization: fresh
+    seed: 42
+    global_batch_sequences: 4096
+    micro_batch_sequences: 4
+    microbatch_status: proposed_requires_memory_gate_not_assumed_to_fit
+    tokens_per_step: 8388608
+    train_steps: 11921
+    effective_tokens: 100000595968
+    precision: bf16
+    optimizer: container_owned_native_muon_with_adam_fallbacks
+    peak_lr: 0.00176
+    minimum_lr: 0.000176
+    warmup_fraction: 0.01
+    gradient_clip: 0.5
+    note: >-
+      Retained training defaults make comparisons explicit; the source-scale
+      LR and batch are not established optimal for these smaller variants.
+
+profiles:
+  next_ratio_e32:
+    purpose: reduced_expert_width320_proposal
+    routed_experts: 32
+    topk: 10
+    expert_intermediate_size: {numerator: 1, denominator: 4}
+    shared_intermediate_size: {numerator: 1, denominator: 4}
+    active_ffn_width_over_hidden: {numerator: 11, denominator: 4}
+    deviations: >-
+      32 rather than 512 routed experts, and half the earlier 64-expert proposal.
+      Top-10 retains the source active FFN width ratio but selects 31.25 percent
+      of the expert pool rather than the source 1.953125 percent. Expert count
+      is a proposed choice; this is not original routing sparsity or capacity.
+  next_ratio_e64:
+    purpose: primary_source_feature_ratio_baseline
+    routed_experts: 64
+    topk: 10
+    expert_intermediate_size: {numerator: 1, denominator: 4}
+    shared_intermediate_size: {numerator: 1, denominator: 4}
+    active_ffn_width_over_hidden: {numerator: 11, denominator: 4}
+    deviations: >-
+      64 rather than 512 routed experts; reduced PLE row budget; no MTP or QSA.
+      Expert count is fixed across widths. This is not the full released model.
+  wide_expert_e16:
+    purpose: optional_fewer_wider_expert_ablation
+    routed_experts: 16
+    topk: 3
+    expert_intermediate_size: {numerator: 3, denominator: 4}
+    shared_intermediate_size: {numerator: 3, denominator: 4}
+    active_ffn_width_over_hidden: {numerator: 3, denominator: 1}
+    deviations: >-
+      Deliberately different expert count and width ratios. Active FFN matrix
+      arithmetic is 9.09 percent higher than next_ratio_e64 at the same hidden
+      size; total parameters are lower. Not a parameter- or FLOP-matched control.
+
+candidates:
+  - name: next-ratio-e32-w320
+    profile: next_ratio_e32
+    hidden_size: 320
+    recommended_role: current_width320_reduced_expert_proposal_pending_selection
+    parameter_count_analytical: 387680960
+    ple_padded_rows: 2622720
+  - name: next-ratio-e64-w320
+    profile: next_ratio_e64
+    hidden_size: 320
+    parameter_count_analytical: 506137280
+    ple_padded_rows: 2622720
+  - name: next-ratio-e64-w480
+    profile: next_ratio_e64
+    hidden_size: 480
+    historical_role: earlier_approximately_1b_source_feature_ratio_baseline
+    parameter_count_analytical: 1017428832
+    ple_padded_rows: 3934208
+  - name: next-ratio-e64-w640
+    profile: next_ratio_e64
+    hidden_size: 640
+    parameter_count_analytical: 1700829184
+    ple_padded_rows: 5244672
+  - name: wide-expert-e16-w480
+    profile: wide_expert_e16
+    hidden_size: 480
+    parameter_count_analytical: 900201312
+    ple_padded_rows: 3934208
+
+restoration_status:
+  attention_output_gate: included_in_proposal_and_counts_not_yet_wired
+  qk_rmsnorm: included_in_proposal_and_counts_not_yet_wired
+  four_residual_streams: included_in_proposal_existing_general_mechanism
+  source_norm_parameterization: requires_new_variant_scoped_implementation
+  sixteen_ple_hash_heads: included_in_proposal_existing_general_mechanism
+
+launch_gates:
+  - explicit_candidate_selection
+  - new_named_config_no_changes_to_frozen_historical_families
+  - actual_construction_shapes_and_counts_equal_analytical_contract
+  - frozen_runtime_attention_and_gdn_shape_support
+  - source_gating_qk_norm_residual_and_ple_numerical_oracles
+  - separate_muon_matrix_grouping_including_gated_qkv
+  - dp_gradient_replica_equivalence
+  - bounded_host_and_gpu_memory_and_throughput_probe
+  - native_checkpoint_save_load_roundtrip
+  - graceful_checkpoint_of_old_child_before_replacement
+  - no_dlc_node_restart

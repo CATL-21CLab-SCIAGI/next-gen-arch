@@ -53,6 +53,9 @@ if ((NGA_PROBE_STEPS > 0)); then
 fi
 export NGA_PROBE_STEPS
 case "$production_name" in
+    qwen38-flash-next-w320-e32-depth48-nomtp-*)
+        export NGA_FLASH_NEXT_MODEL_VARIANT=w320-e32-depth48-no-mtp
+        ;;
     qwen38-flash-next-1b-depth48-nomtp-*)
         export NGA_FLASH_NEXT_MODEL_VARIANT=1b-depth48-no-mtp
         ;;

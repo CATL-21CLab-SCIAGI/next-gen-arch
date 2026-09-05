@@ -43,6 +43,7 @@ NATIVE_MUON_FP32_MATMUL_PRECISION = "medium"
 FULL_MODEL_VARIANT = "full"
 QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT = "quarter-depth48-no-mtp"
 BILLION_DEPTH48_NO_MTP_MODEL_VARIANT = "1b-depth48-no-mtp"
+WIDTH320_E32_MODEL_VARIANT = "w320-e32-depth48-no-mtp"
 LOSS_NORMALIZATION = "global-valid-token-mean-v1"
 ATTENTION_GROUPING = "explicit-gqa-v1"
 
@@ -242,6 +243,8 @@ def _native_muon_contract() -> dict[str, Any]:
 
 
 def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) -> list[str]:
+    if config.attention_output_gate and args.parallelism != "dp-only":
+        raise ValueError("the width-scaled gated variant requires DP-only execution")
     if args.parallelism == "dp-only" and len(config.pipeline_layers) != 1:
         raise ValueError("DP-only execution requires a single-stage model layout")
     tokens_per_step = args.global_batch_size * config.sequence_len
@@ -413,6 +416,12 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) 
         # in DDP's forward pre-hooks. Native Muon's non-overlapped path gathers
         # updated parameters synchronously after the optimizer step instead.
         argv.append("--overlap-param-gather")
+    if config.attention_output_gate:
+        argv.append("--attention-output-gate")
+    if config.qk_layernorm:
+        argv.append("--qk-layernorm")
+    if config.zero_centered_gamma:
+        argv.append("--apply-layernorm-1p")
     if len(config.pipeline_layers) > 1:
         argv.extend(
             (
@@ -719,7 +728,10 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
                 else None
             )
             if config.perform_initialization:
-                for module in (self.attention_residual, self.mlp_residual, self.ple):
+                modules_to_initialize = (self.attention_residual, self.mlp_residual, self.ple)
+                if architecture_config.zero_centered_gamma:
+                    modules_to_initialize += (self.final_mixer,)
+                for module in modules_to_initialize:
                     if module is None:
                         continue
                     for child in module.modules():
@@ -799,15 +811,20 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
             return super().forward(input_ids, *model_args, **model_kwargs)
 
     backend = TESpecProvider()
+    qkv_projection = backend.column_parallel_linear()
+    if architecture_config.attention_output_gate:
+        from archlab.megatron.gated_qkv import SplitGatedQKV
+
+        qkv_projection = SplitGatedQKV
     attention_spec = ModuleSpec(
         module=SelfAttention,
         params={"attn_mask_type": AttnMaskType.causal},
         submodules=SelfAttentionSubmodules(
-            linear_qkv=backend.column_parallel_linear(),
+            linear_qkv=qkv_projection,
             core_attention=backend.core_attention(),
             linear_proj=backend.row_parallel_linear(),
-            q_layernorm=IdentityOp,
-            k_layernorm=IdentityOp,
+            q_layernorm=None if architecture_config.qk_layernorm else IdentityOp,
+            k_layernorm=None if architecture_config.qk_layernorm else IdentityOp,
         ),
     )
     moe_builder = partial(
@@ -861,6 +878,9 @@ def build_model(
     model_class, specs_for = _build_model_classes(architecture_config)
     transformer_config.variable_seq_lengths = len(architecture_config.pipeline_layers) > 1
     transformer_config.hetereogenous_dist_checkpoint = True
+    transformer_config.attention_output_gate = architecture_config.attention_output_gate
+    transformer_config.qk_layernorm = architecture_config.qk_layernorm
+    transformer_config.layernorm_zero_centered_gamma = architecture_config.zero_centered_gamma
     block_spec, mtp_spec = specs_for(transformer_config, vp_stage, get_pg_rank(groups.pp))
     return model_class(
         config=transformer_config,
@@ -1081,6 +1101,18 @@ def _write_contract(args, config) -> None:
             "Megatron-native Muon instead of private Canzona",
             "GPU-owner-sharded PLE instead of unpublished host prefetch",
         ]
+    elif args.model_variant == WIDTH320_E32_MODEL_VARIANT:
+        model_name = "Qwen3.8-Flash-Next width-320 E32 source-ratio no-MTP variant"
+        variant_differences = [
+            "48 layers; width 320; 32 routed experts, top-10 plus shared, width 80",
+            "four residual streams, rank 40; 16 PLE hash heads; 512H table base",
+            "sigmoid attention output gate and per-head QK RMSNorm restored",
+            "source zero-centered GR/PLE/QK RMSNorm; direct-gamma GDN output norm",
+            "native TE Q/gate/K/V are separate Muon matrices (no ungated QKV splitter)",
+            "DP-only; all experts and all PLE partitions local on every GPU",
+            "MTP disabled; dense global attention at 2K instead of QSA; text only",
+            "source router auxiliary coefficient 0.001 and no z-loss",
+        ]
     else:
         model_name = "Qwen3.8-Flash-Next 1B depth-48 no-MTP variant"
         variant_differences = [
@@ -1132,6 +1164,11 @@ def _write_contract(args, config) -> None:
         "pipeline_layers": list(config.pipeline_layers),
         "optimizer": {
             **_native_muon_contract(),
+            **(
+                {"qkv_split": "separate native TE Q/gate/K/V parameters; each a Muon matrix"}
+                if config.attention_output_gate
+                else {}
+            ),
             "peak_lr": args.learning_rate,
             "minimum_lr": args.minimum_learning_rate,
             "warmup_fraction": args.warmup_fraction,
@@ -1251,11 +1288,41 @@ def _probe_ple_replica_equality(model, replica_group):
     return {"status": "passed", "checked_local_tables": evidence[1].item(), "mismatches": 0}
 
 
+def _probe_restored_replica_equality(model, group):
+    """Verify the new attention and residual parameters after native Muon/Adam steps."""
+    checked = 0
+    bad = torch.zeros((), dtype=torch.int64, device=torch.cuda.current_device())
+    source = torch.distributed.get_process_group_ranks(group)[0]
+    for name, parameter in model.named_parameters():
+        if not any(
+            part in name
+            for part in (
+                ".linear_qkv.",
+                ".q_layernorm.",
+                ".k_layernorm.",
+                ".attention_residual.",
+                ".mlp_residual.",
+                ".final_mixer.",
+            )
+        ):
+            continue
+        reference = parameter.detach().clone()
+        torch.distributed.broadcast(reference, src=source, group=group)
+        bad += ((parameter != reference) | ~torch.isfinite(parameter)).any().to(torch.int64)
+        checked += 1
+    torch.distributed.all_reduce(bad)
+    if bad.item() or not checked:
+        raise RuntimeError("restored attention/GR parameters differ between DP replicas")
+    return {"status": "passed", "checked_parameters_per_replica": checked, "mismatches": 0}
+
+
 def _run(args: argparse.Namespace) -> None:
     if args.model_variant == FULL_MODEL_VARIANT:
         config = Qwen38FlashNextFullConfig(sequence_len=args.sequence_length)
     elif args.model_variant == BILLION_DEPTH48_NO_MTP_MODEL_VARIANT:
         config = Qwen38FlashNextFullConfig.billion_depth48_no_mtp()
+    elif args.model_variant == WIDTH320_E32_MODEL_VARIANT:
+        config = Qwen38FlashNextFullConfig.width320_e32_depth48_no_mtp()
     else:
         config = Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
     train_prefixes, validation_prefixes = _validated_data_prefixes(args.data_root)
@@ -1272,6 +1339,7 @@ def _run(args: argparse.Namespace) -> None:
 
     probe_gradient_state = {"expected": False, "seen": False, "nonfinite": False}
     probe_models = []
+    restored_gradients = {}
 
     def model_provider(
         pre_process=True,
@@ -1296,6 +1364,36 @@ def _run(args: argparse.Namespace) -> None:
             vp_stage=vp_stage,
         )
         partition = _tag_native_optimizer_fallbacks(model)
+        if config_outer.attention_output_gate and torch.distributed.get_rank() == 0:
+            _atomic_json(
+                args.run_dir / "MODEL_SHAPES.json",
+                {
+                    name: {
+                        "shape": list(p.shape),
+                        "parameters": p.numel(),
+                        "optimizer": getattr(p, "archlab_optimizer", "adamw"),
+                    }
+                    for name, p in model.named_parameters()
+                },
+            )
+        if args.probe_steps and config_outer.attention_output_gate:
+            for suffix in (
+                "attention.linear_qkv.gate.weight",
+                "attention.q_layernorm.weight",
+                "attention.k_layernorm.weight",
+                "attention_residual.norm.weight",
+                "ple.norm_query.weight",
+            ):
+                parameter = next(p for name, p in model.named_parameters() if name.endswith(suffix))
+                restored_gradients[suffix] = {"seen": False, "nonfinite": False}
+
+                def record(gradient, key=suffix):
+                    state = restored_gradients[key]
+                    state["nonfinite"] |= not bool(torch.isfinite(gradient).all())
+                    state["seen"] |= bool(torch.count_nonzero(gradient))
+                    return gradient
+
+                parameter.register_hook(record)
         if args.probe_steps:
             probe_models.append(model)
         if args.probe_steps or args.parallelism == "dp-only":
@@ -1390,6 +1488,27 @@ def _run(args: argparse.Namespace) -> None:
         ModelType.encoder_or_decoder,
     )
     if args.probe_steps:
+        if config_outer.attention_output_gate:
+            evidence = _probe_restored_replica_equality(
+                probe_models[0], parallel_state.get_data_parallel_group()
+            )
+            bad = torch.tensor(
+                sum(not s["seen"] or s["nonfinite"] for s in restored_gradients.values()),
+                device=torch.cuda.current_device(),
+                dtype=torch.int64,
+            )
+            torch.distributed.all_reduce(bad)
+            if bad.item():
+                raise RuntimeError(f"restored-component gradient gate failed: {restored_gradients}")
+            if torch.distributed.get_rank() == 0:
+                _atomic_json(
+                    args.run_dir / "PROBE_RESTORED_COMPONENTS.json",
+                    {
+                        **evidence,
+                        "gradients": restored_gradients,
+                        "gradient_verified_ranks": torch.distributed.get_world_size(),
+                    },
+                )
         replica_evidence = _probe_ple_replica_equality(
             probe_models[0], parallel_state.get_expert_data_parallel_group()
         )
@@ -1449,6 +1568,7 @@ def _parser() -> argparse.ArgumentParser:
             FULL_MODEL_VARIANT,
             QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT,
             BILLION_DEPTH48_NO_MTP_MODEL_VARIANT,
+            WIDTH320_E32_MODEL_VARIANT,
         ),
         default=FULL_MODEL_VARIANT,
     )

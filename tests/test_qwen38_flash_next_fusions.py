@@ -18,20 +18,23 @@ def test_sampling_greedy_and_nucleus_keep_the_highest_probability_token():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires the frozen CUDA runtime")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_native_fused_permutation_preserves_outputs_and_token_probability_gradients(dtype):
+@pytest.mark.parametrize("experts,topk,width", [(64, 3, 384), (32, 10, 320)])
+def test_native_fused_permutation_preserves_outputs_and_token_probability_gradients(
+    dtype, experts, topk, width
+):
     utils = pytest.importorskip("megatron.core.transformer.moe.moe_utils")
     torch.manual_seed(83)
-    tokens = torch.randn(64, 384, device="cuda", dtype=dtype)
-    routing = torch.zeros(64, 64, device="cuda", dtype=torch.bool)
-    routing.scatter_(1, torch.rand(64, 64, device="cuda").topk(3, dim=1).indices, True)
-    probabilities = torch.rand(64, 64, device="cuda", dtype=dtype) * routing
+    tokens = torch.randn(64, width, device="cuda", dtype=dtype)
+    routing = torch.zeros(64, experts, device="cuda", dtype=torch.bool)
+    routing.scatter_(1, torch.rand(64, experts, device="cuda").topk(topk, dim=1).indices, True)
+    probabilities = torch.rand(64, experts, device="cuda", dtype=dtype) * routing
     weight = torch.randn_like(tokens)
 
     def evaluate(fused):
         x = tokens.detach().clone().requires_grad_()
         p = probabilities.detach().clone().requires_grad_()
         permuted, permuted_p, indices, _, _ = utils.permute(
-            x, routing, probs=p, num_out_tokens=192, fused=fused
+            x, routing, probs=p, num_out_tokens=64 * topk, fused=fused
         )
         expert_output = torch.nn.functional.silu(permuted) * permuted_p.unsqueeze(-1)
         restored = utils.unpermute(
@@ -50,16 +53,17 @@ def test_native_fused_permutation_preserves_outputs_and_token_probability_gradie
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires the frozen CUDA runtime")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_native_fused_router_preserves_top3_scores_and_gradient(dtype):
+@pytest.mark.parametrize("experts,topk", [(64, 3), (32, 10)])
+def test_native_fused_router_preserves_scores_and_gradient(dtype, experts, topk):
     utils = pytest.importorskip("megatron.core.transformer.moe.moe_utils")
     torch.manual_seed(84)
     # Distinct representable scores avoid making tie-breaking part of the oracle.
-    values = torch.stack([torch.randperm(64, device="cuda") for _ in range(64)]).to(dtype) / 16
+    values = torch.stack([torch.randperm(experts, device="cuda") for _ in range(64)]).to(dtype) / 16
     weights = torch.randn_like(values)
 
     def evaluate(fused):
         logits = values.detach().clone().requires_grad_()
-        probs, mapping = utils.topk_routing_with_score_function(logits, 3, fused=fused)
+        probs, mapping = utils.topk_routing_with_score_function(logits, topk, fused=fused)
         (probs * weights).float().sum().backward()
         return probs.detach(), mapping, logits.grad
 

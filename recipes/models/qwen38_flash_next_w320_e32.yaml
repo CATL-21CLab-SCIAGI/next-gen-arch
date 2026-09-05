@@ -1,0 +1,98 @@
+name: qwen38-flash-next-w320-e32-depth48-no-mtp
+variant: true
+source:
+  model: Qwen/Qwen3.8-Flash-Next
+  revision: 34567a4712bc9766c4449e2e98e4468bfa24d915
+  config_sha256: 889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b
+  tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+  initialize: random_seed_42
+  weights_loaded: false
+  scope: text_only
+model:
+  factory: archlab.architectures.qwen38_flash_next_full.Qwen38FlashNextFullConfig.width320_e32_depth48_no_mtp
+  vocab_size: 248320
+  sequence_length: 2048
+  layers: 48
+  hidden_size: 320
+  layer_pattern: [gdn, gdn, gdn, dense_attention]
+  dense_attention:
+    query_heads: 24
+    kv_heads: 2
+    head_dim: 32
+    output_gate: sigmoid
+    qk_norm: per_head_zero_centered_rmsnorm
+    rotary_fraction: 0.25
+    rope_theta: 10000000
+    physical_projection_shapes: {q: [768, 320], gate: [768, 320], k: [64, 320], v: [64, 320]}
+    packing: native_per_kv_group_query_gate_key_value
+  gdn: {qk_heads: 16, value_heads: 48, key_dim: 16, value_dim: 16, conv_kernel: 4, output_gate: sigmoid}
+  moe:
+    routed_experts: 32
+    experts_per_token: 10
+    expert_intermediate_size: 80
+    shared_expert_intermediate_size: 80
+    shared_output_gate: sigmoid
+    router_aux_loss_coefficient: 0.001
+    router_z_loss_coefficient: 0.0
+  gated_residual: {streams: 4, low_rank: 40, zero_centered_gamma: true}
+  ple:
+    layer: 2
+    ngram_size: 3
+    heads_per_ngram: 8
+    base_vocab_size: 163840
+    embedding_dim: 320
+    branch_dim: 20
+    padded_rows: 2622720
+    padding_multiple: 128
+    partitions: 32
+    zero_centered_gamma: true
+    parameters: 52454400
+    replication: all partitions local on every DP replica
+  mtp: {depths: 0, loss_scaling_factor: 0.0}
+  qsa_indexer: false
+  parameter_count: 387680960
+parallelism: {mode: dp-only, data: 32, expert_data: 32, tensor: 1, pipeline: 1, expert: 1, expert_tensor: 1, context: 1}
+execution:
+  cuda_device_max_connections: 32
+  overlap_grad_reduce: true
+  overlap_param_gather: false
+  moe_permute_fusion: true
+  moe_router_fusion: true
+  cross_entropy_loss_fusion: true
+  cross_entropy_fusion_impl: native
+  vendor_runtime_changes: forbidden
+training:
+  initialization: fresh_weights_optimizer_scheduler_and_data_cursor
+  seed: 42
+  precision: bf16
+  micro_batch_sequences: 4
+  global_batch_sequences: 4096
+  microbatches_per_step: 32
+  tokens_per_step: 8388608
+  steps: 11921
+  effective_tokens: 100000595968
+  peak_lr: 0.00176
+  minimum_lr: 0.000176
+  warmup_fraction: 0.01
+  schedule: cosine
+  gradient_clip: 0.5
+  checkpoint_interval_steps: 1192
+optimizer:
+  native_megatron_muon:
+    momentum: 0.95
+    nesterov: true
+    coefficient: polar_express
+    newton_schulz_steps: 8
+    scale_mode: spectral
+    extra_scale_factor: 0.2
+    fp32_matmul_precision: medium
+  attention_projection_grouping: separate Q, gate, K, V matrices; bypass native ungated-QKV split
+  expert_projection_grouping: separate gate, up, down matrices per expert
+  scalar_optimizer: adamw
+  ple_tables: {optimizer: adam, weight_decay: 0.0}
+runtime:
+  container: sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06
+  package_policy: frozen container-owned; no installation or runtime patching
+data_root: env:NGA_DATA_ROOT
+tokenizer: env:NGA_TOKENIZER
+output_root: env:NGA_OUTPUT_ROOT
