@@ -44,6 +44,7 @@ FULL_MODEL_VARIANT = "full"
 QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT = "quarter-depth48-no-mtp"
 BILLION_DEPTH48_NO_MTP_MODEL_VARIANT = "1b-depth48-no-mtp"
 LOSS_NORMALIZATION = "global-valid-token-mean-v1"
+ATTENTION_GROUPING = "explicit-gqa-v1"
 
 
 def _sha256(path: Path) -> str:
@@ -267,6 +268,7 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) 
         str(config.attention_heads),
         "--num-query-groups",
         str(config.attention_kv_heads),
+        "--group-query-attention",
         "--kv-channels",
         str(config.attention_head_dim),
         "--seq-length",
@@ -1059,6 +1061,7 @@ def _write_contract(args, config) -> None:
         },
         "training": {
             "loss_normalization": LOSS_NORMALIZATION,
+            "attention_grouping": ATTENTION_GROUPING,
             "seed": args.seed,
             "sequence_length": config.sequence_len,
             "micro_batch_sequences": args.micro_batch_size,
@@ -1103,6 +1106,8 @@ def _write_contract(args, config) -> None:
             raise RuntimeError("loss normalization changed; use a fresh run directory and weights")
         if previous.get("model_config") != payload["model_config"]:
             raise RuntimeError("model geometry changed; use a fresh run directory and weights")
+        if previous.get("training", {}).get("attention_grouping") != ATTENTION_GROUPING:
+            raise RuntimeError("native attention grouping changed; use a fresh run directory")
     if not contract.exists():
         _atomic_json(contract, payload)
     _atomic_json(args.run_dir / "contracts" / f"attempt-{time.time_ns()}.json", payload)

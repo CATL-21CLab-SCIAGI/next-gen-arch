@@ -436,9 +436,14 @@ def test_billion_argv_uses_pp1_ep8_and_larger_microbatches(tmp_path, monkeypatch
     assert parsed.data_parallel_size == 32
     assert parsed.pipeline_model_parallel_size == 1
     assert parsed.mtp_num_layers is None
+    assert parsed.group_query_attention
+    native_config = native.core_transformer_config_from_args(parsed)
+    assert native_config.num_query_groups == config.attention_kv_heads == 1
+    assert native_config.num_attention_heads == 6
 
 
-def test_resume_rejects_previous_model_geometry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("drift", ["model geometry", "native attention grouping"])
+def test_resume_rejects_previous_model_geometry_or_attention(tmp_path, monkeypatch, drift):
     args = _parser().parse_args(
         [
             "--data-root",
@@ -468,11 +473,15 @@ def test_resume_rejects_previous_model_geometry(tmp_path, monkeypatch):
         json.dumps(
             {
                 "training": {"loss_normalization": LOSS_NORMALIZATION},
-                "model_config": Qwen38FlashNextFullConfig.quarter_depth48_no_mtp().to_dict(),
+                "model_config": (
+                    Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
+                    if drift == "model geometry"
+                    else Qwen38FlashNextFullConfig.billion_depth48_no_mtp()
+                ).to_dict(),
             }
         )
     )
-    with pytest.raises(RuntimeError, match="model geometry changed"):
+    with pytest.raises(RuntimeError, match=f"{drift} changed"):
         flash_next_train._write_contract(args, Qwen38FlashNextFullConfig.billion_depth48_no_mtp())
 
 

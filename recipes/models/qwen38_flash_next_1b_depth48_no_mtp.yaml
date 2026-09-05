@@ -51,6 +51,7 @@ parallelism:
   pipeline_layers: [48]
 training:
   loss_normalization: global-valid-token-mean-v1
+  attention_grouping: explicit-gqa-v1
   micro_batch_sequences: 4
   global_batch_sequences: 4096
   microbatches_per_step: 32
