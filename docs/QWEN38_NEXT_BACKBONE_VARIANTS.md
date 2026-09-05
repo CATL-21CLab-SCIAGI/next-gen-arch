@@ -6,6 +6,12 @@ and all 32 PLE table partitions on every GPU. TP, PP, EP, expert TP, and CP are
 all 1; DP is 32. Native Muon distributes optimizer work/state across DP replicas;
 this is not model/expert sharding. No DLC node or vendor runtime restart is needed.
 
+The adapter preserves native dense/routed optimizer-group labels so old EP8
+momentum/Adam state remains loadable. The internal `allreduce=False` tag on routed
+weights and PLE selects the `expt_dp` gradient group; in this mode that group
+contains all 32 DP replicas, while EP itself is 1. It does not disable gradient
+reduction or distribute experts across GPUs. Actual group sizes are asserted.
+
 ## Files to review
 
 | File | Responsibility / controls |

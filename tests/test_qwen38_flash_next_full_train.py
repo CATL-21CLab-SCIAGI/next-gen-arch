@@ -607,9 +607,26 @@ def test_optimizer_grouping_keeps_muon_maps_and_scalar_adamw_ple_adam_distinct()
     assert table.archlab_optimizer == "adam"
     assert table.archlab_no_weight_decay is True
     assert table.ndim == 1
+    assert table.allreduce is False  # stable checkpoint group; expt_dp is DP32 in DP-only
     assert counts["muon"] > 0
     assert counts["adamw"] > 0
     assert counts["ple_adam_no_decay"] == table.numel()
+
+
+def test_dp_only_keeps_routed_optimizer_group_identity_without_sharding_parameters():
+    model = torch.nn.Module()
+    model.layer = torch.nn.Module()
+    model.layer.mlp = torch.nn.Module()
+    model.layer.mlp.experts = torch.nn.Linear(4, 8, bias=False)
+    model.layer.mlp.shared_experts = torch.nn.Linear(4, 8, bias=False)
+    routed = model.layer.mlp.experts.weight
+    routed.allreduce = True  # TE defaults this to True when EP=1.
+    before = routed.detach().clone()
+    _tag_native_optimizer_fallbacks(model)
+    assert routed.allreduce is False
+    assert getattr(model.layer.mlp.shared_experts.weight, "allreduce", True)
+    assert routed.shape == (8, 4)
+    torch.testing.assert_close(routed, before)
 
 
 def test_data_partition_depends_on_dp_rank_not_global_model_parallel_rank():

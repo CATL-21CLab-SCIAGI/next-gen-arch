@@ -468,6 +468,11 @@ def _assert_dp_only_groups(groups) -> dict[str, int]:
 def _tag_native_optimizer_fallbacks(model: torch.nn.Module) -> dict[str, int]:
     counts = {"muon": 0, "adamw": 0, "ple_adam_no_decay": 0}
     for name, parameter in model.named_parameters():
+        if ".mlp.experts." in name or ".embedding.tables." in name:
+            # Keep the native checkpoint's dense/routed optimizer-group layout.
+            # This flag selects expt_dp, NOT EP communication or model sharding.
+            # Under DP-only, _assert_dp_only_groups requires expt_dp == DP == WORLD.
+            parameter.allreduce = False
         if ".embedding.tables." in name:
             parameter.is_embedding_or_output_parameter = True
             parameter.archlab_optimizer = "adam"
