@@ -40,6 +40,7 @@ parallelism:
   context: 1
   pipeline_layers: [12, 13, 13, 10]
 training:
+  loss_normalization: global-valid-token-mean-v1
   global_batch_sequences: 4096
   tokens_per_step: 8388608
   steps: 11921

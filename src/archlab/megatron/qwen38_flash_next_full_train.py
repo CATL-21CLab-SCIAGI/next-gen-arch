@@ -42,6 +42,7 @@ DISTRIBUTED_TIMEOUT_MINUTES = 60
 NATIVE_MUON_FP32_MATMUL_PRECISION = "medium"
 FULL_MODEL_VARIANT = "full"
 QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT = "quarter-depth48-no-mtp"
+LOSS_NORMALIZATION = "global-valid-token-mean-v1"
 
 
 def _sha256(path: Path) -> str:
@@ -799,11 +800,17 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
 
 
 def _loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
+    """Return Megatron's per-token ABI: summed loss, valid-token count, metrics.
+
+    The native finalizer divides all gradients, including MoE/MTP auxiliary
+    gradients, by the global token count. A legacy two-item, pre-averaged
+    callback leaves that count at zero and breaks their relative scaling.
+    """
     losses = output_tensor.reshape(-1).float()
     mask = loss_mask.reshape(-1).float()
     loss_sum = (losses * mask).sum()
-    count = mask.sum()
-    return loss_sum / count.clamp_min(1), {"lm loss": torch.stack((loss_sum.detach(), count))}
+    count = mask.sum(dtype=torch.int64)
+    return loss_sum, count, {"lm loss": torch.stack((loss_sum.detach(), count))}
 
 
 def _assert_pipeline_data_rank_layout(
@@ -1021,6 +1028,7 @@ def _write_contract(args, config) -> None:
             "reason": "bound owner-sharded PLE optimizer staging to host memory",
         },
         "training": {
+            "loss_normalization": LOSS_NORMALIZATION,
             "seed": args.seed,
             "sequence_length": config.sequence_len,
             "micro_batch_sequences": args.micro_batch_size,
@@ -1059,6 +1067,10 @@ def _write_contract(args, config) -> None:
     contract = args.run_dir / "RUN_CONTRACT.json"
     if contract.exists() and not args.resume:
         raise RuntimeError("run directory already contains a contract")
+    if contract.exists():
+        previous = json.loads(contract.read_text())
+        if previous.get("training", {}).get("loss_normalization") != LOSS_NORMALIZATION:
+            raise RuntimeError("loss normalization changed; use a fresh run directory and weights")
     if not contract.exists():
         _atomic_json(contract, payload)
     _atomic_json(args.run_dir / "contracts" / f"attempt-{time.time_ns()}.json", payload)

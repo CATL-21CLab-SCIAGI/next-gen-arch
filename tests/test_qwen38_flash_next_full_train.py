@@ -1,9 +1,12 @@
+import json
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 
+import archlab.megatron.qwen38_flash_next_full_train as flash_next_train
 from archlab.architectures.qwen38_flash_next_full import (
     DistributedPLE,
     FourStreamGatedResidual,
@@ -13,12 +16,14 @@ from archlab.architectures.qwen38_flash_next_full import (
 from archlab.megatron.qwen38_flash_next_full_train import (
     CHECKPOINT_INTERVAL_STEPS,
     EFFECTIVE_TOKENS,
+    LOSS_NORMALIZATION,
     QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT,
     TOKENS_PER_STEP,
     TRAIN_STEPS,
     _assert_pipeline_data_rank_layout,
     _bind_native_moe_layer_number,
     _execute_checkpoint_request_by_local_rank,
+    _loss_func,
     _megatron_argv,
     _native_muon_contract,
     _parser,
@@ -28,6 +33,140 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     partition_prefixes_for_dp_rank,
     shifted_mtp_targets,
 )
+
+
+@pytest.mark.parametrize("mask_values", [[1, 0, 1, 0], [0, 0, 0, 0]])
+def test_loss_callback_returns_token_sum_and_integer_count(mask_values):
+    losses = torch.tensor([2.0, 4.0, 6.0, 8.0], requires_grad=True)
+    mask = torch.tensor(mask_values, dtype=torch.float32)
+
+    loss_sum, token_count, report = _loss_func(mask, losses)
+
+    assert loss_sum.item() == (losses.detach() * mask).sum().item()
+    assert token_count.item() == sum(mask_values)
+    assert token_count.dtype == torch.int64
+    assert token_count.device == losses.device
+    assert report["lm loss"].tolist() == [loss_sum.item(), token_count.item()]
+    assert not report["lm loss"].requires_grad
+    loss_sum.backward()
+    torch.testing.assert_close(losses.grad, mask)
+
+
+@pytest.mark.parametrize("microbatches", [1, 2, 4])
+def test_token_normalization_is_independent_of_microbatch_partition(microbatches):
+    parameter = torch.tensor(0.25, requires_grad=True)
+    features = torch.arange(1, 9, dtype=torch.float32)
+    mask = torch.tensor([1, 0, 1, 1, 0, 0, 1, 1], dtype=torch.float32)
+    total_tokens = 0
+    for feature_part, mask_part in zip(
+        features.chunk(microbatches), mask.chunk(microbatches), strict=True
+    ):
+        loss_sum, count, _ = _loss_func(mask_part, (parameter * feature_part).square())
+        loss_sum.backward()
+        total_tokens += count.item()
+    actual = parameter.grad / total_tokens
+    reference = torch.tensor(0.25, requires_grad=True)
+    objective = ((reference * features).square() * mask).sum() / mask.sum()
+    objective.backward()
+
+    torch.testing.assert_close(actual, reference.grad)
+
+
+@pytest.mark.parametrize("microbatches", [1, 4])
+def test_frozen_native_schedule_preserves_main_and_auxiliary_gradient_ratio(
+    monkeypatch, microbatches
+):
+    schedules = pytest.importorskip("megatron.core.pipeline_parallel.schedules")
+    moe_utils = pytest.importorskip("megatron.core.transformer.moe.moe_utils")
+    scaler = moe_utils.MoEAuxLossAutoScaler
+    monkeypatch.setattr(scaler, "main_loss_backward_scale", None)
+    config = SimpleNamespace(
+        calculate_per_token_loss=True,
+        timers=None,
+        num_moe_experts=2,
+        mtp_num_layers=None,
+        grad_scale_func=None,
+    )
+    main = torch.tensor(0.25, requires_grad=True)
+    auxiliary = torch.tensor(0.5, requires_grad=True)
+    features = torch.arange(1, 9, dtype=torch.float32)
+    masks = torch.tensor([1, 0, 1, 1, 0, 0, 1, 1], dtype=torch.float32)
+    token_count = 0
+    reports = []
+    for values, mask in zip(features.chunk(microbatches), masks.chunk(microbatches), strict=True):
+        # The container's router attaches a token-summed auxiliary objective;
+        # its native schedule independently scales the auxiliary backward pass.
+        output = scaler.apply((main * values).square(), 0.01 * auxiliary.square() * mask.sum())
+        loss, count = schedules.forward_step_calc_loss(
+            torch.nn.Identity(),
+            output,
+            partial(_loss_func, mask),
+            config,
+            vp_stage=None,
+            collect_non_loss_data=False,
+            num_microbatches=microbatches,
+            forward_data_store=reports,
+            cp_group_size=1,
+            is_last_stage=True,
+        )
+        loss.backward()
+        token_count += count.item()
+
+    assert token_count == int(masks.sum()), "native schedule must receive every valid token"
+    reference_main = torch.tensor(0.25, requires_grad=True)
+    reference_auxiliary = torch.tensor(0.5, requires_grad=True)
+    reference_loss = (
+        (reference_main * features).square() * masks
+    ).sum() / masks.sum() + 0.01 * reference_auxiliary.square()
+    reference_loss.backward()
+    torch.testing.assert_close(main.grad / token_count, reference_main.grad)
+    torch.testing.assert_close(auxiliary.grad / token_count, reference_auxiliary.grad)
+
+
+@pytest.mark.parametrize("legacy_contract", [False, True])
+def test_run_contract_records_correct_scaling_and_rejects_legacy_resume(
+    tmp_path, monkeypatch, legacy_contract
+):
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path / "data"),
+            "--tokenizer",
+            str(tmp_path / "tokenizer"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--model-variant",
+            QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT,
+        ]
+    )
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setattr(
+        flash_next_train,
+        "_sha256",
+        lambda path: (
+            flash_next_train.TOKENIZER_SHA256
+            if path.name == "tokenizer.json"
+            else flash_next_train.SOURCE_CONFIG_SHA256
+        ),
+    )
+    monkeypatch.setattr(flash_next_train, "validate_runtime", lambda **kwargs: {"provider": "test"})
+    args.run_dir.mkdir()
+    contract = args.run_dir / "RUN_CONTRACT.json"
+    if legacy_contract:
+        contract.write_text(json.dumps({"training": {"train_steps": 11921}}))
+        with pytest.raises(RuntimeError, match="loss normalization changed"):
+            flash_next_train._write_contract(
+                args, Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
+            )
+        assert not (args.run_dir / "contracts").exists()
+    else:
+        for _ in range(2):
+            flash_next_train._write_contract(
+                args, Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
+            )
+        assert (
+            json.loads(contract.read_text())["training"]["loss_normalization"] == LOSS_NORMALIZATION
+        )
 
 
 def test_distributed_checkpoint_host_staging_runs_only_on_its_local_turn():
@@ -209,6 +348,7 @@ def test_megatron_argv_uses_pp4_ep8_native_muon_and_native_mtp(tmp_path: Path):
         "--use-distributed-optimizer",
         "--no-use-layer-wise-param-layout",
         "--exit-signal-handler",
+        "--calculate-per-token-loss",
     ):
         assert flag in argv
     assert "--muon-no-split-qkv" not in argv
@@ -244,6 +384,7 @@ def test_quarter_depth48_argv_has_even_pipeline_and_no_mtp(tmp_path: Path):
     for flag, value in pairs.items():
         assert argv[argv.index(flag) + 1] == value
     assert not any(flag.startswith("--mtp-") for flag in argv)
+    assert "--calculate-per-token-loss" in argv
 
 
 def test_probe_resume_overrides_only_the_probe_scheduler_horizon(tmp_path: Path):
