@@ -13,7 +13,7 @@ scaling_contract:
   depth_exception: retain all 48 backbone layers
   tokenizer_vocabulary: preserve token identity
   mtp: disabled
-  resume: fresh weights; incompatible with the previous 5.47B checkpoint geometry
+  resume: native 1B checkpoint; preserve weights, optimizer, scheduler, iteration and data cursor
 model:
   vocab_size: 248320
   sequence_length: 2048
@@ -38,17 +38,25 @@ model:
     base_vocab_size: 1000000
     embedding_dim: 384
     partitions: 32
-    replication: expert-data-parallel; distinct checkpoint replica IDs
+    replication: all 32 partitions local on every DP replica; no lookup communication
   mtp: {depths: 0, loss_scaling_factor: 0.0}
   parameter_count: 1006441440
 parallelism:
   tensor: 1
   pipeline: 1
-  expert: 8
+  expert: 1
+  expert_tensor: 1
   context: 1
   data: 32
-  expert_data: 4
+  expert_data: 32
   pipeline_layers: [48]
+  mode: dp-only
+execution:
+  moe_permute_fusion: true
+  moe_router_fusion: true
+  cross_entropy_loss_fusion: true
+  cross_entropy_fusion_impl: native
+  vendor_runtime_changes: forbidden
 training:
   loss_normalization: global-valid-token-mean-v1
   attention_grouping: explicit-gqa-v1

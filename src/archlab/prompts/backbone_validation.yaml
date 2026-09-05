@@ -1,0 +1,15 @@
+schema_version: 1
+name: backbone-pretraining-continuations
+prompts:
+  - id: photosynthesis
+    text: "Plants use sunlight to"
+    tags: [science, explanation]
+  - id: history
+    text: "The invention of the printing press changed society because"
+    tags: [history, explanation]
+  - id: arithmetic
+    text: "A box contains 12 red balls and 8 blue balls. The total number of balls is"
+    tags: [math]
+  - id: story
+    text: "When the rain finally stopped, the little village"
+    tags: [open-ended]

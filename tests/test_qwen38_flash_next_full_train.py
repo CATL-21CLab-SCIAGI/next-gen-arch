@@ -442,6 +442,78 @@ def test_billion_argv_uses_pp1_ep8_and_larger_microbatches(tmp_path, monkeypatch
     assert native_config.num_attention_heads == 6
 
 
+def test_dp_only_argv_enables_supported_fusions_and_preserves_depth(tmp_path):
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--tokenizer",
+            str(tmp_path),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--model-variant",
+            BILLION_DEPTH48_NO_MTP_MODEL_VARIANT,
+            "--parallelism",
+            "dp-only",
+            "--fused-moe",
+            "--fused-cross-entropy",
+        ]
+    )
+    argv = _megatron_argv(args, Qwen38FlashNextFullConfig.billion_depth48_no_mtp())
+    for flag in (
+        "--tensor-model-parallel-size",
+        "--pipeline-model-parallel-size",
+        "--expert-model-parallel-size",
+        "--expert-tensor-parallel-size",
+        "--context-parallel-size",
+    ):
+        assert argv[argv.index(flag) + 1] == "1"
+    for flag in ("--moe-permute-fusion", "--moe-router-fusion", "--cross-entropy-loss-fusion"):
+        assert flag in argv
+    assert argv[argv.index("--cross-entropy-fusion-impl") + 1] == "native"
+    assert argv[argv.index("--num-layers") + 1] == "48"
+    assert "--sequence-parallel" not in argv
+    assert not any(flag.startswith("--mtp-") for flag in argv)
+    with pytest.raises(ValueError, match="single-stage"):
+        _megatron_argv(args, Qwen38FlashNextFullConfig.quarter_depth48_no_mtp())
+
+
+@pytest.mark.parametrize("bad_group", [None, "tp", "pp", "ep", "cp", "expt_tp", "dp", "expt_dp"])
+def test_dp_only_runtime_group_guard(monkeypatch, bad_group):
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 32)
+    sizes = {
+        name: (32 if name in ("dp", "expt_dp") else 1)
+        for name in ("tp", "pp", "ep", "cp", "expt_tp", "dp", "expt_dp")
+    }
+    if bad_group is not None:
+        sizes[bad_group] = 8
+    groups = SimpleNamespace(
+        **{name: SimpleNamespace(size=lambda size=size: size) for name, size in sizes.items()}
+    )
+    if bad_group is None:
+        assert flash_next_train._assert_dp_only_groups(groups) == sizes
+    else:
+        with pytest.raises(RuntimeError, match="DP-only"):
+            flash_next_train._assert_dp_only_groups(groups)
+
+
+def test_explicit_checkpoint_source_cannot_silently_start_fresh(tmp_path):
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--tokenizer",
+            str(tmp_path),
+            "--run-dir",
+            str(tmp_path / "new"),
+            "--load-dir",
+            str(tmp_path / "missing"),
+        ]
+    )
+    with pytest.raises(ValueError, match="completed checkpoint marker"):
+        _megatron_argv(args, Qwen38FlashNextFullConfig())
+
+
 @pytest.mark.parametrize("drift", ["model geometry", "native attention grouping"])
 def test_resume_rejects_previous_model_geometry_or_attention(tmp_path, monkeypatch, drift):
     args = _parser().parse_args(

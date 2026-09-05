@@ -292,7 +292,7 @@ class Qwen38FlashNextFullConfig:
 
     @classmethod
     def billion_depth48_no_mtp(cls) -> Qwen38FlashNextFullConfig:
-        """Approximately 1B total weights, with all 48 layers and node-local EP8."""
+        """Approximately 1B total weights and all 48 layers; execution owns DP/EP."""
         return replace(
             cls.quarter_depth48_no_mtp(),
             hidden_size=384,
@@ -635,8 +635,8 @@ class OwnerShardedPLEEmbedding(nn.Module):
             # A flattened parameter deliberately selects native Adam and zero
             # weight decay in Megatron's standard optimizer grouping.
             parameter = nn.Parameter(torch.empty(self.rows_per_partition * self.embedding_dim))
-            parameter.allreduce = False
-            parameter.expert_parallel = True
+            parameter.allreduce = owner_world_size == 1
+            parameter.expert_parallel = owner_world_size > 1
             parameter.is_embedding_or_output_parameter = True
             parameter.archlab_optimizer = "adam"
             parameter.archlab_no_weight_decay = True

@@ -185,7 +185,8 @@ def test_owner_sharding_is_balanced_and_local_lookup_preserves_global_order():
         assert table.ndim == 1
         assert table.archlab_optimizer == "adam"
         assert table.archlab_no_weight_decay is True
-        assert table.allreduce is False
+        assert table.allreduce is True
+        assert table.expert_parallel is False
 
     ids = torch.tensor([[0, config.ngram_rows_per_partition + 2, config.ngram_padded_rows - 1]])
     output = embedding(ids)

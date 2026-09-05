@@ -22,6 +22,7 @@ NGA_TARGET_TRAIN_TOKENS="${NGA_TARGET_TRAIN_TOKENS:-100000595968}"
 NGA_PROBE_STEPS="${NGA_PROBE_STEPS:-0}"
 NGA_PROBE_SAVE_INTERVAL="${NGA_PROBE_SAVE_INTERVAL:-0}"
 NGA_FLASH_NEXT_MODEL_VARIANT="${NGA_FLASH_NEXT_MODEL_VARIANT:-full}"
+NGA_LIVE_LOG_ROOT="${NGA_LIVE_LOG_ROOT:-/mnt/nas/evergreen/next-gen-arch/live-logs/${NGA_OUTPUT_ROOT##*/}}"
 export NGA_EXPECTED_NODES NGA_GPUS_PER_NODE
 
 SOURCE_CONFIG_SHA256="889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b"
@@ -106,7 +107,7 @@ export NVTE_ALLOW_NONDETERMINISTIC_ALGO="${NGA_ALLOW_NONDETERMINISTIC_ALGO:-1}"
 unset NVTE_GROUPED_LINEAR_SINGLE_PARAM
 export NGA_CONTAINER_DIGEST="${NGA_CONTAINER_DIGEST:-sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06}"
 
-mkdir -p "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/checkpoints"
+mkdir -p "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/checkpoints" "$NGA_LIVE_LOG_ROOT"
 
 "$NGA_PYTHON" -m torch.distributed.run \
     --nnodes="$WORLD_SIZE" \
@@ -115,7 +116,7 @@ mkdir -p "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/checkpoints"
     --master-addr="$MASTER_ADDR" \
     --master-port="$MASTER_PORT" \
     --module archlab.megatron.collective_probe \
-    2>&1 | tee -a "$NGA_OUTPUT_ROOT/logs/collective-node-$RANK.log"
+    2>&1 | tee -a "$NGA_LIVE_LOG_ROOT/collective-node-$RANK.log" "$NGA_OUTPUT_ROOT/logs/collective-node-$RANK.log"
 test -f "$NGA_OUTPUT_ROOT/COLLECTIVE_VALIDATED.json"
 
 train_args=(
@@ -129,6 +130,9 @@ train_args=(
     --target-train-tokens "$NGA_TARGET_TRAIN_TOKENS"
     --seed 42
 )
+if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" ]]; then
+    train_args+=(--parallelism dp-only --fused-moe --fused-cross-entropy)
+fi
 if ((NGA_PROBE_STEPS > 0)); then
     train_args+=(
         --probe-steps "$NGA_PROBE_STEPS"
@@ -145,4 +149,4 @@ fi
     --master-port="$MASTER_PORT" \
     --module archlab.megatron.qwen38_flash_next_full_train \
     "${train_args[@]}" \
-    2>&1 | tee -a "$NGA_OUTPUT_ROOT/logs/train-node-$RANK.log"
+    2>&1 | tee -a "$NGA_LIVE_LOG_ROOT/train-node-$RANK.log" "$NGA_OUTPUT_ROOT/logs/train-node-$RANK.log"

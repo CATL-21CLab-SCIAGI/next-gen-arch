@@ -242,6 +242,8 @@ def _native_muon_contract() -> dict[str, Any]:
 
 
 def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) -> list[str]:
+    if args.parallelism == "dp-only" and len(config.pipeline_layers) != 1:
+        raise ValueError("DP-only execution requires a single-stage model layout")
     tokens_per_step = args.global_batch_size * config.sequence_len
     if args.global_batch_size < args.micro_batch_size:
         raise ValueError("global batch must be at least one microbatch")
@@ -303,7 +305,9 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) 
         "--pipeline-model-parallel-size",
         str(len(config.pipeline_layers)),
         "--expert-model-parallel-size",
-        "8",
+        "1" if args.parallelism == "dp-only" else "8",
+        "--expert-tensor-parallel-size",
+        "1",
         "--context-parallel-size",
         "1",
         "--distributed-backend",
@@ -425,9 +429,17 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) 
                 str(config.mtp_loss_scaling_factor),
             )
         )
-    marker = args.run_dir / "checkpoints" / "latest_checkpointed_iteration.txt"
+    if args.fused_moe:
+        argv.extend(("--moe-permute-fusion", "--moe-router-fusion"))
+    if args.fused_cross_entropy:
+        # The frozen runtime forbids the TE implementation for stability reasons.
+        argv.extend(("--cross-entropy-loss-fusion", "--cross-entropy-fusion-impl", "native"))
+    load_dir = args.load_dir or args.run_dir / "checkpoints"
+    marker = load_dir / "latest_checkpointed_iteration.txt"
+    if args.load_dir is not None and (not args.resume or not marker.is_file()):
+        raise ValueError("an explicit load-dir requires resume and a completed checkpoint marker")
     if args.resume and marker.is_file():
-        argv.extend(("--load", str(args.run_dir / "checkpoints")))
+        argv.extend(("--load", str(load_dir)))
         if args.probe_steps:
             # Probe horizons are intentionally short and may grow between the
             # save and reload gates. Keep the checkpoint's optimizer tensors,
@@ -435,6 +447,22 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) 
             # always retains the fixed 11,921-step contract and never overrides.
             argv.append("--override-opt-param-scheduler")
     return argv
+
+
+def _assert_dp_only_groups(groups) -> dict[str, int]:
+    """Reject model/sequence/expert sharding before the first forward pass."""
+    sizes = {
+        name: getattr(groups, name).size()
+        for name in ("tp", "pp", "ep", "cp", "expt_tp", "dp", "expt_dp")
+    }
+    if any(sizes[name] != 1 for name in ("tp", "pp", "ep", "cp", "expt_tp")):
+        raise RuntimeError(f"DP-only execution received model-parallel groups: {sizes}")
+    world = torch.distributed.get_world_size()
+    if sizes["dp"] != world or sizes["expt_dp"] != world:
+        raise RuntimeError(
+            f"DP-only execution requires complete replicas on all {world} ranks: {sizes}"
+        )
+    return sizes
 
 
 def _tag_native_optimizer_fallbacks(model: torch.nn.Module) -> dict[str, int]:
@@ -808,6 +836,40 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
     return QwenFlashNextGPT, specs_for
 
 
+def build_model(
+    architecture_config,
+    transformer_config,
+    groups,
+    *,
+    pre_process=True,
+    post_process=True,
+    vp_stage=None,
+):
+    """Shared native model construction for training and checkpoint sampling."""
+    from megatron.core.utils import get_pg_rank
+
+    model_class, specs_for = _build_model_classes(architecture_config)
+    transformer_config.variable_seq_lengths = len(architecture_config.pipeline_layers) > 1
+    transformer_config.hetereogenous_dist_checkpoint = True
+    block_spec, mtp_spec = specs_for(transformer_config, vp_stage, get_pg_rank(groups.pp))
+    return model_class(
+        config=transformer_config,
+        transformer_layer_spec=block_spec,
+        vocab_size=architecture_config.vocab_size,
+        max_sequence_length=architecture_config.max_position_embeddings,
+        pre_process=pre_process,
+        post_process=post_process,
+        parallel_output=True,
+        share_embeddings_and_output_weights=False,
+        position_embedding_type="rope",
+        rotary_percent=architecture_config.partial_rotary_factor,
+        rotary_base=int(architecture_config.rope_theta),
+        mtp_block_spec=mtp_spec,
+        pg_collection=groups,
+        vp_stage=vp_stage,
+    )
+
+
 def _loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
     """Return Megatron's per-token ABI: summed loss, valid-token count, metrics.
 
@@ -1015,7 +1077,11 @@ def _write_contract(args, config) -> None:
             "approximately 1B total parameters, including every expert and PLE table",
             "all 48 backbone layers retained; width 384, 64 experts, expert width 112",
             "PLE base vocabulary 1M per hash head; embedding width 384",
-            "PP1 with node-local EP8 and four expert-data-parallel replicas",
+            (
+                "DP-only: complete experts and PLE tables replicated on every GPU"
+                if args.parallelism == "dp-only"
+                else "PP1 with node-local EP8 and four expert-data-parallel replicas"
+            ),
             "MTP module and auxiliary objective disabled",
             "dense global attention at 2K instead of QSA",
             "router auxiliary coefficient 0.01 and z-loss coefficient 0.001",
@@ -1038,8 +1104,17 @@ def _write_contract(args, config) -> None:
         "parallelism": {
             "tensor": 1,
             "pipeline": len(config.pipeline_layers),
-            "expert": 8,
+            "expert": 1 if args.parallelism == "dp-only" else 8,
+            "expert_tensor": 1,
             "context": 1,
+            "mode": args.parallelism,
+        },
+        "execution": {
+            "moe_permute_fusion": args.fused_moe,
+            "moe_router_fusion": args.fused_moe,
+            "cross_entropy_loss_fusion": args.fused_cross_entropy,
+            "cross_entropy_fusion_impl": "native",
+            "load_dir": str(args.load_dir) if args.load_dir else None,
         },
         "pipeline_layers": list(config.pipeline_layers),
         "optimizer": {
@@ -1100,8 +1175,13 @@ def _write_contract(args, config) -> None:
     contract = args.run_dir / "RUN_CONTRACT.json"
     if contract.exists() and not args.resume:
         raise RuntimeError("run directory already contains a contract")
-    if contract.exists():
-        previous = json.loads(contract.read_text())
+    resume_contract = args.load_dir.parent / "RUN_CONTRACT.json" if args.load_dir else contract
+    if args.load_dir and not resume_contract.is_file():
+        raise RuntimeError("explicit checkpoint source lacks a RUN_CONTRACT.json")
+    for previous_contract in dict.fromkeys((contract, resume_contract)):
+        if not previous_contract.exists():
+            continue
+        previous = json.loads(previous_contract.read_text())
         if previous.get("training", {}).get("loss_normalization") != LOSS_NORMALIZATION:
             raise RuntimeError("loss normalization changed; use a fresh run directory and weights")
         if previous.get("model_config") != payload["model_config"]:
@@ -1111,6 +1191,7 @@ def _write_contract(args, config) -> None:
     if not contract.exists():
         _atomic_json(contract, payload)
     _atomic_json(args.run_dir / "contracts" / f"attempt-{time.time_ns()}.json", payload)
+    _atomic_json(args.run_dir / "LATEST_CONTRACT.json", payload)
 
 
 def _current_iteration() -> int:
@@ -1176,7 +1257,6 @@ def _run(args: argparse.Namespace) -> None:
     from megatron.training import get_args
     from megatron.training.arguments import core_transformer_config_from_args
 
-    model_class, specs_for = _build_model_classes(config)
     probe_gradient_state = {"expected": False, "seen": False, "nonfinite": False}
     probe_models = []
 
@@ -1188,35 +1268,24 @@ def _run(args: argparse.Namespace) -> None:
         pg_collection=None,
     ):
         transformer_config = config or core_transformer_config_from_args(get_args())
-        # The legacy CLI hard-codes this field to false and exposes no positive
-        # flag. Dynamic P2P shape exchange is required because inter-stage GR
-        # tensors have width 4H while Megatron's language-model width remains H.
-        transformer_config.variable_seq_lengths = len(config_outer.pipeline_layers) > 1
-        # Layer 2 alone owns PLE and every fourth layer changes attention type,
-        # so checkpoint keys must retain their global layer number.
-        transformer_config.hetereogenous_dist_checkpoint = True
         groups = pg_collection or ProcessGroupCollection.use_mpu_process_groups()
         pp_rank = get_pg_rank(groups.pp)
-        block_spec, mtp_spec = specs_for(transformer_config, vp_stage, pp_rank)
-        model = model_class(
-            config=transformer_config,
-            transformer_layer_spec=block_spec,
-            vocab_size=config_outer.vocab_size,
-            max_sequence_length=config_outer.max_position_embeddings,
+        if args.parallelism == "dp-only":
+            sizes = _assert_dp_only_groups(groups)
+            if torch.distributed.get_rank() == 0:
+                _atomic_json(args.run_dir / "PARALLELISM.json", sizes)
+        model = build_model(
+            config_outer,
+            transformer_config,
+            groups,
             pre_process=pre_process,
             post_process=post_process,
-            parallel_output=True,
-            share_embeddings_and_output_weights=False,
-            position_embedding_type="rope",
-            rotary_percent=config_outer.partial_rotary_factor,
-            rotary_base=int(config_outer.rope_theta),
-            mtp_block_spec=mtp_spec,
-            pg_collection=groups,
             vp_stage=vp_stage,
         )
         partition = _tag_native_optimizer_fallbacks(model)
         if args.probe_steps:
             probe_models.append(model)
+        if args.probe_steps or args.parallelism == "dp-only":
             counts = _probe_parameter_counts(
                 model,
                 data_replicas=groups.dp.size(),
@@ -1225,7 +1294,11 @@ def _run(args: argparse.Namespace) -> None:
             if counts["total"] != parameter_count_contract(config_outer)["total"]:
                 raise RuntimeError(f"native model parameter count differs from recipe: {counts}")
             if torch.distributed.get_rank() == 0:
-                _atomic_json(args.run_dir / "PROBE_PARAMETERS.json", counts)
+                _atomic_json(
+                    args.run_dir
+                    / ("PROBE_PARAMETERS.json" if args.probe_steps else "MODEL_PARAMETERS.json"),
+                    {**counts, "local_parameters": sum(p.numel() for p in model.parameters())},
+                )
         if args.probe_steps and pp_rank == 0:
             early_parameter = next(
                 (
@@ -1349,6 +1422,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", required=True, type=Path)
     parser.add_argument("--tokenizer", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
+    parser.add_argument(
+        "--load-dir", type=Path, help="Native checkpoint root; defaults to run-dir/checkpoints"
+    )
+    parser.add_argument("--parallelism", choices=("legacy", "dp-only"), default="legacy")
+    parser.add_argument("--fused-moe", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--fused-cross-entropy", action=argparse.BooleanOptionalAction, default=False
+    )
     parser.add_argument(
         "--model-variant",
         choices=(
