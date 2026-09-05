@@ -22,6 +22,7 @@ SOURCE_CONFIG_SHA256 = "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d2
 TOKENIZER_SHA256 = "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
 FULL_ARCH_FAMILY = "qwen38_flash_next_dense_ple"
 QUARTER_DEPTH48_NO_MTP_ARCH_FAMILY = "qwen38_flash_next_dense_ple_quarter_depth48_no_mtp"
+BILLION_DEPTH48_NO_MTP_ARCH_FAMILY = "qwen38_flash_next_dense_ple_1b_depth48_no_mtp"
 
 _MASK64 = (1 << 64) - 1
 _SPLITMIX_GAMMA = 0x9E3779B97F4A7C15
@@ -172,7 +173,10 @@ class Qwen38FlashNextFullConfig:
                 raise ValueError("the full-model variant repeats one MTP layer at three depths")
             if self.router_z_loss_coefficient != 0:
                 raise ValueError("the full-model variant has no router z-loss")
-        elif self.arch_family == QUARTER_DEPTH48_NO_MTP_ARCH_FAMILY:
+        elif self.arch_family in (
+            QUARTER_DEPTH48_NO_MTP_ARCH_FAMILY,
+            BILLION_DEPTH48_NO_MTP_ARCH_FAMILY,
+        ):
             expected = {
                 "num_hidden_layers": 48,
                 "hidden_size": 640,
@@ -197,17 +201,29 @@ class Qwen38FlashNextFullConfig:
                 "ngram_partitions": 32,
                 "mtp_num_layers": 0,
             }
+            expected_pipeline = (12, 12, 12, 12)
+            if self.arch_family == BILLION_DEPTH48_NO_MTP_ARCH_FAMILY:
+                expected.update(
+                    hidden_size=384,
+                    num_experts=64,
+                    moe_intermediate_size=112,
+                    shared_expert_intermediate_size=112,
+                    residual_low_rank=48,
+                    ngram_vocab_size_base=1_000_000,
+                    ngram_embedding_dim=384,
+                )
+                expected_pipeline = (48,)
             drift = {
                 field: getattr(self, field)
                 for field, value in expected.items()
                 if getattr(self, field) != value
             }
             if drift:
-                raise ValueError(f"quarter-depth48-no-MTP contract drift: {drift}")
-            if self.pipeline_layers != (12, 12, 12, 12):
-                raise ValueError("quarter-depth48-no-MTP PP4 layout must be 12/12/12/12")
+                raise ValueError(f"{self.arch_family} contract drift: {drift}")
+            if self.pipeline_layers != expected_pipeline:
+                raise ValueError(f"{self.arch_family} pipeline layout must be {expected_pipeline}")
             if self.mtp_use_repeated_layer or self.mtp_loss_scaling_factor != 0:
-                raise ValueError("quarter-depth48-no-MTP must not construct or weight MTP")
+                raise ValueError(f"{self.arch_family} must not construct or weight MTP")
         else:
             raise ValueError(f"unsupported Flash-Next architecture family: {self.arch_family}")
 
@@ -273,6 +289,22 @@ class Qwen38FlashNextFullConfig:
             eos_token_id=63,
         )
         return replace(config, **overrides)
+
+    @classmethod
+    def billion_depth48_no_mtp(cls) -> Qwen38FlashNextFullConfig:
+        """Approximately 1B total weights, with all 48 layers and node-local EP8."""
+        return replace(
+            cls.quarter_depth48_no_mtp(),
+            hidden_size=384,
+            num_experts=64,
+            moe_intermediate_size=112,
+            shared_expert_intermediate_size=112,
+            residual_low_rank=48,
+            ngram_vocab_size_base=1_000_000,
+            ngram_embedding_dim=384,
+            pipeline_layers=(48,),
+            arch_family=BILLION_DEPTH48_NO_MTP_ARCH_FAMILY,
+        )
 
     @classmethod
     def quarter_depth48_no_mtp(cls) -> Qwen38FlashNextFullConfig:
@@ -579,6 +611,7 @@ class OwnerShardedPLEEmbedding(nn.Module):
         owner_rank: int,
         owner_world_size: int,
         process_group: dist.ProcessGroup | None = None,
+        replica_rank: int = 0,
     ):
         super().__init__()
         if config.ngram_partitions % owner_world_size:
@@ -591,6 +624,9 @@ class OwnerShardedPLEEmbedding(nn.Module):
         self.owner_rank = owner_rank
         self.owner_world_size = owner_world_size
         self.process_group = process_group
+        if replica_rank < 0:
+            raise ValueError("PLE replica rank must be non-negative")
+        self.replica_rank = replica_rank
         self.global_partitions = ple_partition_ownership(self.partitions, owner_world_size)[
             owner_rank
         ]
@@ -674,7 +710,7 @@ class OwnerShardedPLEEmbedding(nn.Module):
         sharded_offsets: tuple[tuple[int, int, int], ...] = (),
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Expose 128 flat contiguous shards as one global checkpoint tensor."""
+        """Expose owner partitions once, with explicit expert-DP replica identity."""
         del metadata
         from megatron.core.dist_checkpointing.mapping import ShardedTensor
 
@@ -690,6 +726,7 @@ class OwnerShardedPLEEmbedding(nn.Module):
                 *sharded_offsets,
                 (len(sharded_offsets), partition, self.partitions),
                 prepend_axis_num=len(sharded_offsets),
+                replica_id=(0, 0, self.replica_rank),
             )
         return state
 
@@ -704,6 +741,7 @@ class DistributedPLE(nn.Module):
         owner_rank: int,
         owner_world_size: int,
         process_group: dist.ProcessGroup | None = None,
+        replica_rank: int = 0,
     ):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -715,6 +753,7 @@ class DistributedPLE(nn.Module):
             owner_rank=owner_rank,
             owner_world_size=owner_world_size,
             process_group=process_group,
+            replica_rank=replica_rank,
         )
         self.key_proj = nn.Linear(config.ngram_embedding_dim, packed_size, bias=False)
         self.value_proj = nn.Linear(config.ngram_embedding_dim, self.hidden_size, bias=False)

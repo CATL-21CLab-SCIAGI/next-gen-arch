@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+import pytest
 import torch
 from torch.distributed.nn import functional as dist_nn_functional
 
@@ -107,6 +108,61 @@ def test_ple_prime_sizes_padding_and_hash_multipliers_match_pinned_source():
         20_109_073_645_365,
         8_052_911_324_071,
     ]
+
+
+def test_billion_geometry_retains_depth_and_counts_all_weights():
+    config = Qwen38FlashNextFullConfig.billion_depth48_no_mtp()
+    assert config.num_hidden_layers == 48
+    assert config.pipeline_layers == (48,)
+    assert config.hidden_size == config.ngram_embedding_dim == 384
+    assert config.num_experts == 64
+    assert config.num_experts_per_token == 3
+    assert config.moe_intermediate_size == config.shared_expert_intermediate_size == 112
+    assert config.mtp_num_layers == config.mtp_loss_scaling_factor == 0
+    assert not config.mtp_use_repeated_layer
+    assert parameter_count_contract(config) == {
+        "embeddings_and_head": 190_709_760,
+        "ple_tables": 384_012_288,
+        "ple_projection": 297_600,
+        "backbone": 431_421_792,
+        "shared_mtp_inner": 0,
+        "native_mtp_wrapper": 0,
+        "total": 1_006_441_440,
+    }
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"hidden_size": 640},
+        {"num_experts": 128},
+        {"pipeline_layers": (12, 12, 12, 12)},
+        {"mtp_num_layers": 3},
+        {"mtp_loss_scaling_factor": 0.1},
+    ],
+)
+def test_billion_contract_rejects_shape_or_mtp_drift(overrides):
+    with pytest.raises(ValueError):
+        replace(Qwen38FlashNextFullConfig.billion_depth48_no_mtp(), **overrides)
+
+
+def test_ple_checkpoint_replica_ids_identify_one_main_owner_per_shard():
+    pytest.importorskip("megatron.core.dist_checkpointing.mapping")
+    config = Qwen38FlashNextFullConfig.tiny()
+    main_shards = []
+    for replica in range(4):
+        for owner in range(8):
+            embedding = OwnerShardedPLEEmbedding(
+                config, owner_rank=owner, owner_world_size=8, replica_rank=replica
+            )
+            state = embedding.sharded_state_dict("ple.embedding.")
+            assert len(state) == 1
+            shard = next(iter(state.values()))
+            assert shard.replica_id == (0, 0, replica)
+            assert shard.global_offset == (owner * config.ngram_rows_per_partition * 8,)
+            if replica == 0:
+                main_shards.append(shard)
+    assert len({shard.global_offset for shard in main_shards}) == 8
 
 
 def test_ple_hash_never_crosses_eos_segment_boundaries():

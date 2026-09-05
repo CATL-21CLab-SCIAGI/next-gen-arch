@@ -17,8 +17,8 @@ if [[ "${NGA_SEQUENCE_LENGTH:-}" != "2048" ]]; then
     echo "compatibility launch requires sequence length 2048" >&2
     exit 1
 fi
-if [[ "${NGA_MICRO_BATCH_SIZE:-}" != "1" || "${NGA_GLOBAL_BATCH_SIZE:-}" != "4096" ]]; then
-    echo "compatibility launch requires micro/global batch 1/4096" >&2
+if [[ "${NGA_GLOBAL_BATCH_SIZE:-}" != "4096" ]]; then
+    echo "compatibility launch requires global batch 4096" >&2
     exit 1
 fi
 if [[ "${NGA_TARGET_TRAIN_TOKENS:-}" != "100000595968" ]]; then
@@ -53,6 +53,9 @@ if ((NGA_PROBE_STEPS > 0)); then
 fi
 export NGA_PROBE_STEPS
 case "$production_name" in
+    qwen38-flash-next-1b-depth48-nomtp-*)
+        export NGA_FLASH_NEXT_MODEL_VARIANT=1b-depth48-no-mtp
+        ;;
     qwen38-flash-next-quarter-depth48-nomtp-*)
         export NGA_FLASH_NEXT_MODEL_VARIANT=quarter-depth48-no-mtp
         ;;

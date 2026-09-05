@@ -35,8 +35,12 @@ if [[ "$NGA_EXPECTED_NODES" != "4" || "$NGA_GPUS_PER_NODE" != "8" ]]; then
     echo "the supported topology is exactly four nodes with eight GPUs each" >&2
     exit 1
 fi
-if [[ "$NGA_SEQUENCE_LENGTH" != "2048" || "$NGA_MICRO_BATCH_SIZE" != "1" ]]; then
-    echo "the supported training shape requires sequence 2048 and microbatch 1" >&2
+expected_micro_batch=1
+if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" ]]; then
+    expected_micro_batch=4
+fi
+if [[ "$NGA_SEQUENCE_LENGTH" != "2048" || "$NGA_MICRO_BATCH_SIZE" != "$expected_micro_batch" ]]; then
+    echo "this variant requires sequence 2048 and microbatch $expected_micro_batch" >&2
     exit 1
 fi
 if ((NGA_PROBE_STEPS == 0)); then
@@ -54,7 +58,8 @@ if ((NGA_PROBE_STEPS < 0 || NGA_PROBE_SAVE_INTERVAL < 0)); then
     exit 1
 fi
 if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" != "full" && \
-      "$NGA_FLASH_NEXT_MODEL_VARIANT" != "quarter-depth48-no-mtp" ]]; then
+      "$NGA_FLASH_NEXT_MODEL_VARIANT" != "quarter-depth48-no-mtp" && \
+      "$NGA_FLASH_NEXT_MODEL_VARIANT" != "1b-depth48-no-mtp" ]]; then
     echo "unsupported Flash-Next model variant: $NGA_FLASH_NEXT_MODEL_VARIANT" >&2
     exit 1
 fi

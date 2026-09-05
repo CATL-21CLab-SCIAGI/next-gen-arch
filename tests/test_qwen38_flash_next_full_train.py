@@ -14,6 +14,7 @@ from archlab.architectures.qwen38_flash_next_full import (
     Qwen38FlashNextFullConfig,
 )
 from archlab.megatron.qwen38_flash_next_full_train import (
+    BILLION_DEPTH48_NO_MTP_MODEL_VARIANT,
     CHECKPOINT_INTERVAL_STEPS,
     EFFECTIVE_TOKENS,
     LOSS_NORMALIZATION,
@@ -385,6 +386,94 @@ def test_quarter_depth48_argv_has_even_pipeline_and_no_mtp(tmp_path: Path):
         assert argv[argv.index(flag) + 1] == value
     assert not any(flag.startswith("--mtp-") for flag in argv)
     assert "--calculate-per-token-loss" in argv
+
+
+def test_billion_argv_uses_pp1_ep8_and_larger_microbatches(tmp_path, monkeypatch):
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path / "data"),
+            "--tokenizer",
+            str(tmp_path / "tokenizer"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--model-variant",
+            BILLION_DEPTH48_NO_MTP_MODEL_VARIANT,
+            "--micro-batch-size",
+            "4",
+        ]
+    )
+    config = Qwen38FlashNextFullConfig.billion_depth48_no_mtp()
+    argv = _megatron_argv(args, config)
+    for flag, value in {
+        "--pipeline-model-parallel-size": "1",
+        "--expert-model-parallel-size": "8",
+        "--num-layers": "48",
+        "--hidden-size": "384",
+        "--num-experts": "64",
+        "--moe-ffn-hidden-size": "112",
+        "--micro-batch-size": "4",
+        "--global-batch-size": "4096",
+    }.items():
+        assert argv[argv.index(flag) + 1] == value
+    assert "--decoder-first-pipeline-num-layers" not in argv
+    assert "--decoder-last-pipeline-num-layers" not in argv
+    assert not any(flag.startswith("--mtp-") for flag in argv)
+    for rank in range(32):
+        _assert_pipeline_data_rank_layout(
+            global_rank=rank,
+            data_parallel_rank=rank,
+            data_parallel_world_size=32,
+            pipeline_global_ranks=(rank,),
+            pipeline_world_size=1,
+        )
+    # Exercise the installed container CLI validation without initializing CUDA.
+    native = pytest.importorskip("megatron.training.arguments")
+    monkeypatch.setenv("WORLD_SIZE", "32")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setattr("sys.argv", argv)
+    parsed = native.validate_args(native.parse_args())
+    assert parsed.data_parallel_size == 32
+    assert parsed.pipeline_model_parallel_size == 1
+    assert parsed.mtp_num_layers is None
+
+
+def test_resume_rejects_previous_model_geometry(tmp_path, monkeypatch):
+    args = _parser().parse_args(
+        [
+            "--data-root",
+            str(tmp_path / "data"),
+            "--tokenizer",
+            str(tmp_path / "tokenizer"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--model-variant",
+            BILLION_DEPTH48_NO_MTP_MODEL_VARIANT,
+        ]
+    )
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setattr(
+        flash_next_train,
+        "_sha256",
+        lambda path: (
+            flash_next_train.TOKENIZER_SHA256
+            if path.name == "tokenizer.json"
+            else flash_next_train.SOURCE_CONFIG_SHA256
+        ),
+    )
+    monkeypatch.setattr(flash_next_train, "validate_runtime", lambda **kwargs: {})
+    args.run_dir.mkdir()
+    contract = args.run_dir / "RUN_CONTRACT.json"
+    contract.write_text(
+        json.dumps(
+            {
+                "training": {"loss_normalization": LOSS_NORMALIZATION},
+                "model_config": Qwen38FlashNextFullConfig.quarter_depth48_no_mtp().to_dict(),
+            }
+        )
+    )
+    with pytest.raises(RuntimeError, match="model geometry changed"):
+        flash_next_train._write_contract(args, Qwen38FlashNextFullConfig.billion_depth48_no_mtp())
 
 
 def test_probe_resume_overrides_only_the_probe_scheduler_horizon(tmp_path: Path):

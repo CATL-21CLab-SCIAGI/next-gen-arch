@@ -42,6 +42,7 @@ DISTRIBUTED_TIMEOUT_MINUTES = 60
 NATIVE_MUON_FP32_MATMUL_PRECISION = "medium"
 FULL_MODEL_VARIANT = "full"
 QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT = "quarter-depth48-no-mtp"
+BILLION_DEPTH48_NO_MTP_MODEL_VARIANT = "1b-depth48-no-mtp"
 LOSS_NORMALIZATION = "global-valid-token-mean-v1"
 
 
@@ -298,11 +299,7 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) 
         "--tensor-model-parallel-size",
         "1",
         "--pipeline-model-parallel-size",
-        "4",
-        "--decoder-first-pipeline-num-layers",
-        str(config.pipeline_layers[0]),
-        "--decoder-last-pipeline-num-layers",
-        str(config.pipeline_layers[-1]),
+        str(len(config.pipeline_layers)),
         "--expert-model-parallel-size",
         "8",
         "--context-parallel-size",
@@ -405,6 +402,15 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) 
         "--seed",
         str(args.seed),
     ]
+    if len(config.pipeline_layers) > 1:
+        argv.extend(
+            (
+                "--decoder-first-pipeline-num-layers",
+                str(config.pipeline_layers[0]),
+                "--decoder-last-pipeline-num-layers",
+                str(config.pipeline_layers[-1]),
+            )
+        )
     if config.router_z_loss_coefficient:
         argv.extend(("--moe-z-loss-coeff", str(config.router_z_loss_coefficient)))
     if config.mtp_num_layers:
@@ -665,6 +671,7 @@ def _build_model_classes(architecture_config: Qwen38FlashNextFullConfig):
                     owner_rank=get_pg_rank(pg_collection.ep),
                     owner_world_size=get_pg_size(pg_collection.ep),
                     process_group=pg_collection.ep,
+                    replica_rank=get_pg_rank(pg_collection.expt_dp),
                 )
             self.final_mixer = (
                 FourStreamGatedResidual(architecture_config, combine=False)
@@ -819,12 +826,17 @@ def _assert_pipeline_data_rank_layout(
     data_parallel_rank: int,
     data_parallel_world_size: int,
     pipeline_global_ranks: tuple[int, ...],
+    pipeline_world_size: int = 4,
 ) -> None:
     """Validate PP sample ownership without a collective inside the pipeline schedule."""
     if data_parallel_world_size < 1:
         raise RuntimeError("data-parallel world size must be positive")
-    if len(pipeline_global_ranks) != 4 or global_rank not in pipeline_global_ranks:
-        raise RuntimeError("the full-model data contract requires a four-rank pipeline group")
+    if (
+        pipeline_world_size < 1
+        or len(pipeline_global_ranks) != pipeline_world_size
+        or global_rank not in pipeline_global_ranks
+    ):
+        raise RuntimeError("pipeline group does not match the configured layer layout")
     projected_data_ranks = {rank % data_parallel_world_size for rank in pipeline_global_ranks}
     if projected_data_ranks != {data_parallel_rank}:
         raise RuntimeError("pipeline stages do not share one deterministic data rank")
@@ -984,7 +996,7 @@ def _write_contract(args, config) -> None:
             "Megatron-native Muon instead of private Canzona",
             "GPU-owner-sharded PLE instead of unpublished host prefetch",
         ]
-    else:
+    elif args.model_variant == QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT:
         model_name = "Qwen3.8-Flash-Next quarter-shape depth-48 no-MTP variant"
         variant_differences = [
             "divisible width, head, expert, GR, and PLE shapes quartered",
@@ -992,6 +1004,19 @@ def _write_contract(args, config) -> None:
             "MTP module and auxiliary objective disabled",
             "dense global attention at 2K instead of QSA",
             "quarter-shape router stability coefficients use auxiliary 0.01 and z-loss 0.001",
+            "Megatron-native Muon instead of private Canzona",
+            "GPU-owner-sharded PLE instead of unpublished host prefetch",
+        ]
+    else:
+        model_name = "Qwen3.8-Flash-Next 1B depth-48 no-MTP variant"
+        variant_differences = [
+            "approximately 1B total parameters, including every expert and PLE table",
+            "all 48 backbone layers retained; width 384, 64 experts, expert width 112",
+            "PLE base vocabulary 1M per hash head; embedding width 384",
+            "PP1 with node-local EP8 and four expert-data-parallel replicas",
+            "MTP module and auxiliary objective disabled",
+            "dense global attention at 2K instead of QSA",
+            "router auxiliary coefficient 0.01 and z-loss coefficient 0.001",
             "Megatron-native Muon instead of private Canzona",
             "GPU-owner-sharded PLE instead of unpublished host prefetch",
         ]
@@ -1008,7 +1033,12 @@ def _write_contract(args, config) -> None:
         "model_config": config.to_dict(),
         "parameter_count": parameter_count_contract(config),
         "variant_differences": variant_differences,
-        "parallelism": {"tensor": 1, "pipeline": 4, "expert": 8, "context": 1},
+        "parallelism": {
+            "tensor": 1,
+            "pipeline": len(config.pipeline_layers),
+            "expert": 8,
+            "context": 1,
+        },
         "pipeline_layers": list(config.pipeline_layers),
         "optimizer": {
             **_native_muon_contract(),
@@ -1071,6 +1101,8 @@ def _write_contract(args, config) -> None:
         previous = json.loads(contract.read_text())
         if previous.get("training", {}).get("loss_normalization") != LOSS_NORMALIZATION:
             raise RuntimeError("loss normalization changed; use a fresh run directory and weights")
+        if previous.get("model_config") != payload["model_config"]:
+            raise RuntimeError("model geometry changed; use a fresh run directory and weights")
     if not contract.exists():
         _atomic_json(contract, payload)
     _atomic_json(args.run_dir / "contracts" / f"attempt-{time.time_ns()}.json", payload)
@@ -1083,9 +1115,48 @@ def _current_iteration() -> int:
     return int(getattr(parsed, "curr_iteration", getattr(parsed, "iteration", 0)))
 
 
+def _probe_parameter_counts(model, *, data_replicas: int, expert_replicas: int):
+    counts = [0, 0]
+    for parameter in model.parameters():
+        counts[int(not getattr(parameter, "allreduce", True))] += parameter.numel()
+    totals = torch.tensor(counts, dtype=torch.int64, device=torch.cuda.current_device())
+    torch.distributed.all_reduce(totals)
+    dense, expert = totals.tolist()
+    if dense % data_replicas or expert % expert_replicas:
+        raise RuntimeError("probe parameters do not divide into complete model replicas")
+    return {
+        "dense_unique": dense // data_replicas,
+        "expert_and_ple_unique": expert // expert_replicas,
+        "total": dense // data_replicas + expert // expert_replicas,
+    }
+
+
+def _probe_ple_replica_equality(model, replica_group):
+    """Check every trained PLE weight against its corresponding expert-DP replica."""
+    dist = torch.distributed
+    source = dist.get_process_group_ranks(replica_group)[0]
+    checked = 0
+    mismatch = torch.zeros((), dtype=torch.int64, device=torch.cuda.current_device())
+    for name, parameter in model.named_parameters():
+        if ".embedding.tables." not in name:
+            continue
+        reference = parameter.detach().clone()
+        dist.broadcast(reference, src=source, group=replica_group)
+        mismatch += (~torch.isfinite(parameter)).any().to(torch.int64)
+        mismatch += (parameter.detach() != reference).any().to(torch.int64)
+        checked += 1
+    evidence = torch.stack((mismatch, mismatch.new_tensor(checked)))
+    dist.all_reduce(evidence)
+    if evidence[0].item() or not evidence[1].item():
+        raise RuntimeError(f"probe PLE replica equality failed: {evidence.tolist()}")
+    return {"status": "passed", "checked_local_tables": evidence[1].item(), "mismatches": 0}
+
+
 def _run(args: argparse.Namespace) -> None:
     if args.model_variant == FULL_MODEL_VARIANT:
         config = Qwen38FlashNextFullConfig(sequence_len=args.sequence_length)
+    elif args.model_variant == BILLION_DEPTH48_NO_MTP_MODEL_VARIANT:
+        config = Qwen38FlashNextFullConfig.billion_depth48_no_mtp()
     else:
         config = Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
     train_prefixes, validation_prefixes = _validated_data_prefixes(args.data_root)
@@ -1102,6 +1173,7 @@ def _run(args: argparse.Namespace) -> None:
 
     model_class, specs_for = _build_model_classes(config)
     probe_gradient_state = {"expected": False, "seen": False, "nonfinite": False}
+    probe_models = []
 
     def model_provider(
         pre_process=True,
@@ -1114,7 +1186,7 @@ def _run(args: argparse.Namespace) -> None:
         # The legacy CLI hard-codes this field to false and exposes no positive
         # flag. Dynamic P2P shape exchange is required because inter-stage GR
         # tensors have width 4H while Megatron's language-model width remains H.
-        transformer_config.variable_seq_lengths = True
+        transformer_config.variable_seq_lengths = len(config_outer.pipeline_layers) > 1
         # Layer 2 alone owns PLE and every fourth layer changes attention type,
         # so checkpoint keys must retain their global layer number.
         transformer_config.hetereogenous_dist_checkpoint = True
@@ -1138,6 +1210,17 @@ def _run(args: argparse.Namespace) -> None:
             vp_stage=vp_stage,
         )
         partition = _tag_native_optimizer_fallbacks(model)
+        if args.probe_steps:
+            probe_models.append(model)
+            counts = _probe_parameter_counts(
+                model,
+                data_replicas=groups.dp.size(),
+                expert_replicas=groups.expt_dp.size(),
+            )
+            if counts["total"] != parameter_count_contract(config_outer)["total"]:
+                raise RuntimeError(f"native model parameter count differs from recipe: {counts}")
+            if torch.distributed.get_rank() == 0:
+                _atomic_json(args.run_dir / "PROBE_PARAMETERS.json", counts)
         if args.probe_steps and pp_rank == 0:
             early_parameter = next(
                 (
@@ -1177,6 +1260,7 @@ def _run(args: argparse.Namespace) -> None:
                     parallel_state.get_pipeline_model_parallel_group()
                 )
             ),
+            pipeline_world_size=len(config.pipeline_layers),
         )
         train = partition_prefixes_for_dp_rank(train_prefixes, dp_rank, dp_world)
         validation = partition_prefixes_for_dp_rank(
@@ -1215,6 +1299,11 @@ def _run(args: argparse.Namespace) -> None:
         ModelType.encoder_or_decoder,
     )
     if args.probe_steps:
+        replica_evidence = _probe_ple_replica_equality(
+            probe_models[0], parallel_state.get_expert_data_parallel_group()
+        )
+        if torch.distributed.get_rank() == 0:
+            _atomic_json(args.run_dir / "PROBE_PLE_REPLICAS.json", replica_evidence)
         gradient_evidence = torch.tensor(
             [
                 int(probe_gradient_state["expected"]),
@@ -1226,7 +1315,8 @@ def _run(args: argparse.Namespace) -> None:
         )
         torch.distributed.all_reduce(gradient_evidence)
         expected, seen, nonfinite = gradient_evidence.tolist()
-        if expected != 8 or seen != expected or nonfinite:
+        expected_owners = torch.distributed.get_world_size() // len(config.pipeline_layers)
+        if expected != expected_owners or seen != expected or nonfinite:
             raise RuntimeError(
                 "Flash-Next probe early-backbone gradient rejection: "
                 f"expected={expected}, seen={seen}, nonfinite={nonfinite}"
@@ -1256,7 +1346,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument(
         "--model-variant",
-        choices=(FULL_MODEL_VARIANT, QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT),
+        choices=(
+            FULL_MODEL_VARIANT,
+            QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT,
+            BILLION_DEPTH48_NO_MTP_MODEL_VARIANT,
+        ),
         default=FULL_MODEL_VARIANT,
     )
     parser.add_argument("--sequence-length", type=int, default=2_048)
