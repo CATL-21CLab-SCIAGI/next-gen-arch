@@ -61,6 +61,9 @@ the Megatron integration boundary; standalone mechanisms stay in `architectures`
 - `RUN_CONTRACT.json` preserves the original run contract. `contracts/attempt-*`
   and `LATEST_CONTRACT.json` record the current execution and runtime identity.
   `PARALLELISM.json` records the actual initialized process-group sizes.
+- Live logs default to `/mnt/nas/evergreen/arch-live-logs/<run-name>/` and are
+  mirrored into the run's OSS logs. The separate NAS directory is intentional:
+  `/mnt/nas/evergreen/next-gen-arch` is an OSS compatibility symlink on this job.
 - Shape/attention/loss-normalization changes must not silently resume an
   incompatible checkpoint. Execution-only changes still need numerical and
   checkpoint save/load gates; optimizer state must never be silently discarded.
