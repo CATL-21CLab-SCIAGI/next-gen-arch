@@ -62,6 +62,12 @@ the Megatron integration boundary; standalone mechanisms stay in `architectures`
 - Native CLI controls include micro/global batch, LR/min-LR/warmup, clipping,
   evaluation/logging intervals, resume/load directory, parallelism, and fusion
   switches. The production launcher deliberately pins several of these values.
+- The DP-only 1B recipe uses microbatch 16 and eight accumulation rounds, with
+  global batch still 4,096. This amortizes launches across the 64 local experts.
+  Regression coverage checks unchanged tokens/labels per optimizer step for the
+  actual one-corpus-part-per-DP-rank layout. Floating-point accumulation and
+  microbatch-local router balancing statistics are not bitwise equivalent to
+  microbatch 4; record this execution-contract change in curve comparisons.
 - `--parallelism dp-only` requires a PP1 config and checks actual runtime groups.
   `--fused-moe` enables permutation and router fusion. `--fused-cross-entropy`
   selects **native** fusion; TE loss fusion is forbidden by this container's

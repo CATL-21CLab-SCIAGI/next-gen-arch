@@ -3,6 +3,7 @@ from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -34,6 +35,30 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     partition_prefixes_for_dp_rank,
     shifted_mtp_targets,
 )
+
+
+@pytest.mark.parametrize("iteration", [0, 3])
+def test_production_single_part_token_order_is_independent_of_microbatch(tmp_path, iteration):
+    prefix = tmp_path / "tokens"
+    np.arange(1013, dtype=np.int32).tofile(f"{prefix}.bin")
+    per_rank_sequences = 128  # Global batch 4096 / DP32.
+
+    def step_batches(micro_batch):
+        accumulation = per_rank_sequences // micro_batch
+        source = flash_next_train.DPRankTokenBatches(
+            [prefix],
+            batch_size=micro_batch,
+            sequence_len=8,
+            start_batch=iteration * accumulation,
+            device=torch.device("cpu"),
+        )
+        batches = [next(source) for _ in range(accumulation)]
+        return {key: torch.cat([batch[key] for batch in batches]) for key in batches[0]}
+
+    expected = step_batches(4)
+    actual = step_batches(16)
+    for key in ("tokens", "labels"):
+        torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("mask_values", [[1, 0, 1, 0], [0, 0, 0, 0]])
@@ -466,6 +491,8 @@ def test_dp_only_argv_enables_supported_fusions_and_preserves_depth(tmp_path):
             BILLION_DEPTH48_NO_MTP_MODEL_VARIANT,
             "--parallelism",
             "dp-only",
+            "--micro-batch-size",
+            "16",
             "--fused-moe",
             "--fused-cross-entropy",
         ]
@@ -483,6 +510,7 @@ def test_dp_only_argv_enables_supported_fusions_and_preserves_depth(tmp_path):
         assert flag in argv
     assert argv[argv.index("--cross-entropy-fusion-impl") + 1] == "native"
     assert argv[argv.index("--num-layers") + 1] == "48"
+    assert argv[argv.index("--micro-batch-size") + 1] == "16"
     assert "--sequence-parallel" not in argv
     assert "--overlap-grad-reduce" in argv
     assert "--overlap-param-gather" not in argv

@@ -39,7 +39,7 @@ if [[ "$NGA_EXPECTED_NODES" != "4" || "$NGA_GPUS_PER_NODE" != "8" ]]; then
 fi
 expected_micro_batch=1
 if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" ]]; then
-    expected_micro_batch=4
+    expected_micro_batch=16
 fi
 if [[ "$NGA_SEQUENCE_LENGTH" != "2048" || "$NGA_MICRO_BATCH_SIZE" != "$expected_micro_batch" ]]; then
     echo "this variant requires sequence 2048 and microbatch $expected_micro_batch" >&2

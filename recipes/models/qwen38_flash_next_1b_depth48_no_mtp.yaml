@@ -62,9 +62,11 @@ execution:
 training:
   loss_normalization: global-valid-token-mean-v1
   attention_grouping: explicit-gqa-v1
-  micro_batch_sequences: 4
+  micro_batch_sequences: 16
   global_batch_sequences: 4096
-  microbatches_per_step: 32
+  microbatches_per_step: 8
+  microbatch_change: amortize DP-only grouped-expert launches; same per-step token order with one corpus part per DP rank
+  router_auxiliary_scope: per microbatch; larger microbatches change load-balancing statistics
   tokens_per_step: 8388608
   steps: 11921
   effective_tokens: 100000595968
