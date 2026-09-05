@@ -16,7 +16,21 @@ from archlab.architectures.qwen38_flash_next_full import (
     Qwen38FlashNextFullConfig,
     parameter_count_contract,
 )
-from archlab.megatron.qwen38_flash_next_full_train import _megatron_argv, _parser
+from archlab.megatron.qwen38_flash_next_full_train import (
+    _effective_probe_gradient,
+    _megatron_argv,
+    _parser,
+)
+
+
+def test_probe_uses_native_te_main_gradient_not_autograd_placeholder():
+    weight = torch.nn.Parameter(torch.ones(2, 2))
+    normal = torch.full_like(weight, 3)
+    assert _effective_probe_gradient(weight, normal) is normal
+    weight.main_grad = torch.full_like(weight, 4)
+    weight.grad_added_to_main_grad = True
+    placeholder = torch.full_like(weight, float("nan"))
+    assert _effective_probe_gradient(weight, placeholder) is weight.main_grad
 
 
 def test_width320_exact_contract_and_feature_flags(tmp_path, monkeypatch):

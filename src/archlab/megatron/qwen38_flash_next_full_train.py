@@ -1316,6 +1316,13 @@ def _probe_restored_replica_equality(model, group):
     return {"status": "passed", "checked_parameters_per_replica": checked, "mismatches": 0}
 
 
+def _effective_probe_gradient(parameter, autograd_gradient):
+    """TE fused wgrad returns a placeholder after writing the native main buffer."""
+    if getattr(parameter, "grad_added_to_main_grad", False):
+        return parameter.main_grad
+    return autograd_gradient
+
+
 def _run(args: argparse.Namespace) -> None:
     if args.model_variant == FULL_MODEL_VARIANT:
         config = Qwen38FlashNextFullConfig(sequence_len=args.sequence_length)
@@ -1387,10 +1394,11 @@ def _run(args: argparse.Namespace) -> None:
                 parameter = next(p for name, p in model.named_parameters() if name.endswith(suffix))
                 restored_gradients[suffix] = {"seen": False, "nonfinite": False}
 
-                def record(gradient, key=suffix):
+                def record(gradient, key=suffix, weight=parameter):
                     state = restored_gradients[key]
-                    state["nonfinite"] |= not bool(torch.isfinite(gradient).all())
-                    state["seen"] |= bool(torch.count_nonzero(gradient))
+                    effective = _effective_probe_gradient(weight, gradient)
+                    state["nonfinite"] |= not bool(torch.isfinite(effective).all())
+                    state["seen"] |= bool(torch.count_nonzero(effective))
                     return gradient
 
                 parameter.register_hook(record)
