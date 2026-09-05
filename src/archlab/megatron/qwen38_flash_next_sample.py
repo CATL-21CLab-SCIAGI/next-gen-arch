@@ -8,20 +8,25 @@ benchmark, and never loads or changes optimizer state.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import os
+import platform
+import socket
 import sys
+import time
 from pathlib import Path
 
 import torch
 
 from archlab.architectures.qwen38_flash_next_full import Qwen38FlashNextFullConfig
+from archlab.megatron.backend import validate_runtime
 from archlab.megatron.qwen38_flash_next_full_train import (
     _assert_dp_only_groups,
     _atomic_json,
     _megatron_argv,
     build_model,
 )
-from archlab.megatron.backend import validate_runtime
 from archlab.megatron.qwen38_flash_next_full_train import (
     _parser as trainer_parser,
 )
@@ -39,6 +44,16 @@ def select_token(logits: torch.Tensor, *, temperature: float, top_p: float) -> t
     sorted_probs = sorted_probs.masked_fill(excluded, 0)
     sampled = torch.multinomial(sorted_probs, num_samples=1)
     return indices.gather(-1, sampled)
+
+
+def _sampling_argv(trainer, config) -> list[str]:
+    # Inference has no optimizer/backward pass and must not require Apex's
+    # fused gradient-accumulation extension just to construct the output head.
+    return _megatron_argv(trainer, config) + [
+        "--no-load-optim",
+        "--no-load-rng",
+        "--no-gradient-accumulation-fusion",
+    ]
 
 
 def main() -> None:
@@ -88,7 +103,7 @@ def main() -> None:
             "1",
         ]
     )
-    sys.argv = _megatron_argv(trainer, config) + ["--no-load-optim", "--no-load-rng"]
+    sys.argv = _sampling_argv(trainer, config)
     from megatron.core.process_groups_config import ProcessGroupCollection
     from megatron.core.transformer.module import Float16Module
     from megatron.training.arguments import (
@@ -114,6 +129,17 @@ def main() -> None:
     torch.manual_seed(args.seed)
     tokenizer = Tokenizer.from_file(str(args.tokenizer / "tokenizer.json"))
     records = []
+    container = {
+        key: os.environ[key]
+        for key in (
+            "NVIDIA_PRODUCT_NAME",
+            "NVIDIA_PYTORCH_VERSION",
+            "NVIDIA_BUILD_ID",
+            "CUDA_VERSION",
+            "NGA_CONTAINER_DIGEST",
+        )
+        if key in os.environ
+    }
     evidence = {
         "checkpoint_root": str(args.checkpoint_root),
         "iteration": iteration,
@@ -123,8 +149,21 @@ def main() -> None:
         "seed": args.seed,
         "max_new_tokens": args.max_new_tokens,
         "decoding": "full-prefix recomputation; no chat template",
+        "gradient_accumulation_fusion": False,
+        "host": socket.gethostname(),
+        "python_executable": sys.executable,
+        "python_version": platform.python_version(),
+        "gpu": torch.cuda.get_device_name(torch.cuda.current_device()),
+        "container_identity": container,
+        "sampling_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "prompts_sha256": hashlib.sha256(args.prompts.read_bytes()).hexdigest(),
+        "tokenizer_sha256": hashlib.sha256(
+            (args.tokenizer / "tokenizer.json").read_bytes()
+        ).hexdigest(),
+        "started_at_unix": time.time(),
         "samples": records,
         "runtime": validate_runtime(require_pretrain=False),
+        "flash_linear_attention": importlib.metadata.version("flash-linear-attention"),
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
     }
@@ -149,10 +188,14 @@ def main() -> None:
                 "prompt": prompt.text,
                 "token_ids": generated,
                 "continuation": tokenizer.decode(generated, skip_special_tokens=True),
+                "finish_reason": "eos" if generated[-1] == config.eos_token_id else "length",
             }
             records.append(record)
             _atomic_json(args.output, evidence)
             print(record, flush=True)
+    evidence["completed_at_unix"] = time.time()
+    evidence["completed"] = True
+    _atomic_json(args.output, evidence)
     torch.distributed.destroy_process_group()
 
 
