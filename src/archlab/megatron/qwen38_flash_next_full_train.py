@@ -370,7 +370,6 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) 
         "--use-distributed-optimizer",
         "--no-use-layer-wise-param-layout",
         "--overlap-grad-reduce",
-        "--overlap-param-gather",
         "--tokenizer-type",
         "NullTokenizer",
         "--vocab-size",
@@ -408,6 +407,12 @@ def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) 
         "--seed",
         str(args.seed),
     ]
+    if args.parallelism != "dp-only":
+        # Preserve the legacy launch contract. In the frozen runtime, DP-only
+        # grouped experts can revisit an already-started parameter-gather bucket
+        # in DDP's forward pre-hooks. Native Muon's non-overlapped path gathers
+        # updated parameters synchronously after the optimizer step instead.
+        argv.append("--overlap-param-gather")
     if len(config.pipeline_layers) > 1:
         argv.extend(
             (
@@ -1115,6 +1120,8 @@ def _write_contract(args, config) -> None:
             "mode": args.parallelism,
         },
         "execution": {
+            "overlap_grad_reduce": True,
+            "overlap_param_gather": args.parallelism != "dp-only",
             "moe_permute_fusion": args.fused_moe,
             "moe_router_fusion": args.fused_moe,
             "cross_entropy_loss_fusion": args.fused_cross_entropy,

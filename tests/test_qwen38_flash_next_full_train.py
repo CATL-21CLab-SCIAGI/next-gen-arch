@@ -125,8 +125,9 @@ def test_frozen_native_schedule_preserves_main_and_auxiliary_gradient_ratio(
 
 
 @pytest.mark.parametrize("legacy_contract", [False, True])
+@pytest.mark.parametrize("parallelism", ["legacy", "dp-only"])
 def test_run_contract_records_correct_scaling_and_rejects_legacy_resume(
-    tmp_path, monkeypatch, legacy_contract
+    tmp_path, monkeypatch, legacy_contract, parallelism
 ):
     args = _parser().parse_args(
         [
@@ -137,8 +138,19 @@ def test_run_contract_records_correct_scaling_and_rejects_legacy_resume(
             "--run-dir",
             str(tmp_path / "run"),
             "--model-variant",
-            QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT,
+            (
+                BILLION_DEPTH48_NO_MTP_MODEL_VARIANT
+                if parallelism == "dp-only"
+                else QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT
+            ),
+            "--parallelism",
+            parallelism,
         ]
+    )
+    config = (
+        Qwen38FlashNextFullConfig.billion_depth48_no_mtp()
+        if parallelism == "dp-only"
+        else Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
     )
     monkeypatch.setenv("RANK", "0")
     monkeypatch.setattr(
@@ -156,18 +168,15 @@ def test_run_contract_records_correct_scaling_and_rejects_legacy_resume(
     if legacy_contract:
         contract.write_text(json.dumps({"training": {"train_steps": 11921}}))
         with pytest.raises(RuntimeError, match="loss normalization changed"):
-            flash_next_train._write_contract(
-                args, Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
-            )
+            flash_next_train._write_contract(args, config)
         assert not (args.run_dir / "contracts").exists()
     else:
         for _ in range(2):
-            flash_next_train._write_contract(
-                args, Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
-            )
-        assert (
-            json.loads(contract.read_text())["training"]["loss_normalization"] == LOSS_NORMALIZATION
-        )
+            flash_next_train._write_contract(args, config)
+        payload = json.loads(contract.read_text())
+        assert payload["training"]["loss_normalization"] == LOSS_NORMALIZATION
+        assert payload["execution"]["overlap_grad_reduce"] is True
+        assert payload["execution"]["overlap_param_gather"] == (parallelism != "dp-only")
 
 
 def test_distributed_checkpoint_host_staging_runs_only_on_its_local_turn():
@@ -348,6 +357,8 @@ def test_megatron_argv_uses_pp4_ep8_native_muon_and_native_mtp(tmp_path: Path):
         "--bf16",
         "--use-distributed-optimizer",
         "--no-use-layer-wise-param-layout",
+        "--overlap-grad-reduce",
+        "--overlap-param-gather",
         "--exit-signal-handler",
         "--calculate-per-token-loss",
     ):
@@ -473,6 +484,8 @@ def test_dp_only_argv_enables_supported_fusions_and_preserves_depth(tmp_path):
     assert argv[argv.index("--cross-entropy-fusion-impl") + 1] == "native"
     assert argv[argv.index("--num-layers") + 1] == "48"
     assert "--sequence-parallel" not in argv
+    assert "--overlap-grad-reduce" in argv
+    assert "--overlap-param-gather" not in argv
     assert not any(flag.startswith("--mtp-") for flag in argv)
     with pytest.raises(ValueError, match="single-stage"):
         _megatron_argv(args, Qwen38FlashNextFullConfig.quarter_depth48_no_mtp())

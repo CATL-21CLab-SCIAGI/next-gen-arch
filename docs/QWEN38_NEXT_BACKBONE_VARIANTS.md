@@ -6,8 +6,10 @@ and all 32 PLE table partitions on every GPU. TP, PP, EP, expert TP, and CP are
 all 1; DP is 32. Native Muon distributes optimizer work/state across DP replicas;
 this is not model/expert sharding. No DLC node or vendor runtime restart is needed.
 
-The adapter preserves native dense/routed optimizer-group labels so old EP8
-momentum/Adam state remains loadable. The internal `allreduce=False` tag on routed
+The current run initializes fresh weights, optimizer, scheduler, and data cursor;
+the old step-671 checkpoint is retained separately. The adapter preserves native
+dense/routed optimizer-group labels, but full EP8-to-DP32 optimizer restore has
+not yet passed an end-to-end gate. The internal `allreduce=False` tag on routed
 weights and PLE selects the `expt_dp` gradient group; in this mode that group
 contains all 32 DP replicas, while EP itself is 1. It does not disable gradient
 reduction or distribute experts across GPUs. Actual group sizes are asserted.
@@ -64,6 +66,11 @@ the Megatron integration boundary; standalone mechanisms stay in `architectures`
   `--fused-moe` enables permutation and router fusion. `--fused-cross-entropy`
   selects **native** fusion; TE loss fusion is forbidden by this container's
   stability guard. No vendor source or installed-package edits are necessary.
+- DP-only retains gradient-reduction overlap but disables parameter-gather
+  overlap. The frozen native grouped-expert/Muon path asserted when a forward
+  pre-hook revisited an already-started gather bucket. Native synchronous
+  parameter gathering after each optimizer step avoids that path without
+  patching Megatron or changing optimizer math.
 - `RUN_CONTRACT.json` preserves the original run contract. `contracts/attempt-*`
   and `LATEST_CONTRACT.json` record the current execution and runtime identity.
   `PARALLELISM.json` records the actual initialized process-group sizes.

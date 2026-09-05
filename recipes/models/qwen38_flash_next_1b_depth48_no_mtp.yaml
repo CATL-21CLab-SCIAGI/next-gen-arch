@@ -13,7 +13,7 @@ scaling_contract:
   depth_exception: retain all 48 backbone layers
   tokenizer_vocabulary: preserve token identity
   mtp: disabled
-  resume: native 1B checkpoint; preserve weights, optimizer, scheduler, iteration and data cursor
+  initialization: fresh random weights, optimizer, scheduler and data cursor; no checkpoint loaded
 model:
   vocab_size: 248320
   sequence_length: 2048
@@ -52,6 +52,8 @@ parallelism:
   pipeline_layers: [48]
   mode: dp-only
 execution:
+  overlap_grad_reduce: true
+  overlap_param_gather: false
   moe_permute_fusion: true
   moe_router_fusion: true
   cross_entropy_loss_fusion: true
