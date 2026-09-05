@@ -62,12 +62,13 @@ the Megatron integration boundary; standalone mechanisms stay in `architectures`
 - Native CLI controls include micro/global batch, LR/min-LR/warmup, clipping,
   evaluation/logging intervals, resume/load directory, parallelism, and fusion
   switches. The production launcher deliberately pins several of these values.
-- The DP-only 1B recipe uses microbatch 16 and eight accumulation rounds, with
-  global batch still 4,096. This amortizes launches across the 64 local experts.
-  Regression coverage checks unchanged tokens/labels per optimizer step for the
-  actual one-corpus-part-per-DP-rank layout. Floating-point accumulation and
-  microbatch-local router balancing statistics are not bitwise equivalent to
-  microbatch 4; record this execution-contract change in curve comparisons.
+- The DP-only 1B recipe keeps microbatch 4 and 32 accumulation rounds, with
+  global batch 4,096. Microbatch 16 was rejected by a host-OOM gate: these nodes
+  have 512 GiB host RAM, and the advertised GPU capacity alone does not bound
+  host-backed allocations. Do not size batches from `nvidia-smi` alone.
+  Regression coverage checks unchanged tokens/labels per optimizer step when
+  repartitioning the actual one-corpus-part-per-DP-rank layout; router balancing
+  statistics and floating-point accumulation are not bitwise invariant.
 - `--parallelism dp-only` requires a PP1 config and checks actual runtime groups.
   `--fused-moe` enables permutation and router fusion. `--fused-cross-entropy`
   selects **native** fusion; TE loss fusion is forbidden by this container's
@@ -77,6 +78,9 @@ the Megatron integration boundary; standalone mechanisms stay in `architectures`
   pre-hook revisited an already-started gather bucket. Native synchronous
   parameter gathering after each optimizer step avoids that path without
   patching Megatron or changing optimizer math.
+- The DP-only launcher sets `CUDA_DEVICE_MAX_CONNECTIONS=32` to allow independent
+  work queues for native TE expert GEMMs. Legacy TP/SP-capable launches retain 1.
+  This does not enable any additional form of model parallelism.
 - `RUN_CONTRACT.json` preserves the original run contract. `contracts/attempt-*`
   and `LATEST_CONTRACT.json` record the current execution and runtime identity.
   `PARALLELISM.json` records the actual initialized process-group sizes.

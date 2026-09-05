@@ -39,7 +39,7 @@ if [[ "$NGA_EXPECTED_NODES" != "4" || "$NGA_GPUS_PER_NODE" != "8" ]]; then
 fi
 expected_micro_batch=1
 if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" ]]; then
-    expected_micro_batch=16
+    expected_micro_batch=4
 fi
 if [[ "$NGA_SEQUENCE_LENGTH" != "2048" || "$NGA_MICRO_BATCH_SIZE" != "$expected_micro_batch" ]]; then
     echo "this variant requires sequence 2048 and microbatch $expected_micro_batch" >&2
@@ -103,6 +103,11 @@ export CPATH="$CUDA_HOME/targets/x86_64-linux/include${CPATH:+:$CPATH}"
 export TRITON_PTXAS_PATH="${TRITON_PTXAS_PATH:-$CUDA_HOME/bin/ptxas}"
 export PYTHONPATH="$NGA_REPO_ROOT/src:$NGA_MEGATRON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
+if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" ]]; then
+    # DP-only has no TP/SP overlap ordering requirement. Allow native TE's
+    # small expert GEMMs to use independent CUDA work queues.
+    export CUDA_DEVICE_MAX_CONNECTIONS=32
+fi
 export TOKENIZERS_PARALLELISM=true
 export NVTE_ALLOW_NONDETERMINISTIC_ALGO="${NGA_ALLOW_NONDETERMINISTIC_ALGO:-1}"
 unset NVTE_GROUPED_LINEAR_SINGLE_PARAM

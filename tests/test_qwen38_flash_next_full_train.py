@@ -178,6 +178,7 @@ def test_run_contract_records_correct_scaling_and_rejects_legacy_resume(
         else Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
     )
     monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("CUDA_DEVICE_MAX_CONNECTIONS", "32")
     monkeypatch.setattr(
         flash_next_train,
         "_sha256",
@@ -201,6 +202,7 @@ def test_run_contract_records_correct_scaling_and_rejects_legacy_resume(
         payload = json.loads(contract.read_text())
         assert payload["training"]["loss_normalization"] == LOSS_NORMALIZATION
         assert payload["execution"]["overlap_grad_reduce"] is True
+        assert payload["execution"]["cuda_device_max_connections"] == "32"
         assert payload["execution"]["overlap_param_gather"] == (parallelism != "dp-only")
 
 
@@ -492,7 +494,7 @@ def test_dp_only_argv_enables_supported_fusions_and_preserves_depth(tmp_path):
             "--parallelism",
             "dp-only",
             "--micro-batch-size",
-            "16",
+            "4",
             "--fused-moe",
             "--fused-cross-entropy",
         ]
@@ -510,7 +512,7 @@ def test_dp_only_argv_enables_supported_fusions_and_preserves_depth(tmp_path):
         assert flag in argv
     assert argv[argv.index("--cross-entropy-fusion-impl") + 1] == "native"
     assert argv[argv.index("--num-layers") + 1] == "48"
-    assert argv[argv.index("--micro-batch-size") + 1] == "16"
+    assert argv[argv.index("--micro-batch-size") + 1] == "4"
     assert "--sequence-parallel" not in argv
     assert "--overlap-grad-reduce" in argv
     assert "--overlap-param-gather" not in argv

@@ -1120,6 +1120,7 @@ def _write_contract(args, config) -> None:
             "mode": args.parallelism,
         },
         "execution": {
+            "cuda_device_max_connections": os.environ.get("CUDA_DEVICE_MAX_CONNECTIONS"),
             "overlap_grad_reduce": True,
             "overlap_param_gather": args.parallelism != "dp-only",
             "moe_permute_fusion": args.fused_moe,
