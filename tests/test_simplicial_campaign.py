@@ -5,11 +5,29 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from archlab.megatron.simplicial_campaign import run_campaign, source_hashes
 
 
 class CampaignTests(unittest.TestCase):
+    def test_remote_completion_marker_visibility_is_retried(self):
+        from archlab.megatron.simplicial_dlc_campaign import await_evidence
+
+        path = Mock()
+        path.read_text.side_effect = [FileNotFoundError(), '{"iteration": 3}']
+        with patch("archlab.megatron.simplicial_dlc_campaign.time.sleep") as sleep:
+            self.assertEqual(await_evidence(path), {"iteration": 3})
+        sleep.assert_called_once_with(1)
+
+    def test_missing_completion_marker_fails_closed(self):
+        from archlab.megatron.simplicial_dlc_campaign import await_evidence
+
+        path = Mock()
+        path.read_text.side_effect = FileNotFoundError()
+        with self.assertRaisesRegex(RuntimeError, "did not publish"):
+            await_evidence(path, timeout=0)
+
     def test_dlc_rejects_dp1_proof(self):
         from archlab.megatron.simplicial_dlc_campaign import validate_probes
 

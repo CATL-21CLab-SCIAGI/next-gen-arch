@@ -22,6 +22,18 @@ from pathlib import Path
 from archlab.megatron.simplicial_campaign import source_hashes, write_json
 
 
+def await_evidence(path, timeout=120):
+    """Allow remote NAS metadata to become visible after successful SSH exits."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return json.loads(path.read_text())
+        except FileNotFoundError:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"completed workers did not publish {path.name}") from None
+            time.sleep(1)
+
+
 def validate_probes(root, source):
     expected = source_hashes(source / "src/archlab")
     reference = None
@@ -177,12 +189,15 @@ def supervisor(options):
             log.close()
         results = [p.returncode for p in children]
         completed = root / arm / ("PROBE_COMPLETE.json" if options.phase == "probe" else "TRAINING_COMPLETE.json")
-        if any(results) or not completed.is_file():
+        evidence = None
+        if not any(results) and not stopping["requested"]:
+            evidence = await_evidence(completed)
+        if any(results) or evidence is None:
             state["arms"][arm] = "stopped" if stopping["requested"] and not failure else "failed"
             state.update(status=state["arms"][arm], exit_codes=results)
             write_json(root / "CAMPAIGN.json", state)
             return
-        if options.phase == "train" and json.loads(completed.read_text()).get("consumed_tokens") != 3003121664:
+        if options.phase == "train" and evidence.get("consumed_tokens") != 3003121664:
             raise RuntimeError("incorrect training token budget")
         state["arms"][arm] = "complete"
         write_json(root / "CAMPAIGN.json", state)
