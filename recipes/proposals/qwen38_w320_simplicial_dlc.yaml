@@ -1,0 +1,41 @@
+name: qwen38-w320-simplicial-dlc-dp32-controlled-pilot
+status: experimental-with-mandatory-dp32-launch-gates
+extends_descriptive_contract: package:recipes/proposals/qwen38_w320_simplicial_dsw.yaml
+authorization: pause-baseline-at-checkpoint-and-reuse-existing-four-dlc-nodes
+runtime:
+  profile: frozen-nemo-26.06
+  python: env:NGA_PILOT_PYTHON
+  megatron_root: env:NGA_MEGATRON_ROOT
+  package_installations: forbidden
+  runtime_patches: forbidden
+  node_or_controller_restarts: forbidden
+  native_dot_product_backend: auto
+  gradient_accumulation_fusion: true
+execution:
+  campaign_entry: archlab.megatron.simplicial_dlc_campaign
+  training_entry: archlab.megatron.simplicial_pilot
+  topology: {nodes: 4, gpus_per_node: 8, data: 32, tensor: 1, pipeline: 1, expert: 1, context: 1, expert_tensor: 1}
+  sequence_length: 2048
+  micro_batch: 4
+  global_batch: 4096
+  accumulation_per_rank: 32
+  arms: [A, B, C]
+  scheduling: sequential-fresh-seed42
+  steps_per_arm: 358
+  tokens_per_arm: 3003121664
+  lr_horizon_steps: 11921
+  training_data: global-DP1-microbatch-stream-strided-by-rank
+  evaluation: identical-fixed-64-sequence-window-replicated-per-rank
+  unique_evaluation_tokens: 131072
+  eval_interval: 32
+  checkpoint_interval: 64
+  old_dsw_checkpoint: retained-not-resumed-across-runtime-change
+  baseline_checkpoint: retained-for-explicit-future-resume
+  automatic_baseline_resume: false
+gates:
+  native_numerical_test: package:tests/test_simplicial_native.py
+  numerical_topology: DP2
+  full_model_probe: {topology: DP32, steps: 3, micro_batch: 4, global_batch: 256}
+  required: [common-initialization-hashes, paired-data-order, fixed-heldout-window,
+             native-optimizer-updates, finite-extra-and-restored-gradients,
+             dp-replica-equality, model-master-weight-momentum-scheduler-checkpoint-roundtrip]

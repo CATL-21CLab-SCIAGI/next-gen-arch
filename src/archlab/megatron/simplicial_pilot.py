@@ -1,4 +1,4 @@
-"""Matched, single-GPU A/B/C pilot using native Megatron training APIs.
+"""Matched, DP-only A/B/C pilot using native Megatron training APIs.
 
 Unlike the frozen production launcher, this adapter owns a bounded pilot loop
 and evaluates a fixed held-out window independently of the training batch size.
@@ -32,6 +32,7 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     _assert_dp_only_groups,
     _atomic_json,
     _forward_step,
+    _effective_probe_gradient,
     _megatron_argv,
     _sha256,
     _tag_native_optimizer_fallbacks,
@@ -39,6 +40,42 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     build_model,
 )
 from archlab.megatron.qwen38_flash_next_full_train import _parser as baseline_parser
+
+
+class StridedTokenBatches(DPRankTokenBatches):
+    """Distribute the DP1 microbatch stream without changing its global order."""
+
+    def __init__(self, *args, rank=0, world_size=1, **kwargs):
+        if world_size < 1 or not 0 <= rank < world_size:
+            raise ValueError("invalid data-parallel rank")
+        self.rank, self.world_size = rank, world_size
+        super().__init__(*args, **kwargs)
+
+    def _source_index(self, batch_index):
+        return batch_index * self.world_size + self.rank
+
+
+def _rank():
+    return int(os.environ.get("RANK", "0"))
+
+
+def _report(path, record):
+    if _rank() == 0:
+        _atomic_json(path, record)
+
+
+def _same_on_all_ranks(value, label):
+    values = [None] * torch.distributed.get_world_size()
+    torch.distributed.all_gather_object(values, value)
+    if any(item != values[0] for item in values):
+        raise RuntimeError(f"DP replicas differ: {label}")
+
+
+def _global_data_digest(local):
+    values = [None] * torch.distributed.get_world_size()
+    torch.distributed.all_gather_object(values, local)
+    ordered = sorted(item for rank_values in values for item in rank_values)
+    return hashlib.sha256(json.dumps(ordered).encode()).hexdigest()
 
 
 def pilot_argv(options):
@@ -53,16 +90,19 @@ def pilot_argv(options):
     argv = _megatron_argv(baseline, Qwen38FlashNextFullConfig.width320_e32_depth48_no_mtp())
     # Preserve the full baseline's LR horizon even though this run stops early.
     argv.extend(["--lr-decay-iters", str(TRAIN_STEPS),
-                 "--no-gradient-accumulation-fusion",
-                 "--attention-backend", "unfused",
-                 "--eval-global-batch-size", str(options.eval_sequences),
+                 "--attention-backend", options.attention_backend,
+                 "--eval-global-batch-size", str(options.eval_sequences * int(os.environ.get("WORLD_SIZE", "1"))),
                  "--eval-micro-batch-size", str(options.micro_batch)])
+    if not options.gradient_accumulation_fusion:
+        argv.append("--no-gradient-accumulation-fusion")
     if options.resume:
         argv.extend(["--load", str(options.run_dir / "checkpoints")])
     return argv
 
 
 def _write_event(path, record):
+    if _rank() != 0:
+        return
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
         handle.flush()
@@ -82,7 +122,7 @@ def _optimizer_tree(optimizer):
 
 
 def optimizer_tensor_hashes(optimizer, *, perturb=False):
-    """Audit native FP32 master parameters and momentum/Adam buffers on DP1."""
+    """Audit this rank's native FP32 master parameters and momentum/Adam buffers."""
     hashes = {}
     for oi, wrapper in enumerate(getattr(optimizer, "chained_optimizers", [optimizer])):
         inner = wrapper.optimizer
@@ -118,13 +158,17 @@ def main():
     parser.add_argument("--short-window", type=int, default=16)
     parser.add_argument("--long-window", type=int, default=128)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--attention-backend", choices=("unfused", "auto", "fused"), default="unfused")
+    parser.add_argument("--gradient-accumulation-fusion", action="store_true")
     options = parser.parse_args()
-    if int(os.environ.get("WORLD_SIZE", "1")) != 1:
-        raise ValueError("these DSW pilots are DP1 only; no other parallelism is supported")
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = _rank()
+    if world_size not in (1, 2, 32):
+        raise ValueError("pilot topology must be DP1, DP2 validation, or DP32")
     if min(options.steps, options.micro_batch, options.global_batch, options.eval_sequences,
            options.eval_interval, options.save_interval) < 1:
         raise ValueError("pilot integer controls must be positive")
-    if options.global_batch % options.micro_batch or options.eval_sequences % options.micro_batch:
+    if options.global_batch % (options.micro_batch * world_size) or options.eval_sequences % options.micro_batch:
         raise ValueError("training/evaluation batches must divide by microbatch")
     if options.mode == "train" and (
         options.global_batch != 4096 or options.steps != 358 or options.micro_batch != 4
@@ -133,9 +177,10 @@ def main():
         raise ValueError("training pilot must retain the approved 3B-token/effective-batch contract")
     if (options.short_window, options.long_window) != (16, 128):
         raise ValueError("this named pilot fixes the windows at 16 x 128")
-    if options.run_dir.exists() and any(options.run_dir.iterdir()) and not options.resume:
+    if rank == 0 and options.run_dir.exists() and any(options.run_dir.iterdir()) and not options.resume:
         raise ValueError("fresh pilot refuses to overwrite an existing run directory")
-    options.run_dir.mkdir(parents=True, exist_ok=True)
+    if rank == 0:
+        options.run_dir.mkdir(parents=True, exist_ok=True)
     if options.resume and not (options.run_dir / "checkpoints/latest_checkpointed_iteration.txt").is_file():
         raise ValueError("resume requires a completed native checkpoint")
     ready = json.loads((options.data_root / "DATA_READY.json").read_text())
@@ -173,6 +218,7 @@ def main():
     native.tensorboard_dir = None
     set_global_variables(native)
     initialize_megatron()
+    torch.distributed.barrier()
     torch.cuda.set_per_process_memory_fraction(0.70)
     groups = ProcessGroupCollection.use_mpu_process_groups()
     topology = _assert_dp_only_groups(groups)
@@ -191,7 +237,8 @@ def main():
                    emerging_optimizers_source=str(optimizer_root),
                    emerging_optimizers_source_sha256={str(p.relative_to(optimizer_root)): _sha256(p)
                                                      for p in sorted(optimizer_root.rglob("*.py"))},
-                   native_attention_backend="unfused", gradient_accumulation_fusion=False)
+                   native_attention_backend=options.attention_backend,
+                   gradient_accumulation_fusion=options.gradient_accumulation_fusion)
     source_root = Path(__file__).parents[1]
     hashes = {str(path.relative_to(source_root)): _sha256(path) for path in
               (Path(__file__), Path(__file__).with_name("simplicial_attention.py"),
@@ -202,6 +249,8 @@ def main():
     contract = {"arm": options.arm, "mode": options.mode, "host": socket.gethostname(),
                 "runtime": runtime, "topology": topology, "steps": options.steps,
                 "global_batch": options.global_batch, "micro_batch": options.micro_batch,
+                "data_order": "DP1-microbatch-stream-strided-by-DP-rank-v1",
+                "evaluation_distribution": "identical-fixed-window-replicated-per-rank",
                 "tokens_per_step": options.global_batch * 2048, "seed": options.seed,
                 "eval_sequences": options.eval_sequences, "lr_horizon_steps": TRAIN_STEPS,
                 "rotary_fraction": 0.25, "rope_theta": 10000000,
@@ -219,7 +268,7 @@ def main():
                ("arm", "mode", "global_batch", "micro_batch", "seed", "windows", "manifest_sha256", "source_sha256")):
             raise ValueError("resume contract mismatch")
     else:
-        _atomic_json(options.run_dir / "RUN_CONTRACT.json", contract)
+        _report(options.run_dir / "RUN_CONTRACT.json", contract)
 
     def provider(pre_process=True, post_process=True, vp_stage=None, config=None, pg_collection=None):
         cfg = config or core_transformer_config_from_args(native)
@@ -232,6 +281,7 @@ def main():
         common_hash = parameter_hashes(model, common_only=True)
         if baseline_hash != common_hash:
             raise RuntimeError("attention replacement changed a common parameter")
+        _same_on_all_ranks(common_hash, "common initialization")
         if options.initialization_reference:
             expected = json.loads(options.initialization_reference.read_text())["common_parameter_sha256"]
             if common_hash != expected:
@@ -249,18 +299,18 @@ def main():
                 if any(marker in name for marker in (".attention.k2.", ".attention.v2.")):
                     if entry["optimizer"] != "muon" or entry["shape"] != [64, 320]:
                         raise RuntimeError("extra K/V optimizer grouping changed")
-        _atomic_json(options.run_dir / "INITIALIZATION.json", {"common_parameter_sha256": common_hash,
+        _report(options.run_dir / "INITIALIZATION.json", {"common_parameter_sha256": common_hash,
                      "all_parameter_sha256": parameter_hashes(model), "total_parameters": count,
                      "matches_reference": bool(options.initialization_reference)})
-        _atomic_json(options.run_dir / "MODEL_SHAPES.json", shape_map)
-        _atomic_json(options.run_dir / "OPTIMIZER_PARTITION.json", partition)
+        _report(options.run_dir / "MODEL_SHAPES.json", shape_map)
+        _report(options.run_dir / "OPTIMIZER_PARTITION.json", partition)
         return model
 
     context = {}
     model, optimizer, scheduler = setup_model_and_optimizer(provider, ModelType.encoder_or_decoder,
                                                             checkpointing_context=context)
-    _atomic_json(options.run_dir / "NATIVE_OPTIMIZER.json", {"optimizers": _optimizer_tree(optimizer)})
-    _atomic_json(options.run_dir / "INITIAL_SCHEDULER.json", scheduler.state_dict())
+    _report(options.run_dir / "NATIVE_OPTIMIZER.json", {"optimizers": _optimizer_tree(optimizer)})
+    _report(options.run_dir / "INITIAL_SCHEDULER.json", scheduler.state_dict())
     if scheduler.state_dict()["lr_decay_steps"] != TRAIN_STEPS * options.global_batch:
         raise RuntimeError("native LR schedule no longer uses the full baseline horizon")
     cfg = get_model_config(model[0])
@@ -273,10 +323,11 @@ def main():
     cfg.finalize_model_grads_func = finalize_model_grads
     schedule = get_forward_backward_func()
     raw_model = unwrap_model(model)[0]
-    accumulation = options.global_batch // options.micro_batch
-    train_source = DPRankTokenBatches(train_prefixes, batch_size=options.micro_batch,
+    accumulation = options.global_batch // (options.micro_batch * world_size)
+    train_source = StridedTokenBatches(train_prefixes, rank=rank, world_size=world_size,
+                     batch_size=options.micro_batch,
                      sequence_len=2048, start_batch=native.iteration * accumulation,
-                     device=torch.device("cuda", 0))
+                     device=torch.device("cuda", torch.cuda.current_device()))
     train_iterator = RerunDataIterator(train_source)
     event_path = options.run_dir / "metrics.jsonl"
     stop = {"requested": False}
@@ -290,7 +341,8 @@ def main():
     def evaluate(iteration):
         # Recreate exactly the same held-out token window at every evaluation.
         validation = DPRankTokenBatches(val_prefixes, batch_size=options.micro_batch,
-                         sequence_len=2048, start_batch=0, device=torch.device("cuda", 0))
+                         sequence_len=2048, start_batch=0,
+                         device=torch.device("cuda", torch.cuda.current_device()))
         for chunk in model:
             chunk.eval()
         digest = hashlib.sha256()
@@ -305,6 +357,9 @@ def main():
                          model=model, num_microbatches=options.eval_sequences // options.micro_batch,
                          seq_length=2048, micro_batch_size=options.micro_batch, forward_only=True)
         totals = torch.stack([item["lm loss"] for item in reduced]).sum(dim=0)
+        torch.distributed.all_reduce(totals)
+        totals /= world_size  # replicated evaluation: count unique tokens only
+        _same_on_all_ranks(digest.hexdigest(), "held-out window")
         ce = (totals[0] / totals[1]).item()
         if not math.isfinite(ce):
             raise RuntimeError("nonfinite held-out cross entropy")
@@ -323,15 +378,17 @@ def main():
 
     # Microbatch heartbeat lets a 1024-microbatch DP1 step remain observable.
     progress = {"microbatch": 0, "step": native.iteration + 1, "last": time.monotonic()}
-    train_digest = hashlib.sha256()
+    train_digests = []
 
     def forward_step(iterator, wrapped_model, return_schedule_plan=False):
         batch = next(iterator)
-        if progress["microbatch"] < 4:
-            train_digest.update(batch["tokens"].detach().cpu().numpy().tobytes())
+        global_microbatch = progress["microbatch"] * world_size + rank
+        if global_microbatch < 4:
+            train_digests.append((global_microbatch, hashlib.sha256(
+                batch["tokens"].detach().cpu().numpy().tobytes()).hexdigest()))
         progress["microbatch"] += 1
         if time.monotonic() - progress["last"] > 45:
-            _atomic_json(options.run_dir / "HEARTBEAT.json", {
+            _report(options.run_dir / "HEARTBEAT.json", {
                 "step": progress["step"], "completed_microbatches": progress["microbatch"] - 1,
                 "microbatches_per_step": accumulation, "time_unix": time.time(),
             })
@@ -346,10 +403,11 @@ def main():
                     "layers.7.attention.q_layernorm.weight", "layers.7.attention.k_layernorm.weight")):
                 probe_gradients[name] = False
 
-                def hook(gradient, key=name):
-                    if not torch.isfinite(gradient).all():
+                def hook(gradient, key=name, parameter=p):
+                    effective = _effective_probe_gradient(parameter, gradient)
+                    if not torch.isfinite(effective).all():
                         raise RuntimeError(f"nonfinite gradient: {key}")
-                    probe_gradients[key] |= bool(torch.count_nonzero(gradient))
+                    probe_gradients[key] |= bool(torch.count_nonzero(effective))
                     return gradient
 
                 p.register_hook(hook)
@@ -359,7 +417,7 @@ def main():
     for iteration in range(start, options.steps):
         native.curr_iteration = iteration
         progress.update(step=iteration + 1, microbatch=0)
-        train_digest = hashlib.sha256()
+        train_digests = []
         learning_rate = max(group["lr"] for group in optimizer.param_groups)
         torch.cuda.synchronize()
         begin = time.monotonic()
@@ -373,6 +431,9 @@ def main():
             raise RuntimeError(f"pilot training rejected: skipped={skipped}, exit={exit_code}, ce={ce}, grad={grad_norm}")
         done = iteration + 1
         stop["requested"] |= (options.run_dir / "STOP_REQUESTED.json").is_file()
+        stop_tensor = torch.tensor(int(stop["requested"]), device="cuda")
+        torch.distributed.all_reduce(stop_tensor, op=torch.distributed.ReduceOp.MAX)
+        stop["requested"] = bool(stop_tensor.item())
         native.iteration = done
         native.consumed_train_samples = done * options.global_batch
         if train_source.batch_index != done * accumulation:
@@ -381,17 +442,19 @@ def main():
             "consumed_tokens": done * options.global_batch * 2048, "train_ce": ce,
             "gradient_norm": float(grad_norm), "learning_rate_used": learning_rate,
             "step_seconds": seconds, "tokens_per_second": options.global_batch * 2048 / seconds,
-            "first_four_microbatches_sha256": train_digest.hexdigest(), "time_unix": time.time()})
+            "first_four_microbatches_sha256": _global_data_digest(train_digests), "time_unix": time.time()})
         if done % options.eval_interval == 0 or done == options.steps:
             evaluate(done)
         if done % options.save_interval == 0 or done == options.steps or should_save or stop["requested"]:
             checkpoint(done)
         if stop["requested"]:
-            _atomic_json(options.run_dir / "STOPPED.json", {"iteration": done})
+            _report(options.run_dir / "STOPPED.json", {"iteration": done})
+            torch.distributed.destroy_process_group()
             return
 
     if options.mode == "probe":
         before = parameter_hashes(raw_model)
+        _same_on_all_ranks(before, "post-update model weights")
         if not any(value != initial_hashes[key] for key, value in before.items()):
             raise RuntimeError("native optimizer did not change any parameter")
         if not probe_gradients or not all(probe_gradients.values()):
@@ -417,12 +480,14 @@ def main():
                                f"{saved_scheduler} != {scheduler.state_dict()}")
         if optimizer_tensor_hashes(optimizer) != optimizer_before:
             raise RuntimeError("native optimizer master weights or momentum failed checkpoint round-trip")
-        _atomic_json(options.run_dir / "PROBE_COMPLETE.json", {
+        torch.distributed.barrier()
+        _report(options.run_dir / "PROBE_COMPLETE.json", {
             "iteration": loaded, "all_model_weights_bitwise_restored": True,
+            "dp_world_size": world_size, "all_ranks_passed": True,
             "scheduler_restored": True, "optimizer_tensors_bitwise_restored": True,
             "nonzero_finite_gradients": probe_gradients})
     else:
-        _atomic_json(options.run_dir / "TRAINING_COMPLETE.json", {
+        _report(options.run_dir / "TRAINING_COMPLETE.json", {
             "iteration": options.steps, "consumed_tokens": options.steps * options.global_batch * 2048,
             "completed_unix": time.time()})
     torch.distributed.destroy_process_group()

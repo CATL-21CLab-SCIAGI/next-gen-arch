@@ -1,12 +1,13 @@
 # Controlled simplicial attention: experimental DSW pilots
 
 The user approved the existing sampling environment and ordinary partial RoPE
-on Q and both keys. The native DP1 adapter and sequential A/B/C driver are
+on Q and both keys. The native adapter and sequential A/B/C driver are
 implemented. Each campaign refuses to launch unless all three full-model probes
 have passed against the exact training/model source hashes. Operational status
 lives in the campaign's `CAMPAIGN.json`, not this versioned document.
-This is an experimental DP1 path, not a generally supported Megatron architecture.
-The DLC training code, process, allocation and container are unchanged.
+This is an experimental path, not a generally supported Megatron architecture.
+The original DSW campaign uses DP1. The separately authorized DLC migration
+uses the DP32 contract below; containers and allocations are never restarted.
 
 ## Reproduce the bounded preflight
 
@@ -72,8 +73,43 @@ enclosing adapter/backbone. It is not determinant-based attention.
 
 Backward recomputes scores and uses FP32 atomics for shared K/V gradients.
 Consequently it is not bitwise deterministic. Higher-order differentiation is
-not validated. Kernel timings do not establish whole-model throughput. DP2+
-numerical equivalence and convergence are not claimed.
+not validated. Kernel timings do not establish whole-model throughput.
+Convergence is not established by numerical correctness tests.
+
+## DLC migration: DP-only, fresh matched pilots
+
+`recipes/proposals/qwen38_w320_simplicial_dlc.yaml` specifies the separate
+four-node/32-GPU campaign. The long-running baseline is checkpointed and paused;
+its checkpoint is not used to initialize any pilot. The old DSW pilot checkpoint
+is also retained. All three DLC arms start fresh in the same frozen NeMo runtime.
+
+The model, seed, 3B-token budget, global batch 4096, microbatch 4 and full-baseline
+LR horizon remain unchanged. DP32 reduces accumulation from 1024 to 32 local
+microbatches per update; TP/PP/EP/CP/expert-TP remain one. Global microbatch `i`
+belongs to rank `i % 32`, preserving the DP1 stream's exact global token set and
+order rather than giving each rank a duplicate stream. A CPU regression checks
+the union and resume cursor at DP1/DP2/DP32. Fixed held-out evaluation is replicated
+on each rank and averaged, counting 131,072 **unique** tokens, not 32 copies.
+
+DLC uses native attention backend `auto` and gradient-accumulation fusion, matching
+its existing runtime capabilities. These differ explicitly from DSW's compatibility
+fallbacks; A/B/C use the same settings. Do not interpret a cross-host timing ratio
+as an isolated architecture speedup.
+
+`archlab.megatron.simplicial_dlc_campaign --phase probe` runs three full-shape,
+three-step DP32 probes (global batch 256). `--phase train --probe-root ...` refuses
+to start unless all probes match the exact model/training sources, runtime,
+common initialization, data order and held-out window, and all ranks have passed
+native model/master-weight/momentum/scheduler checkpoint reload. Run the native
+adapter tests with `torchrun --nproc-per-node=2` first: they compare DP-mean
+parameter gradients against a combined-batch reference for all three arms.
+
+The supervisor connects only to the four supplied existing hosts using strict
+SSH host-key checking. Each worker records its torchrun PID and has a per-host
+advisory lock. No controller/service/allocation control is implemented. SIGTERM
+to the supervisor requests checkpointed stop after the current complete update;
+failed/incomplete arms prevent the next launch. Baseline resumption remains
+explicit, not an automatic side effect of finishing the pilots.
 
 ## Matched pilot contract
 

@@ -1,4 +1,4 @@
-"""DP1 native adapter checks; run with torchrun in the approved existing environment."""
+"""DP1/DP2 native adapter checks in the existing container runtime."""
 
 import os
 import unittest
@@ -18,8 +18,8 @@ class NativePilotTests(unittest.TestCase):
         from megatron.core import parallel_state
         from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 
-        if int(os.environ["WORLD_SIZE"]) != 1:
-            raise ValueError("pilot adapter is validated for DP1 only")
+        if int(os.environ["WORLD_SIZE"]) not in (1, 2):
+            raise ValueError("native numerical tests use DP1 or DP2")
         torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
         torch.distributed.init_process_group("nccl")
         parallel_state.initialize_model_parallel()
@@ -61,6 +61,39 @@ class NativePilotTests(unittest.TestCase):
         from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 
         return RotaryEmbedding(32, rotary_percent=0.25, rotary_base=10000000)(length)
+
+    def test_dp_mean_gradients_match_combined_batch(self):
+        from archlab.megatron.simplicial_attention import PilotAttention
+
+        world = torch.distributed.get_world_size()
+        if world != 2:
+            self.skipTest("requires two GPUs")
+        rank = torch.distributed.get_rank()
+        for arm in ("A", "B", "C"):
+            native = self.attention()
+            module = native if arm == "A" else PilotAttention(native, arm)
+            for p in module.parameters():
+                torch.distributed.broadcast(p.data, 0)
+            torch.manual_seed(900)
+            x = torch.randn(20, 4, 320, device="cuda", dtype=torch.bfloat16)
+            dy = torch.randn_like(x)
+            rotary = self.positions(20)
+            output = module(x[:, rank * 2:(rank + 1) * 2].contiguous(),
+                            attention_mask=None, rotary_pos_emb=rotary)[0]
+            (output.float() * dy[:, rank * 2:(rank + 1) * 2].float()).mean().backward()
+            distributed = {}
+            for name, p in module.named_parameters():
+                value = p.grad.float()
+                torch.distributed.all_reduce(value)
+                distributed[name] = value / world
+            module.zero_grad(set_to_none=True)
+            output = module(x, attention_mask=None, rotary_pos_emb=rotary)[0]
+            (output.float() * dy.float()).mean().backward()
+            for name, p in module.named_parameters():
+                actual, expected = distributed[name], p.grad.float()
+                self.assertTrue(torch.isfinite(actual).all(), name)
+                relative = (actual - expected).norm() / expected.norm().clamp_min(1e-12)
+                self.assertLess(relative.item(), 0.04, f"{arm}: {name}")
 
     def test_local_equals_global_inside_window_and_preserves_parameters(self):
         from archlab.megatron.simplicial_attention import PilotAttention, parameter_hashes
