@@ -1,5 +1,5 @@
 name: qwen38-w320-simplicial-dsw-controlled-pilot
-status: preflight-implemented-training-not-launched
+status: approved-experimental-dp1-pilot-with-mandatory-launch-gates
 base_model: package:recipes/models/qwen38_flash_next_w320_e32.yaml
 scope:
   change_layers_1based: [8, 16, 24, 32, 40, 48]
@@ -21,7 +21,7 @@ scope:
 arms:
   A: unchanged-global-gated-attention
   B: local-gated-dot-product-attention
-  C: local-gated-simplicial-attention
+  C: local-gated-simplicial-attention-ordinary-rope-q-k1-k2
 attention_core:
   implementation: project-owned-stock-triton
   logits: sum_d(q_i_d * k1_j_d * k2_k_d) / sqrt(head_dim)
@@ -30,9 +30,12 @@ attention_core:
   causal: both-key-axes
   diagonal_pairs: included
   kv_bias: none
-  positional_encoding: pending-user-choice
+  positional_encoding: ordinary-partial-rope-on-q-k1-k2-not-relative-invariant-trilinear
+  rotary_fraction: 0.25
+  rope_theta: 10000000
   windows_benchmarked: [[8, 64], [16, 128], [32, 512]]
-  selected_training_windows: pending
+  selected_training_windows: [16, 128]
+  local_control_window: 128
   extra_parameters_six_layers: 245952
   backward_accumulation: fp32-atomic-not-bitwise-deterministic
 preflight:
@@ -48,17 +51,31 @@ preflight:
   stop_existing_services: forbidden
   dlc_mutations: forbidden
 training:
-  enabled: false
-  runtime: pending-user-choice-container-python-lacks-fla
+  enabled: true
+  entry: archlab.megatron.simplicial_pilot
+  sequential_campaign_entry: archlab.megatron.simplicial_campaign
+  runtime: user-approved-existing-sampling-environment-no-installs
+  python: env:NGA_PILOT_PYTHON
+  megatron_root: env:NGA_MEGATRON_ROOT
+  existing_optimizer_source: env:NGA_EMERGING_OPTIMIZERS_ROOT
+  data_root: env:NGA_DATA_ROOT
+  tokenizer: env:NGA_TOKENIZER_PATH
+  run_root: env:NGA_PILOT_RUN_ROOT
+  native_dot_product_backend: unfused
+  gradient_accumulation_fusion: false
   initialization: paired-common-weight-initialization-plus-isolated-new-projection-rng
   topology: {data: 1, tensor: 1, pipeline: 1, expert: 1, context: 1}
   effective_global_batch_sequences: 4096
   micro_batch_sequences: 4
   accumulation_steps: 1024
   context: 2048
-  pilot_steps_proposed: 358
-  pilot_tokens_proposed: 3003121664
+  pilot_steps: 358
+  pilot_tokens: 3003121664
+  heldout_sequences: 64
+  heldout_tokens: 131072
+  evaluation_interval_steps: 32
+  checkpoint_interval_steps: 64
   lr_schedule: unchanged-prefix-of-100B-baseline-schedule
   primary_metric: heldout-cross-entropy-vs-consumed-tokens
   secondary_metric: heldout-cross-entropy-vs-gpu-hours
-  required_before_launch: [runtime-choice, positional-encoding-choice, full-model-construction, shared-initialization-hashes, optimizer-grouping, checkpoint-roundtrip, data-order-and-heldout-split]
+  required_before_launch: [full-model-construction, shared-initialization-hashes, optimizer-grouping, model-and-optimizer-and-scheduler-checkpoint-roundtrip, data-order-and-heldout-split]
