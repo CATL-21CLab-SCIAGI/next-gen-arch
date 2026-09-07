@@ -1,9 +1,9 @@
 # Frozen pretrained Qwen Next with additive simplicial modules
 
-Status: the original zero-output run `pretrained-simplicial-fineweb-20260907-v1`
-was checkpointed and stopped at step 90 for the user-requested nonzero-init
-restart. Its checkpoint, logs and source snapshot are retained. The current
-recipe selects normal output initialization; see the restart record below.
+Status: `pretrained-simplicial-nonzero-fineweb-20260907-v1` is training on all
+32 GPUs. The original zero-output run `pretrained-simplicial-fineweb-20260907-v1`
+was checkpointed and stopped at step 90 for this user-requested restart. Its
+checkpoint, logs and source snapshot are retained.
 
 ## Agreed experiment
 
@@ -77,6 +77,38 @@ logits identity and completed its first update/checkpoint. Test evidence is in
 `results/automodel-nonzero-smoke-reference-20260907-v1`, its sibling `-resume-`
 run, `results/automodel-nonzero-resume-comparison-20260907-v1.log`, and
 `results/automodel-zero-init-regression-20260907-v1`.
+
+The full nonzero run uses source commit `e9c31fa`, frozen in
+`results/pretrained-simplicial-nonzero-source-20260907-v1`, and the unchanged
+upstream/runtime pins. Launch record:
+`results/pretrained-simplicial-nonzero-fineweb-20260907-v1-launch.json`.
+Attempt `d667fe6f7a51` loaded/audited the complete active backbone on all 32 ranks
+and started from cursor zero, with no resume or bounded-stop flag.
+
+At full 16K context, same-first-batch CE increased from 1.858044 with additions
+disabled to 12.228165 with normal-initialized additions enabled, an increase of
+10.370121 nats/target. All-position logit-difference RMS was 2.687502. Initial
+fixed held-out loss was 12.172143 (the previous zero-init step-zero value was
+1.936017). This is a severe, intentional initialization perturbation, not a
+quality improvement and not an implementation failure by itself.
+
+The first full backward passed finite, nonzero gradients for all 168 global
+added parameter tensors, with no frozen-backbone gradients. The unclipped
+global gradient norm was 134.208756; the unchanged clip limit is 1.0 and first
+LR is 1e-7. Peak allocated memory was 89,775,099,392 bytes per rank. No automatic
+attenuation, re-zeroing or schedule change was applied in response to high loss.
+The completed step-one checkpoint has cursor one and all 32 rank-state hashes.
+Direct comparison of the old/new manifests confirmed identical training
+settings, data contract, pretrained metadata hashes and installed package
+versions. The only changed adapter config field is output initialization; the
+only changed runtime Python sources are the adapter leaf and training entry.
+
+At step ten, loss on the same fixed 2,097,152 held-out targets decreased from
+12.172143 to 10.504256. This shows early recovery from the perturbation, not
+recovery to pretrained quality (1.936017), and not a benefit over zero init.
+Step eleven completed with finite gradients; recent step times were about
+12.9–13.3 seconds (39,500–40,600 targets/second across 32 GPUs). Memory stayed
+at the recorded peak. The unchanged 200-step LR warm-up is still in progress.
 
 ## Original zero-output production entry and launch
 
