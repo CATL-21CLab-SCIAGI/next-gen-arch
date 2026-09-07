@@ -8,31 +8,34 @@ The tiny mode is a bounded entry/recovery fixture, not a pretrained experiment.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, replace
-from datetime import timedelta
 import fcntl
 import hashlib
 import json
 import logging
 import math
 import os
-from pathlib import Path
 import signal
 import time
 import uuid
+from dataclasses import asdict, replace
+from datetime import timedelta
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp import fully_shard
 import yaml
-
 from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
 from nemo_automodel.components.models.qwen3_8_flash_next.config import Qwen3_8_FlashNextConfig
 from nemo_automodel.components.moe.megatron.fused_a2a import free_buffer
 from nemo_automodel.components.training.utils import scale_grads_and_clip_grad_norm
+from torch.distributed.fsdp import fully_shard
 
 from archlab.architectures.simplicial_adapter import SimplicialAdapterConfig
-from archlab.automodel.checkpointing import load_training_checkpoint, save_training_checkpoint, write_json
+from archlab.automodel.checkpointing import (
+    load_training_checkpoint,
+    save_training_checkpoint,
+    write_json,
+)
 from archlab.automodel.data import load_fineweb_windows
 from archlab.automodel.execution import build_frozen_base, emit, tiny_config
 from archlab.automodel.runtime import configure_frozen_gdn_runtime, runtime_provenance
@@ -224,7 +227,7 @@ class TrainingSession:
             dist.all_reduce(nonzero_parameters, op=dist.ReduceOp.MAX)
             if not nonzero_parameters.all().item():
                 names = [n for n, p in self.model.named_parameters() if p.requires_grad]
-                missing = [n for n, present in zip(names, nonzero_parameters.tolist()) if not present]
+                missing = [n for n, present in zip(names, nonzero_parameters.tolist(), strict=True) if not present]
                 raise RuntimeError(f"zero first-step gradients with nonzero initialization: {missing}")
             self.record("first_step_nonzero_gradients_pass", parameter_tensors=len(nonzero),
                         all_added_parameters=True, frozen_gradients_absent=True)

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
-from nemo_automodel.components.optim.scheduler import OptimizerParamScheduler
+
+if TYPE_CHECKING:
+    from nemo_automodel.components.optim.scheduler import OptimizerParamScheduler
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,8 @@ class TrainingConfig:
 
     def build_scheduler(self, optimizer: torch.optim.Optimizer, *, total_steps: int) -> OptimizerParamScheduler:
         """Reuse the backend's linear warm-up and cosine decay, one step per data cursor."""
+        from nemo_automodel.components.optim.scheduler import OptimizerParamScheduler
+
         if total_steps <= self.warmup_steps:
             raise ValueError("the one-pass budget must exceed warm-up")
         return OptimizerParamScheduler(

@@ -54,7 +54,7 @@ def correctness_case(n, w1, w2, dtype, positions=None, batch=1, head_dim=32):
     expected.backward(upstream.double())
     errors = {"output": _error(actual, expected)}
     errors.update({name: _error(x.grad, ref.grad)
-                   for name, x, ref in zip(("q", "k1", "k2", "v1", "v2"), inputs, reference)})
+                   for name, x, ref in zip(("q", "k1", "k2", "v1", "v2"), inputs, reference, strict=True)})
     # One-pair windows have exactly zero score gradients; relative error is
     # meaningless at zero, so use an absolute floor for those entries.
     tolerance = 0.025 if dtype == torch.bfloat16 else 0.0001

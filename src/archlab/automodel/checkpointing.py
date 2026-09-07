@@ -5,16 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
-from nemo_automodel.components.checkpoint.stateful_wrappers import OptimizerState
 
 
 def checkpoint_payload(adapters, optimizer):
+    from nemo_automodel.components.checkpoint.stateful_wrappers import OptimizerState
+
     # Reuse the upstream PEFT+EP path, including lazy Adam-state materialization.
     # A fresh optimizer otherwise has an empty DCP load skeleton and can silently
     # omit saved moments. These additions are PEFT, although they are not LoRA.
@@ -37,7 +38,7 @@ def assert_state_equal(actual, expected):
             assert_state_equal(actual[key], expected[key])
     elif isinstance(expected, (list, tuple)):
         assert len(actual) == len(expected)
-        for a, b in zip(actual, expected):
+        for a, b in zip(actual, expected, strict=True):
             assert_state_equal(a, b)
     else:
         assert actual == expected

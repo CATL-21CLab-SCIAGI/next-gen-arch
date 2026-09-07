@@ -13,11 +13,13 @@ class AutoModelSimplicialTests(unittest.TestCase):
     def model_and_config(self):
         from nemo_automodel.components.models.common import BackendConfig
         from nemo_automodel.components.models.qwen3_8_flash_next.config import (
-            Qwen3_8_FlashNextConfig, Qwen3_8_FlashNextTextConfig,
+            Qwen3_8_FlashNextConfig,
+            Qwen3_8_FlashNextTextConfig,
         )
         from nemo_automodel.components.models.qwen3_8_flash_next.model import (
             Qwen3_8_FlashNextForConditionalGeneration,
         )
+
         from archlab.architectures.simplicial_adapter import SimplicialAdapterConfig
 
         text = Qwen3_8_FlashNextTextConfig(
@@ -57,7 +59,7 @@ class AutoModelSimplicialTests(unittest.TestCase):
         self.assertEqual(len(adapters), 2)
         after = model(input_ids=tokens, output_hidden_states=True)
         self.assertTrue(torch.equal(before.logits, after.logits))
-        for a, b in zip(before.hidden_states, after.hidden_states):
+        for a, b in zip(before.hidden_states, after.hidden_states, strict=True):
             self.assertTrue(torch.equal(a, b))
         trainable = [p for p in model.parameters() if p.requires_grad]
         self.assertEqual(sum(p.numel() for p in trainable), 2 * config.parameter_count())
@@ -85,6 +87,7 @@ class AutoModelSimplicialTests(unittest.TestCase):
 
     def test_batch_and_geometry_fail_closed(self):
         from dataclasses import replace
+
         from archlab.automodel.simplicial import install_simplicial_modules
 
         model, config = self.model_and_config()
@@ -99,6 +102,7 @@ class AutoModelSimplicialTests(unittest.TestCase):
 
     def test_nonzero_first_backward_preserves_frozen_base_and_roundtrips(self):
         from dataclasses import replace
+
         from archlab.automodel.simplicial import ADAPTER_MARKER, install_simplicial_modules
 
         torch.manual_seed(58)
@@ -131,6 +135,7 @@ class AutoModelSimplicialTests(unittest.TestCase):
 
     def test_checkpoint_wrapped_decoder_executes_added_module(self):
         from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
         from archlab.automodel.simplicial import install_simplicial_modules
 
         model, config = self.model_and_config()
@@ -163,7 +168,10 @@ class AutoModelSimplicialTests(unittest.TestCase):
             rebuild_nonpersistent_buffers(model, torch.device("cpu"))
 
     def test_missing_load_destination_fails(self):
-        from archlab.automodel.loading import poison_weights_before_load, assert_loaded_weights_finite
+        from archlab.automodel.loading import (
+            assert_loaded_weights_finite,
+            poison_weights_before_load,
+        )
 
         model = torch.nn.Linear(4, 4)
         original = {name: value.clone() for name, value in model.state_dict().items()}

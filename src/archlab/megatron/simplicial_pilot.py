@@ -31,8 +31,8 @@ from archlab.megatron.qwen38_flash_next_full_train import (
     DPRankTokenBatches,
     _assert_dp_only_groups,
     _atomic_json,
-    _forward_step,
     _effective_probe_gradient,
+    _forward_step,
     _megatron_argv,
     _sha256,
     _tag_native_optimizer_fallbacks,
@@ -202,16 +202,24 @@ def main():
     from megatron.core.rerun_state_machine import RerunDataIterator
     from megatron.core.utils import get_model_config, unwrap_model
     from megatron.training import get_timers
-    from megatron.training.arguments import core_transformer_config_from_args, parse_args, validate_args
+    from megatron.training.arguments import (
+        core_transformer_config_from_args,
+        parse_args,
+        validate_args,
+    )
     from megatron.training.checkpointing import load_checkpoint, save_checkpoint
     from megatron.training.global_vars import set_global_variables
     from megatron.training.initialize import initialize_megatron
     from megatron.training.training import (
-        get_optimizer_param_scheduler, setup_model_and_optimizer, train_step,
+        get_optimizer_param_scheduler,
+        setup_model_and_optimizer,
+        train_step,
     )
 
     from archlab.megatron.simplicial_attention import (
-        EXTRA_MARKERS, install_pilot_attention, parameter_hashes,
+        EXTRA_MARKERS,
+        install_pilot_attention,
+        parameter_hashes,
     )
 
     native = validate_args(parse_args())
@@ -225,8 +233,8 @@ def main():
     architecture = Qwen38FlashNextFullConfig.width320_e32_depth48_no_mtp()
     runtime = validate_runtime(require_pretrain=False)
     runtime.update(torch_resolved=torch.__version__, cuda=torch.version.cuda)
-    import fla
     import emerging_optimizers
+    import fla
     import transformer_engine
     import triton
 

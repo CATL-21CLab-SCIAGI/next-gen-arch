@@ -12,7 +12,7 @@ import triton.language as tl
 
 
 @triton.jit
-def _forward(Q, K1, K2, V1, V2, O, LSE,
+def _forward(Q, K1, K2, V1, V2, OUT, LSE,
              N: tl.constexpr, HQ: tl.constexpr, HK: tl.constexpr, D: tl.constexpr,
              G: tl.constexpr, W1: tl.constexpr, W2: tl.constexpr,
              H: tl.constexpr, T: tl.constexpr):
@@ -43,13 +43,13 @@ def _forward(Q, K1, K2, V1, V2, O, LSE,
             z = z * alpha + tl.sum(p, 1)
             acc = acc * alpha[:, None] + tl.dot(p.to(v2.dtype), v2, input_precision="tf32x3") * v1[None, :]
             m = nm
-    tl.store(O + qo, acc / z[:, None], h[:, None] < G)
+    tl.store(OUT + qo, acc / z[:, None], h[:, None] < G)
     lo = (b * N + i) * HQ + g * G + h
     tl.store(LSE + lo, m + tl.log(z), h < G)
 
 
 @triton.jit
-def _backward(Q, K1, K2, V1, V2, O, LSE, DO, DQ, DK1, DK2, DV1, DV2,
+def _backward(Q, K1, K2, V1, V2, OUT, LSE, DO, DQ, DK1, DK2, DV1, DV2,
               N: tl.constexpr, HQ: tl.constexpr, HK: tl.constexpr, D: tl.constexpr,
               G: tl.constexpr, W1: tl.constexpr, W2: tl.constexpr,
               H: tl.constexpr, T: tl.constexpr):
@@ -59,7 +59,7 @@ def _backward(Q, K1, K2, V1, V2, O, LSE, DO, DQ, DK1, DK2, DV1, DV2,
     qo = ((b * N + i) * HQ + g * G + h[:, None]) * D + d[None, :]
     q = tl.load(Q + qo, h[:, None] < G, other=0)
     do = tl.load(DO + qo, h[:, None] < G, other=0)
-    out = tl.load(O + qo, h[:, None] < G, other=0).to(tl.float32)
+    out = tl.load(OUT + qo, h[:, None] < G, other=0).to(tl.float32)
     delta = tl.sum(do.to(tl.float32) * out, 1)
     lo = (b * N + i) * HQ + g * G + h
     lse = tl.load(LSE + lo, h < G, other=0)

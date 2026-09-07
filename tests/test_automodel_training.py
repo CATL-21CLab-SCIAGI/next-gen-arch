@@ -3,8 +3,8 @@
 Run pytest for CPU contracts, or torchrun this file for the distributed oracle.
 """
 
-from dataclasses import asdict, replace
 import json
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +15,7 @@ from archlab.automodel.training_config import TrainingConfig
 
 
 def test_scheduler_warmup_decay_and_fresh_restore():
+    pytest.importorskip("nemo_automodel", reason="requires the pinned upstream scheduler")
     config = replace(TrainingConfig(), warmup_steps=2)
     model = torch.nn.Linear(2, 2)
     optimizer = config.build_optimizer(model)
@@ -75,6 +76,7 @@ def test_state_digest_handles_scalars_empty_and_bfloat16():
 
 
 def test_smoke_windows_resume_targets_are_disjoint():
+    pytest.importorskip("nemo_automodel", reason="requires the pinned upstream training entry")
     from archlab.automodel.train import _SmokeWindows
 
     config = replace(TrainingConfig(), world_size=2, ep_size=2, sequence_length=5)
@@ -95,10 +97,11 @@ def distributed_clipping_reference() -> None:
     """Compare FSDP gradients, global clipping norm and Adam update with a CPU oracle."""
     import copy
     import os
+
     import torch.distributed as dist
+    from nemo_automodel.components.training.utils import scale_grads_and_clip_grad_norm
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.fsdp import fully_shard
-    from nemo_automodel.components.training.utils import scale_grads_and_clip_grad_norm
 
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("nccl")
@@ -132,7 +135,9 @@ def distributed_clipping_reference() -> None:
 def compare_resume_checkpoints(before: Path, uninterrupted: Path, resumed: Path) -> None:
     """Compare the tiny resumed update against the same saved-state continuation."""
     import tempfile
+
     from torch.distributed.checkpoint.format_utils import dcp_to_torch_save
+
     from archlab.automodel.checkpointing import assert_state_equal
 
     states = []

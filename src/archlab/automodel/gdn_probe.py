@@ -75,10 +75,12 @@ def main():
             output = chunk.chunk_gated_delta_rule(*inputs, **kwargs)[0]
             outputs.append(output.clone())
             print(json.dumps({"iteration": iteration, "stage": "output", **metrics(output, outputs[0])}), flush=True)
-            for actual, expected in zip(inputs, snapshots):
+            for actual, expected in zip(inputs, snapshots, strict=True):
                 torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         if args.reference:
-            from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import torch_chunk_gated_delta_rule
+            from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+                torch_chunk_gated_delta_rule,
+            )
 
             reference = torch_chunk_gated_delta_rule(*inputs, **kwargs)[0]
             comparison = metrics(outputs[-1], reference)
@@ -90,7 +92,9 @@ def main():
     if args.safe_runtime:
         assert all(torch.equal(output, outputs[0]) for output in outputs), "GDN forward is not repeatable"
     if args.backward:
-        from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import torch_chunk_gated_delta_rule
+        from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+            torch_chunk_gated_delta_rule,
+        )
 
         torch.manual_seed(5678)
         upstream_gradient = torch.randn_like(outputs[0])
@@ -105,7 +109,7 @@ def main():
             output = function(q, k, v, **kw)[0]
             gradients = torch.autograd.grad(output, (q, k, v, kw["g"], kw["beta"]), upstream_gradient)
             results.append(gradients)
-            for label, actual, expected in zip(("q", "k", "v", "g", "beta"), gradients, results[0]):
+            for label, actual, expected in zip(("q", "k", "v", "g", "beta"), gradients, results[0], strict=True):
                 metric = metrics(actual, expected)
                 print(json.dumps({"stage": f"backward-{name}-{label}", **metric}), flush=True)
                 if not torch.isfinite(actual).all() or metric["relative_l2"] > .03:

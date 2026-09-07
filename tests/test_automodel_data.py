@@ -1,7 +1,7 @@
 import importlib.util
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -10,7 +10,10 @@ import torch
 @unittest.skipUnless(importlib.util.find_spec("nemo_automodel"), "requires pinned AutoModel source")
 class OnePassDataTests(unittest.TestCase):
     def make_data(self, root):
-        from nemo_automodel.components.datasets.llm.megatron.indexed_dataset import IndexedDatasetBuilder
+        from nemo_automodel.components.datasets.llm.megatron.indexed_dataset import (
+            IndexedDatasetBuilder,
+        )
+
         from archlab.automodel.data import OnePassTokenWindows
 
         prefixes = []

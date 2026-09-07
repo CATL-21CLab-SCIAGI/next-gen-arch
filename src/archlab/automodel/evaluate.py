@@ -9,20 +9,20 @@ No training process, installed package, or checkpoint is modified.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-from dataclasses import asdict
 import fcntl
 import hashlib
 import importlib.metadata
 import importlib.util
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
 import sys
 import time
-from typing import Iterator
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict
+from pathlib import Path
 
 import torch
 import yaml
@@ -56,7 +56,7 @@ def added_modules(model: torch.nn.Module, *, enabled: bool) -> Iterator[None]:
             module.adapter_enabled = enabled
         yield
     finally:
-        for module, value in zip(modules, original):
+        for module, value in zip(modules, original, strict=True):
             module.adapter_enabled = value
 
 
@@ -99,7 +99,7 @@ def continuation_scores(model: torch.nn.Module, tokenizer, context: str,
             labels = torch.tensor(target, device=device, dtype=torch.long)
             scores.append(logits.log_softmax(-1).gather(1, labels[:, None]).sum().item())
     # lm-eval normalizes by the choice text length, excluding target_delimiter.
-    normalized = [score / len(choice.removeprefix(" ")) for score, choice in zip(scores, continuations)]
+    normalized = [score / len(choice.removeprefix(" ")) for score, choice in zip(scores, continuations, strict=True)]
     return {"loglikelihoods": scores, "character_normalized_loglikelihoods": normalized,
             "prediction": max(range(len(scores)), key=scores.__getitem__),
             "normalized_prediction": max(range(len(scores)), key=normalized.__getitem__),
@@ -158,8 +158,9 @@ def _summary(records: list[dict], selected: list[dict], *, complete: bool) -> di
 
 
 def _provenance(checkpoint: Path, harness: Path) -> dict:
-    import archlab
     import nemo_automodel
+
+    import archlab
     from archlab.automodel.simplicial import UPSTREAM_COMMIT
 
     metadata = json.loads((checkpoint / "COMPLETE.json").read_text())
@@ -186,6 +187,7 @@ def _provenance(checkpoint: Path, harness: Path) -> dict:
 def main() -> None:
     from jinja2 import Environment, StrictUndefined
     from transformers import AutoTokenizer
+
     from archlab.automodel.checkpointing import write_json
     from archlab.automodel.runtime import configure_frozen_gdn_runtime
 

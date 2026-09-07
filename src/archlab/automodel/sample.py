@@ -9,17 +9,17 @@ This entry can run by filename with the training source snapshot on PYTHONPATH.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
 import hashlib
 import importlib.metadata
 import json
 import math
 import os
-from pathlib import Path
 import socket
 import subprocess
 import sys
 import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import torch
 import torch.distributed.checkpoint as dcp
@@ -124,20 +124,26 @@ def place_for_sampling(model: torch.nn.Module, config: SamplingConfig) -> dict:
 
 
 def build_model(base: Path, checkpoint: Path, config: SamplingConfig):
-    from nemo_automodel.components.checkpoint.config import CheckpointingConfig
     from nemo_automodel.components.checkpoint.checkpointing import Checkpointer
+    from nemo_automodel.components.checkpoint.config import CheckpointingConfig
     from nemo_automodel.components.models.common import BackendConfig
     from nemo_automodel.components.models.common.utils import cast_model_to_dtype
     from nemo_automodel.components.models.qwen3_8_flash_next.config import Qwen3_8_FlashNextConfig
     from nemo_automodel.components.models.qwen3_8_flash_next.engram import (
-        QWEN3_8_FLASH_NEXT_NGRAM_PADDED_ROWS, Qwen3_8_FlashNextEngramTableConfig,
+        QWEN3_8_FLASH_NEXT_NGRAM_PADDED_ROWS,
+        Qwen3_8_FlashNextEngramTableConfig,
     )
-    from nemo_automodel.components.models.qwen3_8_flash_next.model import Qwen3_8_FlashNextForConditionalGeneration
+    from nemo_automodel.components.models.qwen3_8_flash_next.model import (
+        Qwen3_8_FlashNextForConditionalGeneration,
+    )
+
     from archlab.architectures.simplicial_adapter import SimplicialAdapterConfig
     from archlab.automodel.checkpointing import read_training_checkpoint
     from archlab.automodel.loading import (
-        audit_checkpoint_keys, rebuild_nonpersistent_buffers,
-        poison_weights_before_load, assert_loaded_weights_finite,
+        assert_loaded_weights_finite,
+        audit_checkpoint_keys,
+        poison_weights_before_load,
+        rebuild_nonpersistent_buffers,
     )
     from archlab.automodel.simplicial import install_simplicial_modules
 
@@ -242,8 +248,9 @@ def main() -> None:
     torch.set_num_threads(16)
     torch.cuda.set_device(0)
     torch.cuda.set_per_process_memory_fraction(config.gpu_memory_fraction)
-    from transformers import AutoTokenizer
     import nemo_automodel
+    from transformers import AutoTokenizer
+
     from archlab.automodel.checkpointing import write_json
     from archlab.automodel.runtime import configure_frozen_gdn_runtime
     from archlab.automodel.simplicial import UPSTREAM_COMMIT

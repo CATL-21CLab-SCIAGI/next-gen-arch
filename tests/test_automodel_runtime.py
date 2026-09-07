@@ -50,9 +50,11 @@ def test_checkpoint_cache_provenance_and_index_drift(tmp_path):
 
 
 def test_fresh_optimizer_checkpoint_load_uses_upstream_materialization(tmp_path, monkeypatch):
+    pytest.importorskip("nemo_automodel", reason="requires upstream optimizer-state materialization")
     import torch
     import torch.distributed.checkpoint as dcp
-    from archlab.automodel.checkpointing import checkpoint_payload, assert_state_equal
+
+    from archlab.automodel.checkpointing import assert_state_equal, checkpoint_payload
 
     monkeypatch.setattr(torch.cuda, "get_rng_state", torch.get_rng_state)
     monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)

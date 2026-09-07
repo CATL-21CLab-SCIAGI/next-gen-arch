@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import torch
 import torch.distributed as dist
-
 from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
 from nemo_automodel.components.models.common import BackendConfig
-from nemo_automodel.components.models.qwen3_8_flash_next.model import Qwen3_8_FlashNextForConditionalGeneration
+from nemo_automodel.components.models.qwen3_8_flash_next.model import (
+    Qwen3_8_FlashNextForConditionalGeneration,
+)
 
 from archlab.automodel.simplicial import ADAPTER_MARKER, install_simplicial_modules
 

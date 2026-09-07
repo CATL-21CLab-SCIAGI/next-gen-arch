@@ -38,8 +38,7 @@ class NativePilotTests(unittest.TestCase):
         from megatron.core.extensions.transformer_engine_spec_provider import TESpecProvider
         from megatron.core.process_groups_config import ProcessGroupCollection
         from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
-        from megatron.core.transformer.enums import AttnMaskType
-        from megatron.core.transformer.enums import AttnBackend
+        from megatron.core.transformer.enums import AttnBackend, AttnMaskType
         from megatron.core.transformer.transformer_config import TransformerConfig
 
         from archlab.megatron.gated_qkv import SplitGatedQKV

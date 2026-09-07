@@ -12,9 +12,9 @@ import hashlib
 import importlib
 import importlib.metadata
 import os
-from pathlib import Path
 import socket
 import subprocess
+from pathlib import Path
 
 import torch
 
@@ -65,6 +65,7 @@ def runtime_provenance(*, ep_size: int) -> dict:
     """Audit the source pin, installed versions and actual node-local EP topology."""
     import nemo_automodel
     import torch.distributed as dist
+
     from archlab.automodel.simplicial import UPSTREAM_COMMIT
 
     root = Path(nemo_automodel.__file__).resolve().parent.parent

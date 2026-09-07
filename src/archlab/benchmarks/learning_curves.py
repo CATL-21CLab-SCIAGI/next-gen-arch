@@ -78,7 +78,7 @@ def main():
         run["last20_mean"] = statistics.fmean(p["ce"] for p in points[-20:])
         recent = points[-51:]
         deltas = [(b["wall_time"] - a["wall_time"]) / (b["block"] - a["block"])
-                  for a, b in zip(recent, recent[1:]) if b["wall_time"] > a["wall_time"]]
+                  for a, b in zip(recent, recent[1:], strict=False) if b["wall_time"] > a["wall_time"]]
         run["median_seconds_per_block_last50"] = statistics.median(deltas) if deltas else None
     outputs["json"].parent.mkdir(parents=True, exist_ok=True)
     outputs["json"].write_text(json.dumps({"block_tokens": args.block_tokens,

@@ -1,14 +1,24 @@
 """Small numerical/protocol oracles; these are not full-model quality scores."""
 
-from pathlib import Path
-from types import SimpleNamespace
 import importlib.util
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
-from archlab.benchmarks.capability import EvaluationConfig, MathGrader, paired_statistics, select_cases
-from archlab.automodel.evaluate import added_modules, continuation_scores, encode_pair, math_completion
+from archlab.automodel.evaluate import (
+    added_modules,
+    continuation_scores,
+    encode_pair,
+    math_completion,
+)
+from archlab.benchmarks.capability import (
+    EvaluationConfig,
+    MathGrader,
+    paired_statistics,
+    select_cases,
+)
 
 
 class CharacterTokenizer:
@@ -113,6 +123,7 @@ class CapabilityTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("nemo_automodel"), "requires pinned AutoModel")
     def test_disabled_nonzero_additions_recover_original_exactly(self):
         from test_automodel_simplicial import AutoModelSimplicialTests
+
         from archlab.automodel.simplicial import AdditiveMoERead, install_simplicial_modules
 
         torch.manual_seed(138)
@@ -131,7 +142,7 @@ class CapabilityTests(unittest.TestCase):
                 after = model(input_ids=tokens, output_hidden_states=True)
             torch.testing.assert_close(before.logits, after.logits, atol=0, rtol=0)
             self.assertEqual(len(before.hidden_states), len(after.hidden_states))
-            for a, b in zip(before.hidden_states, after.hidden_states):
+            for a, b in zip(before.hidden_states, after.hidden_states, strict=True):
                 torch.testing.assert_close(a, b, atol=0, rtol=0)
         for name, (parameter, saved) in originals.items():
             self.assertIs(dict(model.named_parameters())[name], parameter)

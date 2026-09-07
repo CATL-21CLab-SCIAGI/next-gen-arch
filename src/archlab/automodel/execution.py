@@ -8,21 +8,27 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp import MixedPrecisionPolicy
-from nemo_automodel.components.checkpoint.config import CheckpointingConfig
 from nemo_automodel.components.checkpoint.checkpointing import Checkpointer
+from nemo_automodel.components.checkpoint.config import CheckpointingConfig
 from nemo_automodel.components.distributed.config import DistributedSetup, FSDP2Config
 from nemo_automodel.components.distributed.mesh import ParallelismSizes
 from nemo_automodel.components.models.common import BackendConfig
 from nemo_automodel.components.models.common.utils import cast_model_to_dtype
 from nemo_automodel.components.models.qwen3_8_flash_next.config import (
-    Qwen3_8_FlashNextConfig, Qwen3_8_FlashNextTextConfig,
+    Qwen3_8_FlashNextConfig,
+    Qwen3_8_FlashNextTextConfig,
 )
-from nemo_automodel.components.models.qwen3_8_flash_next.model import Qwen3_8_FlashNextForConditionalGeneration
+from nemo_automodel.components.models.qwen3_8_flash_next.model import (
+    Qwen3_8_FlashNextForConditionalGeneration,
+)
 from nemo_automodel.components.moe.parallelizer import parallelize_model
+from torch.distributed.fsdp import MixedPrecisionPolicy
+
 from archlab.automodel.loading import (
-    audit_checkpoint_keys, rebuild_nonpersistent_buffers,
-    poison_weights_before_load, assert_loaded_weights_finite,
+    assert_loaded_weights_finite,
+    audit_checkpoint_keys,
+    poison_weights_before_load,
+    rebuild_nonpersistent_buffers,
 )
 
 

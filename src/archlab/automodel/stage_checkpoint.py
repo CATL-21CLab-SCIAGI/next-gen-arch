@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
-from pathlib import Path
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 
 def sha256(path: Path) -> str:

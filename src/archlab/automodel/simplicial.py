@@ -9,12 +9,11 @@ Only that read is extended; its original parameters, keys and combine remain.
 from __future__ import annotations
 
 import torch
-from torch import nn
-
 from nemo_automodel.components.distributed.activation_checkpointing import unwrap_checkpoint_wrapper
 from nemo_automodel.components.models.qwen3_8_flash_next.layers import (
     Qwen3_8_FlashNextHyperConnection,
 )
+from torch import nn
 
 from archlab.architectures.simplicial_adapter import (
     SimplicialAdapterConfig,

@@ -18,24 +18,24 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
-from torch.distributed.fsdp import fully_shard
-
 from nemo_automodel.components.distributed.activation_checkpointing import unwrap_checkpoint_wrapper
 from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
 from nemo_automodel.components.models.qwen3_8_flash_next.config import (
     Qwen3_8_FlashNextConfig,
 )
 from nemo_automodel.components.moe.megatron.fused_a2a import free_buffer
+from torch.distributed.fsdp import fully_shard
 
 from archlab.architectures.simplicial_adapter import SimplicialAdapterConfig
-from archlab.automodel.simplicial import (
-    ADAPTER_MARKER, UPSTREAM_COMMIT, AdditiveMoERead, install_simplicial_modules,
-)
+from archlab.automodel.checkpointing import assert_state_equal, checkpoint_payload
+from archlab.automodel.execution import build_frozen_base, emit, tiny_config
 from archlab.automodel.runtime import configure_frozen_gdn_runtime
-
-
-from archlab.automodel.execution import emit, tiny_config, build_frozen_base
-from archlab.automodel.checkpointing import checkpoint_payload, assert_state_equal
+from archlab.automodel.simplicial import (
+    ADAPTER_MARKER,
+    UPSTREAM_COMMIT,
+    AdditiveMoERead,
+    install_simplicial_modules,
+)
 
 
 def main():

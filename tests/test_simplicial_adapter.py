@@ -97,7 +97,7 @@ class SimplicialAdapterTests(unittest.TestCase):
             self.assertTrue(torch.isfinite(p.grad).all(), name)
             self.assertGreater(torch.count_nonzero(p.grad).item(), 0, name)
         after = [p for layer in (prefix, suffix) for p in layer.parameters()]
-        for old, p in zip(before, after):
+        for old, p in zip(before, after, strict=True):
             self.assertTrue(torch.equal(old, p))
             self.assertIsNone(p.grad)
 

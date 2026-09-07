@@ -7,14 +7,13 @@ exactly once; adjacent windows share one input/target boundary token.
 
 from __future__ import annotations
 
-from bisect import bisect_right
 import hashlib
 import json
+from bisect import bisect_right
 from pathlib import Path
 
 import numpy as np
 import torch
-
 from nemo_automodel.components.datasets.llm.megatron.indexed_dataset import IndexedDataset
 
 
@@ -25,7 +24,7 @@ class OnePassTokenWindows:
         self.sequence_length = sequence_length
         self.datasets = [IndexedDataset(str(prefix), mmap=True) for prefix in prefixes]
         self.ends = [0]
-        for prefix, dataset in zip(prefixes, self.datasets):
+        for prefix, dataset in zip(prefixes, self.datasets, strict=True):
             if dataset.index.dtype != np.int32:
                 raise ValueError("the agreed raw token corpus must use int32")
             count = int(dataset.sequence_lengths.sum(dtype=np.int64))

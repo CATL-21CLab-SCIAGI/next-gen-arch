@@ -6,14 +6,14 @@ No model or training imports. Math grading reuses the existing pinned lm-eval
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import importlib.util
 import json
 import math
-from pathlib import Path
 import random
 import re
+from dataclasses import dataclass
+from pathlib import Path
 from statistics import NormalDist
 
 
@@ -162,8 +162,8 @@ def paired_statistics(base: list[int], adapted: list[int]) -> dict:
     if not base or len(base) != len(adapted) or any(x not in (0, 1) for x in base + adapted):
         raise ValueError("paired binary scores must be nonempty and have equal lengths")
     n = len(base)
-    wins = sum(a > b for b, a in zip(base, adapted))
-    losses = sum(a < b for b, a in zip(base, adapted))
+    wins = sum(a > b for b, a in zip(base, adapted, strict=True))
+    losses = sum(a < b for b, a in zip(base, adapted, strict=True))
     z = NormalDist().inv_cdf(0.9875)
 
     def interval(count: int) -> tuple[float, float]:
@@ -179,8 +179,8 @@ def paired_statistics(base: list[int], adapted: list[int]) -> dict:
                if discordant else 1.0)
     return {"n": n, "pretrained_accuracy": sum(base) / n, "adapted_accuracy": sum(adapted) / n,
             "delta_percentage_points": 100 * (wins - losses) / n,
-            "gains": wins, "regressions": losses, "both_correct": sum(b and a for b, a in zip(base, adapted)),
-            "both_wrong": sum(not b and not a for b, a in zip(base, adapted)),
+            "gains": wins, "regressions": losses, "both_correct": sum(b and a for b, a in zip(base, adapted, strict=True)),
+            "both_wrong": sum(not b and not a for b, a in zip(base, adapted, strict=True)),
             "delta_95pct_interval_pp": [100 * (wlo - lhi), 100 * (whi - llo)],
             "interval_method": "Bonferroni-combined 97.5% Wilson gain/loss intervals; approximate",
             "mcnemar_exact_two_sided_p": p_value}

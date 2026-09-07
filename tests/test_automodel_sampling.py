@@ -1,9 +1,10 @@
 """Inference-only checkpoint subset and original PLE offload regression tests."""
 
-from pathlib import Path
+import importlib.util
 import json
 import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 import torch.distributed.checkpoint as dcp
@@ -36,14 +37,23 @@ class SamplingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "shape/dtype"):
                 restore_adapters({"3": torch.nn.Linear(5, 8), "7": adapters["7"]}, path)
 
+    @unittest.skipUnless(importlib.util.find_spec("nemo_automodel"), "requires the pinned upstream loader")
     def test_upstream_single_owner_base_loader_exact_roundtrip(self):
-        from safetensors.torch import save_file
         from nemo_automodel.components.checkpoint.config import CheckpointingConfig
         from nemo_automodel.components.models.common import BackendConfig
-        from nemo_automodel.components.models.qwen3_8_flash_next.engram import Qwen3_8_FlashNextEngramTableConfig
-        from nemo_automodel.components.models.qwen3_8_flash_next.model import Qwen3_8_FlashNextForConditionalGeneration
+        from nemo_automodel.components.models.qwen3_8_flash_next.engram import (
+            Qwen3_8_FlashNextEngramTableConfig,
+        )
+        from nemo_automodel.components.models.qwen3_8_flash_next.model import (
+            Qwen3_8_FlashNextForConditionalGeneration,
+        )
+        from safetensors.torch import save_file
+
         from archlab.automodel.execution import tiny_config
-        from archlab.automodel.loading import poison_weights_before_load, assert_loaded_weights_finite
+        from archlab.automodel.loading import (
+            assert_loaded_weights_finite,
+            poison_weights_before_load,
+        )
 
         config = tiny_config(8)
         config.text_config.ple_layer_ids = [2]
@@ -75,7 +85,9 @@ class SamplingTests(unittest.TestCase):
 
     @unittest.skipUnless(torch.cuda.is_available(), "requires GPU for CPU/GPU offload equivalence")
     def test_original_ple_cpu_lookup_matches_gpu_bitwise(self):
-        from nemo_automodel.components.models.qwen3_8_flash_next.engram import Qwen3_8_FlashNextEngramTableConfig
+        from nemo_automodel.components.models.qwen3_8_flash_next.engram import (
+            Qwen3_8_FlashNextEngramTableConfig,
+        )
 
         table = Qwen3_8_FlashNextEngramTableConfig(256, 160).build(process_group=None, dtype=torch.bfloat16)
         with torch.no_grad():
@@ -93,7 +105,10 @@ class SamplingTests(unittest.TestCase):
     @unittest.skipUnless(torch.cuda.is_available(), "requires the existing DSW sampling GPU")
     def test_upstream_gdn_qsa_moe_and_added_branch_uncached_forward(self):
         from nemo_automodel.components.models.common import BackendConfig
-        from nemo_automodel.components.models.qwen3_8_flash_next.model import Qwen3_8_FlashNextForConditionalGeneration
+        from nemo_automodel.components.models.qwen3_8_flash_next.model import (
+            Qwen3_8_FlashNextForConditionalGeneration,
+        )
+
         from archlab.architectures.simplicial_adapter import SimplicialAdapterConfig
         from archlab.automodel.execution import tiny_config
         from archlab.automodel.runtime import configure_frozen_gdn_runtime
