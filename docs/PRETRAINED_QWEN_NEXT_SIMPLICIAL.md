@@ -56,22 +56,43 @@ parameters. Frozen downstream layers still require input-gradient propagation.
 No full-model parity, checkpoint import, native distributed optimizer,
 fully-sharded-DP, or pretrained training support is claimed by these tests.
 
-## Compatibility blocker
+## Reuse-first backend qualification
+
+The required order is: search maintained off-the-shelf code, inspect existing
+backend implementations, reuse suitable code, and implement only uncovered gaps.
+Finding an implementation is not evidence that it supports this experiment.
+The pinned-source audit and qualification plan are in
+[PRETRAINED_BACKEND_REUSE_AUDIT.md](PRETRAINED_BACKEND_REUSE_AUDIT.md).
+
+NeMo AutoModel and ModelScope mcore-bridge now have exact-model implementations.
+The former is the preferred training reference, not a qualified production
+backend. Neither package is installed in the frozen container. Their ordinary
+package imports also install runtime patches, which this experiment forbids.
+Do not import them into a production process merely to probe compatibility.
+
+## Current compatibility limits
 
 The frozen DLC environment has Transformers 5.8.1. Its `AutoConfig` rejects the
-checkpoint's `model_type=qwen4_exp`; installed Transformers, NeMo, Megatron Bridge
-and Megatron Core sources contain no matching model implementation. Native
-PyTorch FSDP2 is available, but that does not supply the missing architecture.
+checkpoint's `model_type=qwen4_exp`. The previously searched installed
+Transformers, NeMo, Megatron Bridge and Megatron Core source locations had no
+matching implementation. Native PyTorch FSDP2 is available, but that does not
+supply the missing architecture. This is an installed-runtime finding, not a
+claim that upstream implementations do not exist.
 
 The old `qwen38_flash_next_full_train` adapter explicitly constructs a from-scratch
 dense-attention variant. It cannot be used as a faithful pretrained loader.
 
-The upstream Qwen4Exp implementation is available as a reference at
-https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen4_exp/modeling_qwen4_exp.py.
-It is not installed or copied into this repository. Finishing within the frozen
-runtime requires a separate project-local compatibility implementation and a
-complete pretrained tensor/forward audit. Runtime upgrades, monkey patches and
-silent substitutions are not fallbacks.
+Both the initial and current upstream Transformers Qwen4Exp implementations
+depend on APIs absent from the installed 5.8.1 runtime. The unmodified NeMo
+AutoModel configuration file, loaded in isolation without its package hooks,
+does parse the actual checkpoint and preserves all 32 audited text-config fields.
+This does not construct a model, load weights, or establish numerical parity.
+
+Do not start a handwritten backbone port on the strength of the AutoConfig error.
+First qualify reuse of upstream model code with a project-owned integration
+boundary. Any necessary compatibility work must be narrowly scoped, attributed,
+and tested against its upstream numerical reference. Runtime upgrades, monkey
+patches, a change in parallelism, and silent substitutions are not fallbacks.
 
 Do not launch the portable proposal until every listed gate has dedicated
 evidence. Never replace the original attention with the simplicial pilot wrapper:

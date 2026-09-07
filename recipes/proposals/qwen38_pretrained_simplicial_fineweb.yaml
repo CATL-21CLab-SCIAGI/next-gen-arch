@@ -1,5 +1,16 @@
 name: qwen38-pretrained-frozen-additive-simplicial-fineweb
 status: blocked-on-faithful-pretrained-backend
+backend_qualification:
+  order:
+    - search-maintained-off-the-shelf-exact-model-code
+    - inspect-existing-backend-code-and-tests
+    - reuse-suitable-code-before-implementing-uncovered-gaps
+    - pass-full-integration-tests-before-finetuning
+  decision_record_repository_relative: docs/PRETRAINED_BACKEND_REUSE_AUDIT.md
+  preferred_training_reference: NVIDIA-NeMo/Automodel
+  preferred_reference_commit: a4ce87c003f08b74d68684d3627f6e6048bc0140
+  production_backend: unqualified
+  handwritten_backbone_reimplementation: not-selected
 model:
   checkpoint: env:NGA_PRETRAINED_QWEN_NEXT
   source_model_type: qwen4_exp
@@ -66,11 +77,15 @@ gates:
   require_before_launch:
     - faithful-pretrained-construction-and-complete-weight-map-audit
     - original-QSA-forward-preserved-not-dense-substituted
+    - QSA-routing-parity-beyond-indexer-budget
+    - all-original-tensors-loaded-or-explicitly-retained-inactive
+    - original-and-zero-adapter-full-model-parity-at-16K
     - original-weights-unchanged-and-excluded-from-optimizer
     - adapter-zero-output-identity
     - head256-forward-and-backward-numerical-oracle
     - gradients-reach-early-adapters-through-frozen-layers
     - all-added-parameter-gradients-finite-after-output-warm-start
     - sharded-DP-numerical-and-memory-validation
+    - actual-process-groups-and-PLE-collectives-obey-DP-only-contract
     - full-model-optimizer-adapter-checkpoint-roundtrip
     - source-runtime-data-and-tokenizer-provenance
