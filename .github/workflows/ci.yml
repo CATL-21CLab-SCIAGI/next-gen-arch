@@ -23,7 +23,7 @@ jobs:
           enable-cache: true
           python-version: "3.11"
       - name: Install CPU environment
-        run: uv sync --extra cpu --group dev
+        run: uv sync --locked --extra cpu --group dev
       - name: Lint
         run: uv run ruff check src/archlab tests
       - name: Compile source
