@@ -1,0 +1,76 @@
+name: qwen38-pretrained-frozen-additive-simplicial-fineweb
+status: blocked-on-faithful-pretrained-backend
+model:
+  checkpoint: env:NGA_PRETRAINED_QWEN_NEXT
+  source_model_type: qwen4_exp
+  initialization: released-pretrained-weights
+  freeze_existing_parameters: true
+  preserve_existing_qsa_and_indexer: true
+  preserve_existing_gdn_moe_ple_residual_norms_and_gates: true
+  retain_vision_and_mtp_weights: true
+  objective: text-next-token-main-loss-only
+  added_module: archlab.architectures.simplicial_adapter.SimplicialResidualAdapter
+  insertion: after-attention-residual-before-existing-moe-residual-read
+  layers_1based: [4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48]
+  added_ffn: false
+  adapter:
+    hidden_size: 2560
+    query_heads: 24
+    kv_heads: 2
+    head_dim: 256
+    residual_streams: 4
+    residual_low_rank: 320
+    short_window: 16
+    long_window: 128
+    rotary_fraction: 0.25
+    rope_theta: 10000000
+    rms_norm_eps: 1.0e-6
+    initializer_std: 0.02
+  adapter_parameters_per_layer: 59034368
+  total_trainable_parameters: 708412416
+  adapter_output_initialization: zeros
+  first_step_expected_gradient: output-projection-only
+  positional_variant: ordinary-partial-RoPE-on-Q-K1-K2
+  kv_constant_bias: false
+data:
+  root: env:NGA_FINEWEB_TOKENIZED
+  corpus: existing-FineWeb-Edu-sample-100BT
+  sequence_length: 16384
+  passes: 1
+  repeat_or_wrap: forbidden
+  final_partial_batch: must-record-exact-consumed-and-unused-token-counts
+  loss_mask: all-valid-next-token-targets-not-assistant-only
+  heldout: existing-disjoint-validation-partition
+execution:
+  training_jobs: 1
+  comparison_training_jobs: 0
+  pretrained_reference_evaluation: same-job-correctness-and-step-zero-evaluation-only
+  nodes: 4
+  gpus_per_node: 8
+  data_parallel_size: 32
+  weight_sharding: native-fully-sharded-data-parallel-pending-validation
+  tensor_parallel_size: 1
+  pipeline_parallel_size: 1
+  expert_parallel_size: 1
+  context_parallel_size: 1
+  expert_tensor_parallel_size: 1
+  micro_batch_and_accumulation: pending-memory-and-throughput-probe
+  automatic_unfreeze: forbidden
+  automatic_baseline_resume: forbidden
+runtime:
+  profile: frozen-nemo-26.06
+  package_installations: forbidden
+  runtime_patches: forbidden
+  node_or_controller_restarts: forbidden
+gates:
+  require_before_launch:
+    - faithful-pretrained-construction-and-complete-weight-map-audit
+    - original-QSA-forward-preserved-not-dense-substituted
+    - original-weights-unchanged-and-excluded-from-optimizer
+    - adapter-zero-output-identity
+    - head256-forward-and-backward-numerical-oracle
+    - gradients-reach-early-adapters-through-frozen-layers
+    - all-added-parameter-gradients-finite-after-output-warm-start
+    - sharded-DP-numerical-and-memory-validation
+    - full-model-optimizer-adapter-checkpoint-roundtrip
+    - source-runtime-data-and-tokenizer-provenance

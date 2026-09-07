@@ -39,9 +39,9 @@ def _error(actual, expected):
             "relative_l2": (difference.norm() / expected.float().norm().clamp_min(1e-12)).item()}
 
 
-def correctness_case(n, w1, w2, dtype, positions=None, batch=1):
+def correctness_case(n, w1, w2, dtype, positions=None, batch=1, head_dim=32):
     torch.manual_seed(42)
-    inputs = [torch.randn(batch, n, h, 32, device="cuda", dtype=dtype, requires_grad=True)
+    inputs = [torch.randn(batch, n, h, head_dim, device="cuda", dtype=dtype, requires_grad=True)
               for h in (24, 2, 2, 2, 2)]
     # FP64 oracle avoids silently evaluating a purported FP32 reference with
     # the host's default TF32 matmul mode.
@@ -70,7 +70,8 @@ def correctness_case(n, w1, w2, dtype, positions=None, batch=1):
         altered[branch][:, split:] += 10
         observed = simplicial_attention(*altered, w1, w2)
         causal = causal and torch.equal(observed[:, :split], all_outputs.detach()[:, :split])
-    return {"batch": batch, "sequence": n, "windows": [w1, w2], "dtype": str(dtype), "oracle_dtype": "float64",
+    return {"batch": batch, "sequence": n, "head_dim": head_dim,
+            "windows": [w1, w2], "dtype": str(dtype), "oracle_dtype": "float64",
             "query_positions": positions, "errors": errors, "relative_l2_limit": tolerance,
             "future_perturbation_exact": causal, "passed": passed and causal}
 

@@ -62,7 +62,7 @@ def simplicial_attention(q, k1, k2, v1, v2, short_window, long_window):
     validate_inputs(q, k1, k2, v1, v2, short_window, long_window)
     if q.device.type != "cuda" or q.dtype not in (torch.float32, torch.bfloat16):
         raise ValueError("kernel supports CUDA float32/bfloat16")
-    if q.shape[-1] not in (16, 32, 64, 128):
+    if q.shape[-1] not in (16, 32, 64, 128, 256):
         raise ValueError("unsupported head dimension")
     if torch.are_deterministic_algorithms_enabled():
         raise RuntimeError("simplicial backward uses nondeterministic FP32 atomic accumulation")
