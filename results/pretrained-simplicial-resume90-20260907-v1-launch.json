@@ -1,0 +1,50 @@
+{
+  "run": "pretrained-simplicial-fineweb-20260907-v1",
+  "launch_label": "pretrained-simplicial-resume90-20260907-v1",
+  "source_snapshot": "results/pretrained-simplicial-source-20260907-v1",
+  "project_commit": "688f036",
+  "attempt": "96a408d584bc",
+  "upstream_commit": "a4ce87c003f08b74d68684d3627f6e6048bc0140",
+  "nodes": [
+    {"host": "22.0.243.22", "node_rank": 0, "launcher_pid": 255107},
+    {"host": "22.0.254.34", "node_rank": 1, "launcher_pid": 147609},
+    {"host": "22.0.241.50", "node_rank": 2, "launcher_pid": 146684},
+    {"host": "22.0.241.128", "node_rank": 3, "launcher_pid": 165003}
+  ],
+  "master_port": 29837,
+  "world_size": 32,
+  "ep_size": 8,
+  "resume_from": "results/pretrained-simplicial-fineweb-20260907-v1/checkpoints/step-00000090-34c05fc2e901",
+  "resume_cursor": 90,
+  "optimizer_scheduler_rng": "restore-exact-checkpoint-state",
+  "exact_state_restore_passed_ranks": 32,
+  "full_contract_matches_original": true,
+  "stop_after": null,
+  "backbone_frozen": true,
+  "mtp": false,
+  "fresh_initialization": false,
+  "stopped_run": "pretrained-simplicial-nonzero-fineweb-20260907-v1",
+  "stopped_step": 166,
+  "retained_nonzero_checkpoint": "results/pretrained-simplicial-nonzero-fineweb-20260907-v1/checkpoints/step-00000166-d667fe6f7a51",
+  "decision_evidence": {
+    "heldout_targets": 2097152,
+    "nonzero_latest_evaluated_step": 100,
+    "nonzero_heldout_loss": 3.7241661306470633,
+    "original_latest_evaluated_step_at_decision": 10,
+    "original_heldout_loss_at_decision": 1.92391602601856,
+    "matched_training_steps": [81, 90],
+    "nonzero_matched_training_mean_loss": 5.561538600921631,
+    "original_matched_training_mean_loss": 1.8005152463912963,
+    "nonzero_stop_step_heldout_loss": null
+  },
+  "post_resume_matched_validation": {
+    "step": 100,
+    "heldout_targets": 2097152,
+    "original_loss": 1.881850166246295,
+    "nonzero_loss": 3.7241661306470633,
+    "lower_is_better": true
+  },
+  "nodes_restarted": false,
+  "container_changed": false,
+  "subagents_used": false
+}

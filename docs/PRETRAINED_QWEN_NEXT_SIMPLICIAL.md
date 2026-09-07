@@ -1,9 +1,10 @@
 # Frozen pretrained Qwen Next with additive simplicial modules
 
-Status: `pretrained-simplicial-nonzero-fineweb-20260907-v1` is training on all
-32 GPUs. The original zero-output run `pretrained-simplicial-fineweb-20260907-v1`
-was checkpointed and stopped at step 90 for this user-requested restart. Its
-checkpoint, logs and source snapshot are retained.
+Status: the nonzero-init run was checkpointed and stopped at step 166. The
+user requested resuming the original `pretrained-simplicial-fineweb-20260907-v1`
+from its step-90 checkpoint because the nonzero run had not beaten its measured
+held-out result. The resume is running on the existing 32 GPUs; both runs'
+checkpoints, logs and source snapshots are retained.
 
 ## Agreed experiment
 
@@ -27,8 +28,55 @@ checkpoint, logs and source snapshot are retained.
   the data mesh: this still uses 32 GPUs. Historical curves are not a controlled
   pretrained baseline.
 
-The portable training contract is
-`recipes/proposals/qwen38_pretrained_simplicial_fineweb.yaml`.
+The repository recipe `recipes/proposals/qwen38_pretrained_simplicial_fineweb.yaml`
+records the nonzero experiment. The active resume intentionally uses the
+original recipe and source from `results/pretrained-simplicial-source-20260907-v1`
+(commit `688f036`) to match the saved checkpoint's strict source/config contract.
+
+## Return to the original step-90 checkpoint (2026-09-07)
+
+At the decision, the latest nonzero held-out result was 3.724166 at step 100,
+versus 1.923916 at step ten for the original zero-initialized experiment. Both
+use exactly the same fixed 2,097,152 held-out targets. The nonzero model had
+continued training past step 100, so this was the latest recorded evaluation,
+not a fresh measurement of the stopping checkpoint. Its last ten training
+losses through step 162 averaged 2.150717; those batches differ from the original
+run's last ten and are not a controlled held-out comparison.
+
+A matched-training-batch comparison at steps 81–90 gives mean loss 5.561539
+(nonzero) versus 1.800515 (original). It shows a substantially slower early
+recovery for this specific normal-std-0.02 initialization and LR schedule; it
+does not establish that every nonzero initialization is worse.
+
+The nonzero process saved and stopped at step 166:
+`results/pretrained-simplicial-nonzero-fineweb-20260907-v1/checkpoints/step-00000166-d667fe6f7a51`.
+The resumed original run loads
+`results/pretrained-simplicial-fineweb-20260907-v1/checkpoints/step-00000090-34c05fc2e901`,
+including adapter weights, Adam moments/step counters, LR scheduler, rank-local
+CPU/CUDA RNG and data cursor 90. It continues at optimizer step 91, not zero.
+All original source hashes matched the checkpoint before launch; there is no
+runtime upgrade, topology change, re-zeroing of learned output weights, fresh
+optimizer, data rewind, node restart or second training job.
+
+Launch record: `results/pretrained-simplicial-resume90-20260907-v1-launch.json`.
+Metrics append to the original run's `metrics.jsonl` under a new attempt ID;
+per-rank logs use `results/pretrained-simplicial-resume90-20260907-v1-logs`.
+The unchanged schedule evaluates at step 100, enabling a matched-step held-out
+comparison with the nonzero run.
+Attempt `96a408d584bc` passed exact loaded-state and live-restored-state hash
+checks on all 32 ranks at cursor 90 and completed its first resumed update at
+step 91. This validates actual full-topology checkpoint recovery, not merely
+successful launcher startup or model-weight loading.
+
+The resumed original reached step 100 with fixed-held-out loss **1.881850**,
+versus **3.724166** for nonzero initialization at the same optimizer step and
+on the same 2,097,152 targets. Thus the original is better on the available
+matched-step comparison. No held-out evaluation was taken at the nonzero
+stopping step 166; do not relabel its step-100 measurement as step 166.
+The original run continued through step 101 with finite gradients and
+89,527,724,032 bytes peak allocated memory. Its first resumed LR was 4.555e-6,
+as required at cursor 90; the warm-up was not restarted. Original and resumed
+manifests have identical full contracts and rank-to-host assignments.
 
 ## Nonzero-initialization restart (2026-09-07)
 
