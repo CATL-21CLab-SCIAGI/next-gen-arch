@@ -1,5 +1,26 @@
 name: qwen38-pretrained-frozen-additive-simplicial-fineweb
-status: automodel-model-integration-qualified-production-entry-pending
+status: production-entry-qualified
+entrypoint: archlab.automodel.train
+training:
+  world_size: 32
+  ep_size: 8
+  sequence_length: 16384
+  micro_batch: 1
+  seed: 1234
+  adapter_seed: 42
+  initial_lr: 1.0e-7
+  peak_lr: 1.0e-5
+  minimum_lr: 1.0e-6
+  warmup_steps: 200
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  epsilon: 1.0e-8
+  gradient_clip: 1.0
+  early_validation_step: 10
+  validation_interval: 100
+  validation_batches: 4
+  checkpoint_interval: 1000
 backend_qualification:
   order:
     - search-maintained-off-the-shelf-exact-model-code
@@ -10,7 +31,12 @@ backend_qualification:
   preferred_training_reference: NVIDIA-NeMo/Automodel
   preferred_reference_commit: a4ce87c003f08b74d68684d3627f6e6048bc0140
   source_checkout: env:NGA_AUTOMODEL_ROOT
-  production_backend: NVIDIA-NeMo/Automodel-pending-production-entry-qualification
+  production_backend: NVIDIA-NeMo/Automodel
+  production_entry_evidence:
+    - nineteen-project-CPU-regressions-passed
+    - two-GPU-FSDP-gradients-global-clipping-norm-and-Adam-update-match-CPU-reference
+    - two-GPU-fresh-process-optimizer-scheduler-RNG-and-cursor-exact-restoration
+    - fresh-process-update-replay-relative-L2-3.856e-5
   model_integration_evidence: full-pretrained-DP32-EP8-16K-FineWeb-identity-gradients-checkpoint-replay-passed
   handwritten_backbone_reimplementation: not-selected
 model:
@@ -80,8 +106,8 @@ execution:
     - DP16-EP8-passed-small-model-reference-and-checkpoint-tests
     - DP32-EP8-passed-full-pretrained-16K-real-FineWeb-integration
   excluded_topology: cross-node-DeepEP-EP16-dispatch-timed-out-in-frozen-container
-  micro_batch_and_accumulation: pending-memory-and-throughput-probe
-  production_lr_schedule: pending-warmup-and-lower-starting-LR-qualification
+  micro_batch_and_accumulation: qualified-microbatch-one-accumulation-one
+  production_lr_schedule: linear-200-step-warmup-then-cosine-see-training-fields
   diagnostic_lr_caution: constant-1e-4-overshot-first-update-on-repeated-FineWeb-batch
   automatic_unfreeze: forbidden
   automatic_baseline_resume: forbidden

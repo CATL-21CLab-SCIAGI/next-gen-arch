@@ -11,7 +11,10 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.metadata
+import os
 from pathlib import Path
+import socket
+import subprocess
 
 import torch
 
@@ -56,3 +59,32 @@ def configure_frozen_gdn_runtime() -> dict:
         }
     return {"applied": True, "capability": capability, "fla_version": version,
             "upstream_restrictions": [953, 1000], "kernels": evidence}
+
+
+def runtime_provenance(*, ep_size: int) -> dict:
+    """Audit the source pin, installed versions and actual node-local EP topology."""
+    import nemo_automodel
+    import torch.distributed as dist
+    from archlab.automodel.simplicial import UPSTREAM_COMMIT
+
+    root = Path(nemo_automodel.__file__).resolve().parent.parent
+    revision = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    dirty = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"], text=True)
+    if revision != UPSTREAM_COMMIT or dirty:
+        raise RuntimeError("the qualified, unmodified AutoModel source pin is required")
+    image = os.environ.get("NGA_CONTAINER_DIGEST")
+    if not image:
+        raise RuntimeError("record NGA_CONTAINER_DIGEST (image identity) before launching")
+    hosts = [None] * dist.get_world_size()
+    dist.all_gather_object(hosts, socket.gethostname())
+    if any(len(set(hosts[i:i + ep_size])) != 1 for i in range(0, len(hosts), ep_size)):
+        raise ValueError("each EP group must be entirely within one existing node")
+    source = Path(__file__).resolve().parent
+    return {"upstream": revision, "container_image": image,
+            "packages": {name: importlib.metadata.version(name) for name in
+                         ("torch", "transformers", "transformer-engine", "megatron-core", "fla-core", "triton")},
+            "cuda": torch.version.cuda, "nccl": torch.cuda.nccl.version(),
+            "gpu": torch.cuda.get_device_name(), "rank_hosts": hosts,
+            "project_source_sha256": {str(p.relative_to(source.parent)): hashlib.sha256(p.read_bytes()).hexdigest()
+                                      for p in sorted([*source.glob("*.py"),
+                                                       *source.parent.joinpath("architectures").glob("*.py")])}}
