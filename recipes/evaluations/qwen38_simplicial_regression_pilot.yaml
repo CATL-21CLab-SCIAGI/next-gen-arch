@@ -1,0 +1,31 @@
+schema_version: 1
+name: qwen38-simplicial-vs-pretrained-regression-pilot-v1
+status: bounded-pilot-not-full-benchmark
+evaluation:
+  seed: 20260907
+  max_context: 2048
+  max_new_tokens: 1024
+  reasoning_effort: medium
+limits:
+  mmlu: 57
+  arc_challenge: 32
+  gsm8k: 8
+  aime24: 2
+  aime25: 2
+protocol:
+  model_pair: unchanged-pretrained-parent-versus-same-parent-with-trained-simplicial-additions
+  math: native-chat-template-medium-reasoning-greedy-one-completion
+  non_math: lm-eval-0.4.13-zero-shot-continuation-loglikelihood-no-chat
+  truncation: report-explicitly-never-silently-truncate-prompts
+  main_metrics:
+    gsm8k: flexible_extract
+    aime24: exact_match
+    aime25: exact_match
+    mmlu: acc
+    arc_challenge: acc_norm
+  limitations:
+    - Pilot subsets and generation caps are not full benchmark or leaderboard scores.
+    - AIME reasoning may exceed this budget; unfinished thinking is not a final answer.
+    - MMLU selects one example per subject; its pilot aggregate is subject-balanced.
+    - Full AIME evaluation needs a longer validated generation budget.
+    - Zero observed regressions in a tiny pilot cannot establish capability preservation.

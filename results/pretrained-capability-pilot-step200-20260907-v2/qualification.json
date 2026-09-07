@@ -1,0 +1,27 @@
+{
+  "status": "passed",
+  "main_suite": {
+    "tests": 19,
+    "skipped": 0,
+    "seconds": 66.006,
+    "modules": ["test_capability_evaluation", "test_automodel_sampling", "test_automodel_simplicial"]
+  },
+  "extended_attention_test": {
+    "tests": 1,
+    "skipped": 0,
+    "seconds": 49.236,
+    "module": "test_automodel_sampling.SamplingTests.test_short_prefix_flex_unfused_matches_compiled",
+    "lengths": [17, 129, 2048],
+    "query_heads": 24,
+    "kv_heads": 2,
+    "head_width": 256,
+    "dtype": "bfloat16",
+    "atol": 0.02,
+    "rtol": 0.02
+  },
+  "baseline_oracle": "Exact CPU FP32 logits and all returned hidden states: original upstream small model versus installed-but-disabled nonzero additions; original parameter objects and values unchanged.",
+  "prompt_oracle": "Rendered MMLU prompts match all 57 pinned upstream subject descriptions and question templates; ARC question template also matches.",
+  "scope": "Numerical and protocol qualification, not benchmark accuracy or proof of full-model cross-runtime parity.",
+  "environment": "Existing approved DSW venv; see contract.json for resolved versions. No installs or upstream edits.",
+  "previous_attempt": "v1 was terminated during model loading, before inference, to restore MMLU subject descriptions. No scores were discarded."
+}

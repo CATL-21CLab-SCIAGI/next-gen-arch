@@ -132,7 +132,7 @@ class SamplingTests(unittest.TestCase):
         compiled = torch.compile(flex_attention, fullgraph=True, dynamic=False)
         generator = torch.Generator(device="cuda").manual_seed(43)
         with torch.inference_mode():
-            for length in (17, 129):
+            for length in (17, 129, 2048):
                 q = torch.randn(1, 24, length, 256, generator=generator, device="cuda", dtype=torch.bfloat16)
                 k, v = [torch.randn(1, 2, length, 256, generator=generator, device="cuda", dtype=torch.bfloat16)
                         for _ in range(2)]

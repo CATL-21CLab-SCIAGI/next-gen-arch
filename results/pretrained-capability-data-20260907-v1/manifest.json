@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "gsm8k": {
+      "path": "/mnt/oss/datasets/capability-eval-v1/main/test-00000-of-00001.parquet",
+      "repo": "openai/gsm8k",
+      "revision": "local-cache-recorded-sha256",
+      "split": "test",
+      "sha256": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59",
+      "rows": 1319
+    },
+    "mmlu": {
+      "path": "/mnt/oss/datasets/capability-eval-v1/all/test-00000-of-00001.parquet",
+      "repo": "cais/mmlu",
+      "revision": "local-cache-recorded-sha256",
+      "split": "test",
+      "sha256": "74a41822ce7d3def56e1682f958469c04642a5336a5ce912fa375fdb90fb25d7",
+      "rows": 14042
+    },
+    "aime24": {
+      "path": "/mnt/nas/evergreen/arch/results/pretrained-capability-data-20260907-v1/downloads/aime24/aime_2024_problems.parquet",
+      "repo": "Maxwell-Jia/AIME_2024",
+      "revision": "8d88b2876a82a080e2f172cc9b25d0d9d2cb4792",
+      "split": "train (published exam set)",
+      "sha256": "3cb34696a75837f848ea16f15a42f4130be655d5995e8cd24efcc54f4e6e1524",
+      "rows": 30
+    },
+    "aime25": {
+      "path": "/mnt/nas/evergreen/arch/results/pretrained-capability-data-20260907-v1/downloads/aime25/test.jsonl",
+      "repo": "math-ai/aime25",
+      "revision": "563bb8404243c5f09de6ec262f2db674fe5bce9b",
+      "split": "test",
+      "sha256": "b4e273c02d3e7fe1b74b59eae768fc8230bfb0f79539890cb56f4361caac0331",
+      "rows": 30
+    },
+    "arc_challenge": {
+      "path": "/mnt/nas/evergreen/arch/results/pretrained-capability-data-20260907-v1/downloads/arc_challenge/ARC-Challenge/test-00000-of-00001.parquet",
+      "repo": "allenai/ai2_arc",
+      "revision": "210d026faf9955653af8916fad021475a3f00453",
+      "split": "test",
+      "sha256": "62f03257e737aed263f55c6abf87c7bb0028a44a6bdd2a26eb1279eb42c1d1e9",
+      "rows": 1172
+    }
+  },
+  "cases_sha256": "9c56a038df26c0e4b6e2350106f92154623f4c80b106c57d3aa114a8a3a51c0a",
+  "note": "GSM8K/MMLU reuse local cached test sets; their source file SHA256 is recorded, not an inferred HF revision."
+}
