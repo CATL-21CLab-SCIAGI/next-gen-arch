@@ -4,6 +4,14 @@ Audit date: 2026-09-07. Status: **no inspected backend is qualified for launch**
 No new backbone implementation, package installation, runtime patch, node
 restart, full-checkpoint load, or finetuning was performed during this audit.
 
+**Subsequent decision:** the user selected NeMo AutoModel and explicitly allowed
+its runtime patches, omitting MTP, and expert parallelism. The prohibitions below
+describe the earlier audit contract, not the updated experiment. Follow
+`PRETRAINED_QWEN_NEXT_SIMPLICIAL.md` and the proposal for the current contract.
+Imports of the model, checkpoint and EP components now pass in the unchanged
+container. The earlier attribute-only import audit also overstated the
+`transformers.initialization` finding: explicit submodule import succeeds.
+
 ## Decision and scope
 
 Use the following order for the frozen-pretrained/additive-simplicial experiment:

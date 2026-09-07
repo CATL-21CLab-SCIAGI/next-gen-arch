@@ -1,23 +1,29 @@
 # Frozen pretrained Qwen Next with additive simplicial modules
 
-Status: the added leaf module is implemented and tested. Full-model training is
-**not implemented or launched**; faithful pretrained-model integration is blocked.
+Status: NeMo AutoModel is selected; additive integration qualification is in
+progress. Full-model finetuning is **not launched**.
 
 ## Agreed experiment
 
 - Start from the full released Qwen3.8-Flash-Next checkpoint, not any from-scratch
   experiment. Freeze all existing weights and retain original QSA/indexer, GDN,
-  MoE, PLE, gated residual streams, norms and gates. Retain vision/MTP checkpoint
-  weights; do not silently discard them during loading.
+  MoE, PLE, gated residual streams, norms and gates. The user now explicitly
+  permits omitting MTP from the training model. Vision is inactive in this
+  text-only backend. Retain the original checkpoint artifact unchanged and
+  explicitly account for these unused tensor prefixes.
 - Add a separate simplicial residual branch in layers 4, 8, ..., 48 after the
   original attention residual update and before the existing MoE residual read.
 - Train only these additions on one pass of the existing FineWeb-Edu sample-100BT
   tokenized corpus, with 16K context and ordinary main next-token CE.
 - Use one training job, no separately trained comparison/control, no automatic
   unfreezing, and no automatic restart of any prior experiment.
-- Preserve the frozen NeMo runtime and existing DLC nodes. Target native fully
-  sharded DP, with TP/PP/EP/CP/expert-TP all one, subject to numerical and memory
-  validation. Existing historical curves are not a controlled pretrained baseline.
+- Preserve installed container packages and existing DLC nodes. The user now
+  permits AutoModel's in-process runtime patches and expert parallelism. Target
+  FSDP2 over 32 data ranks with node-local EP8 (64 routed experts per EP rank per
+  layer, additionally FSDP-sharded over the four nodes),
+  TP/PP/CP/expert-TP one, subject to numerical and memory validation. EP overlays
+  the data mesh: this still uses 32 GPUs. Historical curves are not a controlled
+  pretrained baseline.
 
 The portable, non-launchable contract is
 `recipes/proposals/qwen38_pretrained_simplicial_fineweb.yaml`.
@@ -53,8 +59,8 @@ parameters. Frozen downstream layers still require input-gradient propagation.
   finite nonzero gradients for all added parameters after an output update.
   This uses a diagnostic SGD update, not a production optimizer or full model.
 
-No full-model parity, checkpoint import, native distributed optimizer,
-fully-sharded-DP, or pretrained training support is claimed by these tests.
+These leaf tests alone do not establish full-model or distributed support. The
+separate integration evidence below must also pass before finetuning.
 
 ## Reuse-first backend qualification
 
@@ -64,11 +70,18 @@ Finding an implementation is not evidence that it supports this experiment.
 The pinned-source audit and qualification plan are in
 [PRETRAINED_BACKEND_REUSE_AUDIT.md](PRETRAINED_BACKEND_REUSE_AUDIT.md).
 
-NeMo AutoModel and ModelScope mcore-bridge now have exact-model implementations.
-The former is the preferred training reference, not a qualified production
-backend. Neither package is installed in the frozen container. Their ordinary
-package imports also install runtime patches, which this experiment forbids.
-Do not import them into a production process merely to probe compatibility.
+NeMo AutoModel is the selected existing implementation, used from the pinned
+external source checkout rather than installed into the container. Its approved
+in-process patches are permitted; do not modify installed package files or add
+unrelated runtime patches. No backbone equations are reimplemented.
+
+`src/archlab/automodel/simplicial.py` extends only the existing MoE residual read
+with the independent adapter. Original Parameter objects and checkpoint keys
+are retained. Original attention/indexer and MoE execution remain upstream code.
+`src/archlab/automodel/probe.py` is a bounded qualification entry, **not** a
+finetuning launcher. The adapter is installed and independently FSDP-sharded
+after base checkpoint loading but before the first model forward; this ordering
+must pass the distributed tests.
 
 ## Current compatibility limits
 
@@ -82,17 +95,153 @@ claim that upstream implementations do not exist.
 The old `qwen38_flash_next_full_train` adapter explicitly constructs a from-scratch
 dense-attention variant. It cannot be used as a faithful pretrained loader.
 
-Both the initial and current upstream Transformers Qwen4Exp implementations
-depend on APIs absent from the installed 5.8.1 runtime. The unmodified NeMo
-AutoModel configuration file, loaded in isolation without its package hooks,
-does parse the actual checkpoint and preserves all 32 audited text-config fields.
-This does not construct a model, load weights, or establish numerical parity.
+The unmodified NeMo AutoModel configuration preserves all 32 audited text-config
+fields. Its model, EP, FSDP and checkpoint components import in the container;
+DeepEP is already available. Twenty-six selected upstream model/QSA/residual
+tests and five project insertion/loading tests pass. The latter establish exact initial
+logits/hidden-state identity, original-weight preservation, adapter gradients
+through a frozen suffix, and strict state restoration on a small CPU model.
+Nine upstream checkpoint tests also pass, including a two-rank owner-sharded
+PLE save/load. Two project data-reader tests pass (42 CPU tests across these
+selected suites in total).
+
+## Integration qualification, 2026-09-07
+
+The upstream distributed-training and parity-testing guidance informed the
+FSDP2+EP selection and the staged CPU/GPU/reference/checkpoint checks. The external
+AutoModel checkout remains unmodified. Container packages and nodes are unchanged.
+
+- `src/archlab/automodel/simplicial.py` installs twelve independent modules at the
+  original MoE read. It unwraps activation-checkpoint wrappers before modifying
+  a decoder; assigning onto the wrapper itself registers unused parameters.
+  A dedicated regression verifies that the added module actually executes.
+- `src/archlab/automodel/loading.py` checks the complete global HF key map before
+  loading: 1,294 active keys, 333 inactive vision keys, 31 inactive MTP keys, no
+  missing or unexplained keys. It reconstructs unsaved RoPE buffers using the
+  original upstream constructor, poisons floating-point destinations with NaNs,
+  and requires every loaded local tensor to be finite. The original checkpoint
+  is read-only and unchanged.
+- The ordinary upstream initializer casts expert storage to BF16. The
+  pretrained path skips random initialization, so it must explicitly reuse that
+  same cast before sharding, preserving intrinsic FP32 GDN state. Otherwise
+  GroupedExperts retain unnecessary FP32 frozen copies.
+- `src/archlab/automodel/probe.py` performs bounded qualification only. Synthetic
+  tokens, main next-token CE at every position, no MTP or router auxiliary loss.
+  Zero-output identity, adapter-only gradients/AdamW, adapter/optimizer/per-rank
+  RNG checkpoint restoration, and replay are tested. No diagnostic checkpoint
+  is a finetuning initialization.
+- Two-GPU EP2+FSDP2 with activation checkpointing passes. An unsharded combined-
+  batch reference has exactly equal logits and mean loss; adapter-gradient
+  relative L2 error is 0.002348 (BF16), max absolute error 7.034e-6. The reference
+  reuses upstream grouped experts with the ordinary torch dispatcher.
+- Adapter weights, optimizer tensors and RNG restore exactly. Subsequent GPU
+  trajectories are **not bitwise deterministic**: the simplicial backward uses
+  FP32 atomic sums, and computation is BF16. Replay separately bounds gradient
+  relative L2 error at 3% and update relative L2 error at 1%; it does not hide
+  differences by comparing relative to the much larger parameter magnitudes.
+  EP2 v6 measured <=1.768e-5 gradient error and <=8.088e-5 update error; an earlier
+  replay measured about 0.52% and 0.54%, respectively. Exact-state tests remain
+  zero-tolerance regardless of these numerical bounds.
+- A full-checkpoint EP4 load-only probe passed on every rank after ~517 seconds
+  of storage reads. All floating-point destinations, including PLE and routed
+  experts, were populated and finite. This initial probe retained the excessive
+  FP32 expert allocation; the BF16 storage correction is in the subsequent
+  full-model 16K probe. A successful load is not forward/backward qualification.
+- The BF16 full-checkpoint EP8 load passed. The initial full-model 16K identity
+  test failed. A repeated baseline with all adapters
+  disabled also differs. Tracing at sequence length 257 shows the first
+  divergence inside the first GDN's installed FLA `chunk_gated_delta_rule`,
+  before PLE and before the first added module. Q/K/V/g/beta are exactly equal
+  across calls; the first-rank GDN output differs by up to 0.0146484375. Its
+  causal convolution is repeatable. Every zero-output adapter independently
+  returns its input exactly. This forward failure is separate from the known
+  simplicial backward atomic-sum nondeterminism and was not waived.
+- The failure reproduces in the isolated FLA chunk-state forward kernel on our
+  L20D GPUs (compute capability 10.3), matching
+  [FLA issue 945](https://github.com/fla-org/flash-linear-attention/issues/945).
+  `src/archlab/automodel/runtime.py` selects existing safe launch configurations
+  from upstream [fix 953](https://github.com/fla-org/flash-linear-attention/pull/953)
+  (forward state: two warps) and
+  [fix 1000](https://github.com/fla-org/flash-linear-attention/pull/1000)
+  (WY backward: two warps, four stages). This is a narrow process-local
+  configuration restriction, not a package upgrade, installed-file edit or
+  kernel rewrite. It clears the in-memory selection cache and disables this
+  tuner's disk-selection cache; existing compiled kernel files are retained.
+  The entry records original source hashes and selected configurations.
+- With those settings, captured pretrained inputs and synthetic full-16K GDN
+  inputs have exactly repeatable outputs and all five input gradients. Against
+  the installed Transformers oracle, full-16K output relative L2 error is
+  0.005586 and gradient errors are 0.00480–0.00668 (BF16). Captured pretrained
+  input errors are 0.003522 forward and 0.00657–0.01050 backward. These are
+  numerical comparisons, not bitwise equivalence between different algorithms.
+- Full-model EP8 **exact initial identity at 16K now passes** with the safe
+  settings. Two all-position main-CE diagnostic updates pass finite gradients
+  for every added parameter after output warm-up; no original parameter has a
+  gradient. Peak allocated memory is about 124.3 GB/rank including replay. Diagnostic AdamW uses
+  lr=1e-3 on synthetic tokens; these losses are not a finetuning curve. Full-size
+  checkpoint weights, optimizer and per-rank RNG restore exactly on every rank.
+  Rank-zero replay gradient/update relative L2 errors are 0.000274/0.000718.
+  Four-node qualification is in progress; do not treat the eight-GPU pass as
+  four-node production qualification.
+- Cross-node DeepEP EP16 initialized on two complete eight-GPU nodes but timed
+  out in its first token dispatch. Its normal-mode implementation assumes
+  contiguous eight-rank NVLink groups; a prior four-GPUs-per-node reduced probe
+  was invalid and the entry now rejects that layout. No nodes were restarted.
+- **DP16 + node-local EP8 passed** on two nodes: exact initial logits,
+  adapter-only gradients, exact checkpoint weights/optimizer/RNG and bounded
+  replay. Combined-batch unsharded-reference logits are equal; adapter-gradient
+  relative L2 error is approximately 0.00306–0.00424. This exercises cross-node
+  FSDP while keeping DeepEP token dispatch within each node. The proposed
+  four-node topology is therefore DP32/EP8, subject to full-size qualification;
+  cross-node EP32 is not selected.
+- The first full DP32/EP8 attempt was stopped during base loading, before any
+  forward/update: all worker loaders waited in `folio_wait_bit_common` on cold
+  OSS safetensor pages while the master waited for them. A sequential test read
+  managed only ~252 MB in 20 seconds on a worker. This is distinct from the
+  cross-node DeepEP failure. `stage_checkpoint.py` is creating a separate NAS
+  copy using standard file-copy operations and SHA256 verification of every
+  file; it does not transform weights or alter the original read-only artifact.
+  The completion sentinel is written only after all indexed weight shards and
+  accompanying top-level files verify. The four-node retry must use the complete
+  verified copy, not a partially copied directory. No DLC nodes were restarted.
+
+Saved probe evidence is under `results/automodel-ep2-probe-20260907-v6-logs`,
+`results/automodel-full-ep4-load-20260907-v1-logs`,
+`results/automodel-full-ep8-16k-20260907-v1-logs`, and
+`results/automodel-ep16-probe-20260907-v2-logs`. Additional evidence is in
+`results/automodel-dp16-ep8-probe-20260907-v2-logs` and
+`results/automodel-full-ep8-identity-20260907-v4-logs`.
+The safe-setting rerun is `results/automodel-full-ep8-16k-20260907-v2-logs`;
+isolated evidence is `results/automodel-gdn-isolated-pretrained-safe-20260907-v1.log`
+and `results/automodel-gdn-isolated-16k-safe-20260907-v1.log`. Two CPU runtime-
+restriction regressions also pass (44 selected CPU tests total).
+Three additional CPU tests cover exact checkpoint copying, missing/escaping
+index entries, refusal to overwrite completed/unrelated artifacts, and repair
+of an explicitly selected incomplete cache (47 selected CPU tests total).
+
+## One-pass data contract
+
+`src/archlab/automodel/data.py` reuses AutoModel's indexed-data reader. It adds a
+manifest-ordered, contiguous fixed-window schedule with disjoint target ranges
+across DP ranks, an explicit replay cursor, and no wrapping. Neither the frozen
+speedrun schedule nor the old cyclic reader is changed. No padding or document-
+reset masks are introduced; existing EOS tokens remain in the raw stream.
+
+The actual FineWeb manifest and pretrained tokenizer match exactly:
+
+- Manifest SHA256: `39f40f57d34a808c48c3babb7ca122d80f85c968613f657fe6892eefb102ab6b`.
+- Tokenizer SHA256: `0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3`.
+- At DP32, microbatch one, 16K: 191,570 complete global microbatches,
+  100,437,852,160 consumed targets, 288,047 unused final targets, one initial
+  context-only token, zero wrapped tokens. These are data accounting numbers,
+  not a finalized optimizer/accumulation schedule.
 
 Do not start a handwritten backbone port on the strength of the AutoConfig error.
 First qualify reuse of upstream model code with a project-owned integration
 boundary. Any necessary compatibility work must be narrowly scoped, attributed,
-and tested against its upstream numerical reference. Runtime upgrades, monkey
-patches, a change in parallelism, and silent substitutions are not fallbacks.
+and tested against its upstream numerical reference. Runtime upgrades,
+unapproved topology changes and silent architectural substitutions are not
+fallbacks; approved AutoModel runtime hooks and EP are recorded exceptions.
 
 Do not launch the portable proposal until every listed gate has dedicated
 evidence. Never replace the original attention with the simplicial pilot wrapper:

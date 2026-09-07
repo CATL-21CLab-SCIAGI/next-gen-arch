@@ -1,5 +1,5 @@
 name: qwen38-pretrained-frozen-additive-simplicial-fineweb
-status: blocked-on-faithful-pretrained-backend
+status: automodel-integration-qualification-in-progress
 backend_qualification:
   order:
     - search-maintained-off-the-shelf-exact-model-code
@@ -9,7 +9,8 @@ backend_qualification:
   decision_record_repository_relative: docs/PRETRAINED_BACKEND_REUSE_AUDIT.md
   preferred_training_reference: NVIDIA-NeMo/Automodel
   preferred_reference_commit: a4ce87c003f08b74d68684d3627f6e6048bc0140
-  production_backend: unqualified
+  source_checkout: env:NGA_AUTOMODEL_ROOT
+  production_backend: NVIDIA-NeMo/Automodel-pending-integration-tests
   handwritten_backbone_reimplementation: not-selected
 model:
   checkpoint: env:NGA_PRETRAINED_QWEN_NEXT
@@ -18,8 +19,12 @@ model:
   freeze_existing_parameters: true
   preserve_existing_qsa_and_indexer: true
   preserve_existing_gdn_moe_ple_residual_norms_and_gates: true
-  retain_vision_and_mtp_weights: true
+  mtp_loading: omitted-user-approved
+  mtp_objective: disabled
+  vision_loading: inactive-text-only-backend
+  original_checkpoint_artifact: retained-unchanged-including-vision-and-MTP
   objective: text-next-token-main-loss-only
+  router_auxiliary_loss_coefficient: 0.0
   added_module: archlab.architectures.simplicial_adapter.SimplicialResidualAdapter
   insertion: after-attention-residual-before-existing-moe-residual-read
   layers_1based: [4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48]
@@ -59,26 +64,41 @@ execution:
   nodes: 4
   gpus_per_node: 8
   data_parallel_size: 32
-  weight_sharding: native-fully-sharded-data-parallel-pending-validation
+  weight_sharding: native-FSDP2-plus-expert-parallelism-pending-validation
   tensor_parallel_size: 1
   pipeline_parallel_size: 1
-  expert_parallel_size: 1
+  expert_parallel_size: 8
   context_parallel_size: 1
   expert_tensor_parallel_size: 1
+  expert_count_per_ep_rank_per_layer: 64
+  expert_fsdp_shards_across_nodes: 4
+  expert_parallel_scope: node-local
+  ple_ownership: upstream-world32-row-sharding-four-physical-shards-per-rank
+  note: EP-overlays-the-DP-mesh-not-32-times-8-GPUs
+  topology_evidence: DP16-EP8-passed-small-model-reference-and-checkpoint-tests
+  excluded_topology: cross-node-DeepEP-EP16-dispatch-timed-out-in-frozen-container
   micro_batch_and_accumulation: pending-memory-and-throughput-probe
   automatic_unfreeze: forbidden
   automatic_baseline_resume: forbidden
 runtime:
   profile: frozen-nemo-26.06
+  python: env:NGA_CONTAINER_PYTHON
   package_installations: forbidden
-  runtime_patches: forbidden
+  runtime_patches: upstream-AutoModel-in-process-patches-user-approved
+  fla_blackwell_launch_restrictions:
+    reference_fixes: [fla-org/flash-linear-attention#953, fla-org/flash-linear-attention#1000]
+    forward_state_num_warps: 2
+    wy_backward_num_warps: 2
+    wy_backward_num_stages: 4
+    installed_source_edits: false
+  installed_package_or_container_file_edits: forbidden
   node_or_controller_restarts: forbidden
 gates:
   require_before_launch:
     - faithful-pretrained-construction-and-complete-weight-map-audit
     - original-QSA-forward-preserved-not-dense-substituted
     - QSA-routing-parity-beyond-indexer-budget
-    - all-original-tensors-loaded-or-explicitly-retained-inactive
+    - every-backbone-tensor-loaded-and-inactive-vision-MTP-keys-accounted-for
     - original-and-zero-adapter-full-model-parity-at-16K
     - original-weights-unchanged-and-excluded-from-optimizer
     - adapter-zero-output-identity
@@ -86,6 +106,6 @@ gates:
     - gradients-reach-early-adapters-through-frozen-layers
     - all-added-parameter-gradients-finite-after-output-warm-start
     - sharded-DP-numerical-and-memory-validation
-    - actual-process-groups-and-PLE-collectives-obey-DP-only-contract
+    - actual-EP-FSDP-process-groups-and-PLE-collectives-match-contract
     - full-model-optimizer-adapter-checkpoint-roundtrip
     - source-runtime-data-and-tokenizer-provenance
