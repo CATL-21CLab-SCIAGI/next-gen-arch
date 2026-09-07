@@ -97,6 +97,38 @@ class AutoModelSimplicialTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 model(input_ids=tokens, **kwargs)
 
+    def test_nonzero_first_backward_preserves_frozen_base_and_roundtrips(self):
+        from dataclasses import replace
+        from archlab.automodel.simplicial import ADAPTER_MARKER, install_simplicial_modules
+
+        torch.manual_seed(58)
+        model, config = self.model_and_config()
+        config = replace(config, output_initialization="normal")
+        tokens = torch.randint(2, 64, (1, 11))
+        base = {n: p.detach().clone() for n, p in model.named_parameters()}
+        with torch.no_grad():
+            original = model(input_ids=tokens).logits.clone()
+        install_simplicial_modules(model, config, backend="reference")
+        logits = model(input_ids=tokens).logits
+        self.assertFalse(torch.equal(original, logits))
+        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
+        logits.backward(torch.randn_like(logits))
+        for name, parameter in model.named_parameters():
+            if ADAPTER_MARKER in name:
+                self.assertIsNotNone(parameter.grad, name)
+                self.assertTrue(torch.isfinite(parameter.grad).all(), name)
+                self.assertGreater(torch.count_nonzero(parameter.grad).item(), 0, name)
+            else:
+                self.assertIsNone(parameter.grad, name)
+        optimizer.step()
+        for name, expected in base.items():
+            self.assertTrue(torch.equal(dict(model.named_parameters())[name], expected), name)
+        restored, _ = self.model_and_config()
+        install_simplicial_modules(restored, config, seed=88, backend="reference")
+        restored.load_state_dict(model.state_dict(), strict=True)
+        torch.testing.assert_close(restored(input_ids=tokens).logits, model(input_ids=tokens).logits,
+                                   rtol=0, atol=0)
+
     def test_checkpoint_wrapped_decoder_executes_added_module(self):
         from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
         from archlab.automodel.simplicial import install_simplicial_modules

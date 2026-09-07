@@ -1,5 +1,5 @@
-name: qwen38-pretrained-frozen-additive-simplicial-fineweb
-status: production-entry-qualified
+name: qwen38-pretrained-frozen-additive-simplicial-fineweb-nonzero
+status: nonzero-entry-qualified-full-model-startup-gates-enabled
 entrypoint: archlab.automodel.train
 training:
   world_size: 32
@@ -33,6 +33,10 @@ backend_qualification:
   source_checkout: env:NGA_AUTOMODEL_ROOT
   production_backend: NVIDIA-NeMo/Automodel
   production_entry_evidence:
+    - nonzero-initialization-twenty-eight-project-CPU-regressions-passed
+    - nonzero-two-GPU-EP-FSDP-first-backward-all-added-parameter-tensors-nonzero
+    - nonzero-fresh-process-state-restore-exact-update-replay-relative-L2-0.006807
+    - zero-init-two-GPU-entry-regression-retains-exact-logits-identity
     - nineteen-project-CPU-regressions-passed
     - two-GPU-FSDP-gradients-global-clipping-norm-and-Adam-update-match-CPU-reference
     - two-GPU-fresh-process-optimizer-scheduler-RNG-and-cursor-exact-restoration
@@ -69,10 +73,18 @@ model:
     rope_theta: 10000000
     rms_norm_eps: 1.0e-6
     initializer_std: 0.02
+    output_initialization: normal
   adapter_parameters_per_layer: 59034368
   total_trainable_parameters: 708412416
-  adapter_output_initialization: zeros
-  first_step_expected_gradient: output-projection-only
+  first_step_expected_gradient: all-added-parameters
+  initialization_experiment:
+    change: output-projection-normal-std-0.02-instead-of-zero
+    norms: zero-centered-offsets-zero-effective-scale-one
+    restart: fresh-pretrained-backbone-fresh-adapters-optimizer-scheduler-and-data-cursor
+    original_run_artifacts: retained
+    motivation: https://arxiv.org/abs/2505.23194
+    interpretation: LoRA-evidence-is-motivation-not-proof-for-nonlinear-simplicial-branches
+    initial_loss_degradation: allowed-and-measured-no-identity-requirement
   positional_variant: ordinary-partial-RoPE-on-Q-K1-K2
   kv_constant_bias: false
 data:
@@ -132,10 +144,10 @@ gates:
     - every-backbone-tensor-loaded-and-inactive-vision-MTP-keys-accounted-for
     - original-and-zero-adapter-full-model-parity-at-16K
     - original-weights-unchanged-and-excluded-from-optimizer
-    - adapter-zero-output-identity
+    - configured-nonzero-output-changes-logits-and-reports-initial-loss-perturbation
     - head256-forward-and-backward-numerical-oracle
     - gradients-reach-early-adapters-through-frozen-layers
-    - all-added-parameter-gradients-finite-after-output-warm-start
+    - all-added-parameter-gradients-finite-and-nonzero-on-first-backward
     - sharded-DP-numerical-and-memory-validation
     - actual-EP-FSDP-process-groups-and-PLE-collectives-match-contract
     - full-model-optimizer-adapter-checkpoint-roundtrip

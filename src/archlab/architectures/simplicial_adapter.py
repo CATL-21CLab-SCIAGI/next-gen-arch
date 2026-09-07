@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 from torch import nn
@@ -38,8 +39,11 @@ class SimplicialAdapterConfig:
     rope_theta: float = 10_000_000.0
     rms_norm_eps: float = 1e-6
     initializer_std: float = 0.02
+    output_initialization: Literal["zeros", "normal"] = "zeros"
 
     def __post_init__(self):
+        if self.output_initialization not in ("zeros", "normal"):
+            raise ValueError("output_initialization must be zeros or normal")
         sizes = (self.hidden_size, self.query_heads, self.kv_heads, self.head_dim,
                  self.residual_streams, self.residual_low_rank,
                  self.short_window, self.long_window)
@@ -82,7 +86,7 @@ def partial_rope(values: torch.Tensor, positions: torch.Tensor, config: Simplici
 
 
 class SimplicialResidualAdapter(nn.Module):
-    """Independent trainable branch with identity-preserving output initialization.
+    """Independent branch with explicit zero or nonzero output initialization.
 
     Construction is CPU/meta-only; execution adapters may move the module to
     CUDA afterward. This keeps initialization from touching CUDA RNG state or
@@ -121,7 +125,11 @@ class SimplicialResidualAdapter(nn.Module):
             for module in self.modules():
                 if isinstance(module, nn.Linear):
                     nn.init.normal_(module.weight, std=config.initializer_std)
-            nn.init.zeros_(self.output.weight)
+            # Both modes consume the same RNG draws and differ only in O.
+            # Zero-centered RMSNorm offsets remain zero: their effective scale
+            # is one, not a zero gate on the branch.
+            if config.output_initialization == "zeros":
+                nn.init.zeros_(self.output.weight)
 
     def forward(self, packed: torch.Tensor, *, position_ids: torch.Tensor | None = None):
         config = self.config

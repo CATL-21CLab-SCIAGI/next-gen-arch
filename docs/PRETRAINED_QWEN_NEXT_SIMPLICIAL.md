@@ -1,8 +1,9 @@
 # Frozen pretrained Qwen Next with additive simplicial modules
 
-Status: the qualified production entry has been launched on the existing four
-DLC nodes as `pretrained-simplicial-fineweb-20260907-v1`. It starts from the released
-pretrained checkpoint with fresh additions, not any diagnostic checkpoint.
+Status: the original zero-output run `pretrained-simplicial-fineweb-20260907-v1`
+was checkpointed and stopped at step 90 for the user-requested nonzero-init
+restart. Its checkpoint, logs and source snapshot are retained. The current
+recipe selects normal output initialization; see the restart record below.
 
 ## Agreed experiment
 
@@ -29,7 +30,55 @@ pretrained checkpoint with fresh additions, not any diagnostic checkpoint.
 The portable training contract is
 `recipes/proposals/qwen38_pretrained_simplicial_fineweb.yaml`.
 
-## Production entry and launch
+## Nonzero-initialization restart (2026-09-07)
+
+The only model-initialization change is
+`model.adapter.output_initialization: normal`: every added linear projection,
+including the `[2560, 6144]` output projection, uses N(0, 0.02²). There is no
+extra attenuation or zero gate. Existing adapter linear weights use the same
+seed and RNG draws as the zero-output configuration; only the output matrix
+differs. Zero-centered RMSNorm offsets still start at zero, which gives an
+effective multiplicative scale of one, not a disabled branch.
+
+This follows the user's explicit request to permit immediate degradation of
+the pretrained model. The motivation is
+[Beyond Zero Initialization](https://arxiv.org/abs/2505.23194), which studies
+LoRA; its findings are not proof for nonlinear simplicial branches. No LoRA
+implementation or initialization formula is being substituted for this model.
+
+The new run starts from the released backbone and fresh additions, Adam state,
+LR schedule, RNG and data cursor zero. It does not resume the old step-90
+checkpoint. Shapes, seeds, LR, data order, evaluation windows, freezing, EP8,
+FSDP32 and the frozen runtime are otherwise unchanged. No nodes are restarted.
+The retained old checkpoint is
+`results/pretrained-simplicial-fineweb-20260907-v1/checkpoints/step-00000090-34c05fc2e901`.
+
+The startup check measures first-batch CE with additions disabled and enabled,
+plus all-position logit RMS difference. Normal mode requires finite, changed
+outputs, not identity or improved loss. Zero mode retains exact-logit identity
+as a regression gate. The first nonzero-mode backward checks finite, nonzero
+gradients for every global added parameter tensor (empty local FSDP shards are
+allowed), and no original parameter gradients. Step-zero held-out evaluation
+uses the initialized model; no second baseline training job is launched.
+
+Qualification: 28 frozen-container CPU tests passed, including exact
+non-output initialization/RNG preservation, first-backward gradient coverage,
+frozen-backbone preservation and model-state roundtrip. The two-GPU EP/FSDP tiny
+production entry completed four steps with all 28 added parameter tensors
+receiving nonzero first-step gradients; this is separate from full-model
+qualification and is not a learning-curve result for the pretrained model.
+Fresh-process restore reproduced exact adapter/Adam/scheduler/RNG state hashes
+on both ranks. Continued updates differed from uninterrupted continuation by
+relative L2 0.006807 (0.681%, within the pre-existing 1% limit), maximum absolute
+weight difference 2.857e-6; scheduler, RNG and step counters matched exactly.
+The existing BF16/custom-kernel numerical nondeterminism is not a promise of
+bitwise replay. A separate two-GPU zero-init entry regression passed exact
+logits identity and completed its first update/checkpoint. Test evidence is in
+`results/automodel-nonzero-smoke-reference-20260907-v1`, its sibling `-resume-`
+run, `results/automodel-nonzero-resume-comparison-20260907-v1.log`, and
+`results/automodel-zero-init-regression-20260907-v1`.
+
+## Original zero-output production entry and launch
 
 The source snapshot is `results/pretrained-simplicial-source-20260907-v1`, made
 from project commit `688f036`. NeMo AutoModel remains pinned to
@@ -117,10 +166,13 @@ has a learned sigmoid gate. The score/value operation has no KV constant bias
 and uses ordinary partial RoPE, not determinant attention. There is no added FFN.
 
 Each branch has 59,034,368 parameters; twelve branches have 708,412,416. The
-output projection starts at zero, so finite inputs initially pass through
-unchanged. First-step non-output parameter gradients are therefore zero by
-design; after the output projection updates, gradients reach all branch
-parameters. Frozen downstream layers still require input-gradient propagation.
+leaf's backward-compatible default is zero output, preserving finite inputs
+exactly and allowing only output-projection gradients on the first backward.
+The current recipe explicitly selects normal output initialization so the
+branch is active immediately and all parameter tensors can receive gradients
+on the first backward. Frozen downstream layers still require input-gradient
+propagation. Historical zero-output qualification below remains labelled as
+such; it does not imply identity for the requested nonzero variant.
 
 ## Evidence and limits
 

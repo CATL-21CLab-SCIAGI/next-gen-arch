@@ -112,9 +112,15 @@ class TrainingSession:
                           micro_batch=self.config.micro_batch, device="cuda")
 
     @torch.no_grad()
-    def check_initial_identity(self) -> None:
+    def check_initialization(self) -> None:
+        """Check the declared initialization and record its first-batch loss impact.
+
+        Nonzero initialization may worsen loss arbitrarily; only nonfinite
+        output or a silently inactive branch is an error in that mode.
+        """
         batch = self.batch(self.train_data, 0)
         reads = [m for m in self.model.modules() if isinstance(m, AdditiveMoERead)]
+        mode = self.contract["adapter"]["output_initialization"]
         self.model.eval()
         try:
             for read in reads:
@@ -123,12 +129,40 @@ class TrainingSession:
             for read in reads:
                 read.adapter_enabled = True
             actual = self.model(input_ids=batch["input_ids"]).logits
-            torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+            finite = (torch.isfinite(actual).all() & torch.isfinite(reference).all()).to(torch.int32)
+            dist.all_reduce(finite, op=dist.ReduceOp.MIN)
+            if not finite.item():
+                raise RuntimeError("nonfinite initial logits")
+            identical = torch.tensor(int(torch.equal(actual, reference)), device="cuda")
+            dist.all_reduce(identical, op=dist.ReduceOp.MIN)
+            if mode == "zeros" and not identical.item():
+                raise RuntimeError("zero-output initialization did not preserve exact logits")
+            changed = torch.tensor(int(not torch.equal(actual, reference)), device="cuda")
+            dist.all_reduce(changed, op=dist.ReduceOp.MIN)
+            if mode == "normal" and not changed.item():
+                raise RuntimeError("nonzero-output initialization did not change logits on every rank")
+            losses = torch.stack((self.loss_fn(reference, batch["labels"]),
+                                  self.loss_fn(actual, batch["labels"]))).double()
+            dist.all_reduce(losses)
+            losses /= self.config.world_size
+            # Bound temporary FP32 storage rather than converting both entire
+            # [batch, sequence, vocabulary] 16K logits tensors at once.
+            squared_delta = torch.zeros((), device="cuda", dtype=torch.float64)
+            elements = torch.tensor(actual.numel(), device="cuda", dtype=torch.float64)
+            for start in range(0, actual.shape[1], 256):
+                delta = actual[:, start:start + 256].float() - reference[:, start:start + 256].float()
+                squared_delta += delta.square().sum(dtype=torch.float64)
+            dist.all_reduce(squared_delta)
+            dist.all_reduce(elements)
+            logit_delta_rms = (squared_delta / elements).sqrt().item()
         finally:
             for read in reads:
                 read.adapter_enabled = True
             self.model.train()
-        self.record("initial_identity_pass", sequence_length=self.config.sequence_length)
+        self.record("initial_identity_pass" if mode == "zeros" else "initial_nonzero_pass",
+                    sequence_length=self.config.sequence_length, output_initialization=mode,
+                    backbone_loss=losses[0].item(), initialized_loss=losses[1].item(),
+                    loss_delta=(losses[1] - losses[0]).item(), logit_delta_rms=logit_delta_rms)
 
     @torch.no_grad()
     def validate(self, cursor: int) -> None:
@@ -166,7 +200,8 @@ class TrainingSession:
         loss = self.loss_fn(logits, batch["labels"])
         loss.backward()
         del logits
-        checks, issues = [torch.isfinite(loss)], []
+        checks, issues, nonzero = [torch.isfinite(loss)], [], []
+        check_first_nonzero = cursor == 0 and self.contract["adapter"]["output_initialization"] == "normal"
         for name, parameter in self.model.named_parameters():
             if not parameter.requires_grad:
                 if parameter.grad is not None:
@@ -176,10 +211,23 @@ class TrainingSession:
             else:
                 local = parameter.grad.to_local()
                 checks.append(torch.isfinite(local).all())
+                if check_first_nonzero:
+                    nonzero.append(torch.count_nonzero(local) > 0)
         valid = (torch.stack(checks).all() & (not issues)).to(torch.int32)
         dist.all_reduce(valid, op=dist.ReduceOp.MIN)
         if not valid.item():
             raise RuntimeError(f"nonfinite loss/gradient or trainability violation: {issues}")
+        if check_first_nonzero:
+            # An individual FSDP shard can be empty; require nonzero gradients
+            # for every GLOBAL added parameter, not on every local shard.
+            nonzero_parameters = torch.stack(nonzero).to(torch.int32)
+            dist.all_reduce(nonzero_parameters, op=dist.ReduceOp.MAX)
+            if not nonzero_parameters.all().item():
+                names = [n for n, p in self.model.named_parameters() if p.requires_grad]
+                missing = [n for n, present in zip(names, nonzero_parameters.tolist()) if not present]
+                raise RuntimeError(f"zero first-step gradients with nonzero initialization: {missing}")
+            self.record("first_step_nonzero_gradients_pass", parameter_tensors=len(nonzero),
+                        all_added_parameters=True, frozen_gradients_absent=True)
         norm = scale_grads_and_clip_grad_norm(
             self.config.gradient_clip, [self.model], device_mesh=self.mesh.device_mesh,
             moe_mesh=self.mesh.moe_mesh, ep_axis_name="ep", dp_group_size=self.config.world_size, foreach=False)
@@ -221,7 +269,7 @@ class TrainingSession:
             raise ValueError("stop boundary must exceed the restored cursor")
         self.model.train()
         if start_cursor == 0:
-            self.check_initial_identity()
+            self.check_initialization()
             self.validate(0)
         for cursor in range(start_cursor, end):
             self.train_step(cursor)
@@ -266,8 +314,8 @@ def main() -> None:
         config = replace(config, world_size=world, ep_size=min(8, world), sequence_length=129,
                          warmup_steps=2, validation_interval=2, early_validation_step=2,
                          validation_batches=1, checkpoint_interval=2)
-        adapter_config = SimplicialAdapterConfig(hidden_size=256, query_heads=4, kv_heads=2, head_dim=64,
-                                               residual_low_rank=32, short_window=4, long_window=32)
+        adapter_config = replace(adapter_config, hidden_size=256, query_heads=4, kv_heads=2, head_dim=64,
+                                 residual_low_rank=32, short_window=4, long_window=32)
     if int(os.environ["WORLD_SIZE"]) != config.world_size or (args.stop_after is not None and args.stop_after < 1):
         parser.error("world size mismatch or invalid stop boundary")
     checkpoint = None if args.tiny else (args.checkpoint or _path(recipe["model"]["checkpoint"])).resolve()

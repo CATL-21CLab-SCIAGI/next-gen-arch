@@ -34,7 +34,8 @@ class SimplicialAdapterTests(unittest.TestCase):
     def test_configuration_rejects_invalid_geometry(self):
         for values in ({"head_dim": 192}, {"query_heads": 3}, {"short_window": 129},
                        {"rotary_fraction": 0.001}, {"hidden_size": 0},
-                       {"query_heads": 512}, {"rms_norm_eps": float("nan")}):
+                       {"query_heads": 512}, {"rms_norm_eps": float("nan")},
+                       {"output_initialization": "invalid"}):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 replace(SimplicialAdapterConfig(), **values)
 
@@ -54,6 +55,30 @@ class SimplicialAdapterTests(unittest.TestCase):
             self.assertIsNotNone(p.grad, name)
             if name != "output.weight":
                 self.assertEqual(torch.count_nonzero(p.grad).item(), 0, name)
+
+    def test_nonzero_initialization_changes_only_output_and_reaches_all_parameters(self):
+        torch.manual_seed(201)
+        state = torch.get_rng_state().clone()
+        config = replace(small_config(), output_initialization="normal")
+        module = SimplicialResidualAdapter(config, backend="reference")
+        zero = SimplicialResidualAdapter(small_config(), backend="reference")
+        repeated = SimplicialResidualAdapter(config, backend="reference")
+        self.assertTrue(torch.equal(state, torch.get_rng_state()))
+        for name, value in module.state_dict().items():
+            self.assertTrue(torch.isfinite(value).all(), name)
+            self.assertTrue(torch.equal(value, repeated.state_dict()[name]), name)
+            if name != "output.weight":
+                self.assertTrue(torch.equal(value, zero.state_dict()[name]), name)
+        self.assertGreater(module.output.weight.std().item(), 0.015)
+        self.assertLess(module.output.weight.std().item(), 0.025)
+        x = torch.randn(2, 6, 64, requires_grad=True)
+        out = module(x)
+        self.assertFalse(torch.equal(out, x))
+        out.backward(torch.randn_like(out))
+        for name, parameter in module.named_parameters():
+            self.assertIsNotNone(parameter.grad, name)
+            self.assertTrue(torch.isfinite(parameter.grad).all(), name)
+            self.assertGreater(torch.count_nonzero(parameter.grad).item(), 0, name)
 
     def test_two_updates_reach_every_added_parameter_through_frozen_suffix(self):
         module = SimplicialResidualAdapter(small_config(), backend="reference")
