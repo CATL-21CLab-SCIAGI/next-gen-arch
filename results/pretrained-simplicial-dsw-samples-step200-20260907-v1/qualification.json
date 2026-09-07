@@ -1,0 +1,60 @@
+{
+  "hostname": "dsw-720471-7685778557-xz7cd",
+  "operating_system": "Ubuntu 24.04.4 LTS",
+  "python": "/mnt/nas/evergreen/env/venv/bin/python",
+  "sampler_entry": "src/archlab/automodel/sample.py",
+  "sampler_entry_sha256": "8aa13c4221ccf356b4920bac89b395392f9c3d6fa4c8fb04bccfdff73ac598de",
+  "tests": [
+    {
+      "suite": "test_automodel_sampling",
+      "tests": [
+        "test_adapter_subset_load_exact_and_fail_closed",
+        "test_config_rejects_invalid_values",
+        "test_original_ple_cpu_lookup_matches_gpu_bitwise",
+        "test_upstream_gdn_qsa_moe_and_added_branch_uncached_forward"
+      ],
+      "passed": 4,
+      "failed": 0,
+      "seconds": 246.570,
+      "log": "qualification.log"
+    },
+    {
+      "suite": "test_automodel_sampling",
+      "tests": ["test_upstream_single_owner_base_loader_exact_roundtrip"],
+      "passed": 1,
+      "failed": 0,
+      "seconds": 112.106,
+      "log": "base-loader-qualification.log"
+    },
+    {
+      "suite": "test_automodel_sampling",
+      "tests": ["test_short_prefix_flex_unfused_matches_compiled"],
+      "passed": 1,
+      "failed": 0,
+      "seconds": 11.820,
+      "lengths": [17, 129],
+      "query_heads": 24,
+      "kv_heads": 2,
+      "head_dim": 256,
+      "dtype": "bfloat16",
+      "relative_tolerance": 0.02,
+      "absolute_tolerance": 0.02,
+      "log": "flex-dispatch-qualification.log"
+    },
+    {
+      "suite": "test_simplicial_head256",
+      "tests": ["test_oracle_forward_backward_and_both_window_boundaries"],
+      "passed": 1,
+      "failed": 0,
+      "subcases": 6,
+      "dtypes": ["float32", "bfloat16"],
+      "seconds": 17.375
+    }
+  ],
+  "observed_dispatch": "The upstream static FlexAttention wrapper reached PyTorch's eight-recompile limit as prefixes grew. Standard unfused short-prefix attention then ran; the debug bypass was not enabled. The fallback passed the full-head-geometry compiled-versus-unfused test above.",
+  "limitations": [
+    "These checks do not claim full-size DLC-versus-DSW numerical parity.",
+    "Inference uses the previously approved DSW environment, not the DLC training container.",
+    "Samples are raw continuations, not chat-template responses or a baseline quality comparison."
+  ]
+}
