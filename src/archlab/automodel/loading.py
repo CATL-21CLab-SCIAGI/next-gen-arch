@@ -20,7 +20,15 @@ def audit_checkpoint_keys(model, checkpoint: Path) -> dict:
     unexpected = set(index) - expected - inactive
     if missing or unexpected or expected & inactive:
         raise ValueError(f"checkpoint coverage mismatch: missing={sorted(missing)}, unexpected={sorted(unexpected)}")
-    return {"index_sha256": hashlib.sha256(raw).hexdigest(), "backbone_keys": len(expected),
+    cache_path = checkpoint / "ARCHLAB_VERIFIED_COPY.json"
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else None
+    index_sha256 = hashlib.sha256(raw).hexdigest()
+    if cache is not None and cache.get("source_index_sha256") != index_sha256:
+        raise ValueError("verified cache index no longer matches its source record")
+    return {"index_sha256": index_sha256, "backbone_keys": len(expected),
+            "checkpoint_path": str(checkpoint.resolve()),
+            "source_checkpoint": cache["source"] if cache is not None else str(checkpoint.resolve()),
+            "cache_manifest_sha256": hashlib.sha256(cache_path.read_bytes()).hexdigest() if cache is not None else None,
             "inactive_vision_keys": sum(k.startswith("model.visual.") for k in inactive),
             "inactive_mtp_keys": sum(not k.startswith("model.visual.") for k in inactive),
             "missing_keys": 0, "unexpected_keys": 0}

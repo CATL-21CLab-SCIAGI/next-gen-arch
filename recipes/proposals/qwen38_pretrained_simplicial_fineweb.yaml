@@ -1,5 +1,5 @@
 name: qwen38-pretrained-frozen-additive-simplicial-fineweb
-status: automodel-integration-qualification-in-progress
+status: automodel-model-integration-qualified-production-entry-pending
 backend_qualification:
   order:
     - search-maintained-off-the-shelf-exact-model-code
@@ -10,7 +10,8 @@ backend_qualification:
   preferred_training_reference: NVIDIA-NeMo/Automodel
   preferred_reference_commit: a4ce87c003f08b74d68684d3627f6e6048bc0140
   source_checkout: env:NGA_AUTOMODEL_ROOT
-  production_backend: NVIDIA-NeMo/Automodel-pending-integration-tests
+  production_backend: NVIDIA-NeMo/Automodel-pending-production-entry-qualification
+  model_integration_evidence: full-pretrained-DP32-EP8-16K-FineWeb-identity-gradients-checkpoint-replay-passed
   handwritten_backbone_reimplementation: not-selected
 model:
   checkpoint: env:NGA_PRETRAINED_QWEN_NEXT
@@ -64,7 +65,7 @@ execution:
   nodes: 4
   gpus_per_node: 8
   data_parallel_size: 32
-  weight_sharding: native-FSDP2-plus-expert-parallelism-pending-validation
+  weight_sharding: native-FSDP2-plus-expert-parallelism-full-model-integration-validated
   tensor_parallel_size: 1
   pipeline_parallel_size: 1
   expert_parallel_size: 8
@@ -75,9 +76,13 @@ execution:
   expert_parallel_scope: node-local
   ple_ownership: upstream-world32-row-sharding-four-physical-shards-per-rank
   note: EP-overlays-the-DP-mesh-not-32-times-8-GPUs
-  topology_evidence: DP16-EP8-passed-small-model-reference-and-checkpoint-tests
+  topology_evidence:
+    - DP16-EP8-passed-small-model-reference-and-checkpoint-tests
+    - DP32-EP8-passed-full-pretrained-16K-real-FineWeb-integration
   excluded_topology: cross-node-DeepEP-EP16-dispatch-timed-out-in-frozen-container
   micro_batch_and_accumulation: pending-memory-and-throughput-probe
+  production_lr_schedule: pending-warmup-and-lower-starting-LR-qualification
+  diagnostic_lr_caution: constant-1e-4-overshot-first-update-on-repeated-FineWeb-batch
   automatic_unfreeze: forbidden
   automatic_baseline_resume: forbidden
 runtime:

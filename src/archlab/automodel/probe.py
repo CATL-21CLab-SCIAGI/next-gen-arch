@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import json
 import logging
+import math
 import os
 import socket
 import subprocess
@@ -22,6 +23,7 @@ from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
 from nemo_automodel.components.checkpoint.config import CheckpointingConfig
 from nemo_automodel.components.checkpoint.checkpointing import Checkpointer
+from nemo_automodel.components.checkpoint.stateful_wrappers import OptimizerState
 from nemo_automodel.components.distributed.config import DistributedSetup, FSDP2Config
 from nemo_automodel.components.distributed.mesh import ParallelismSizes
 from nemo_automodel.components.distributed.activation_checkpointing import unwrap_checkpoint_wrapper
@@ -115,8 +117,13 @@ def build_frozen_base(config, *, tiny: bool, checkpoint: Path | None, ep_size: i
 
 
 def checkpoint_payload(adapters, optimizer):
+    # Reuse the upstream PEFT+EP path, including lazy Adam-state materialization.
+    # A fresh optimizer otherwise has an empty DCP load skeleton and can silently
+    # omit saved moments. These additions are PEFT, although they are not LoRA.
+    optimizer_state = OptimizerState(torch.nn.ModuleDict(adapters), optimizer,
+                                     is_peft=True, has_expert_parallelism=True).state_dict()["optim"]
     return {"adapters": {name: module.state_dict() for name, module in adapters.items()},
-            "optimizer": optimizer.state_dict(),
+            "optimizer": optimizer_state,
             f"rng_rank_{dist.get_rank()}": {"cpu": torch.get_rng_state(), "cuda": torch.cuda.get_rng_state()}}
 
 
@@ -146,6 +153,7 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--ep-size", type=int, required=True)
     parser.add_argument("--sequence-length", type=int, default=129)
+    parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--activation-checkpointing", action="store_true")
     parser.add_argument("--check-ep-reference", action="store_true")
     parser.add_argument("--load-only", action="store_true")
@@ -157,6 +165,8 @@ def main():
         parser.error("--checkpoint is required for a pretrained probe")
     if args.ep_size < 2 or args.sequence_length < 1:
         parser.error("use EP >= 2 and a positive sequence length")
+    if not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
+        parser.error("learning rate must be finite and positive")
     if args.check_ep_reference and not args.tiny:
         parser.error("the combined-batch reference is tiny-model-only")
     if args.data_root is not None and args.tiny:
@@ -186,6 +196,7 @@ def main():
             args.checkpoint, local_files_only=True, language_model_only=True)
         config.language_model_only = True
         emit("runtime", upstream=revision,
+             probe_args={key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
              packages={name: importlib.metadata.version(name) for name in
                        ("torch", "transformers", "transformer-engine", "megatron-core", "fla-core", "triton")},
              ep_size=args.ep_size, world_size=dist.get_world_size(), tp_size=1, pp_size=1, cp_size=1,
@@ -348,7 +359,7 @@ def main():
         emit("identity_pass", sequence_length=args.sequence_length)
         if args.identity_only:
             return
-        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-3,
+        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.learning_rate,
                                       betas=(.9, .95), weight_decay=.1, foreach=False)
         loss_fn = MaskedCrossEntropy(reduction="mean")
 
@@ -377,6 +388,7 @@ def main():
                         captured_gradients[name] = grad.detach().clone()
             optimizer.step()
             emit("diagnostic_update", step=step, loss=loss.item(), seconds=time.monotonic()-start,
+                 learning_rate=optimizer.param_groups[0]["lr"],
                  peak_allocated_bytes=torch.cuda.max_memory_allocated())
             return loss.detach().clone()
 
@@ -393,6 +405,10 @@ def main():
         with torch.no_grad():
             for parameter in saved:
                 dict(model.named_parameters())[parameter].add_(.125)
+        # Deliberately discard the live optimizer: restoration must also work
+        # without its already-allocated moment tensors or step counters.
+        optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.learning_rate,
+                                      betas=(.9, .95), weight_decay=.1, foreach=False)
         restored = checkpoint_payload(adapters, optimizer)
         dcp.load(restored, checkpoint_id=path)
         for name, adapter in adapters.items():
@@ -435,6 +451,7 @@ def main():
             raise AssertionError("resume trajectory exceeds BF16 gradient/update numerical bounds")
         emit("probe_pass", losses=losses, checkpoint_parameter_restore=True,
              checkpoint_optimizer_restore=True, checkpoint_rng_restore=True,
+             checkpoint_fresh_optimizer_restore=True,
              resume_next_update_max_abs=max_resume_difference, objective="main-next-token-CE-all-positions",
              production_qualified=False, sequence_length=args.sequence_length, tiny=args.tiny,
              pending="all recipe gates plus real-data launch-entry qualification")

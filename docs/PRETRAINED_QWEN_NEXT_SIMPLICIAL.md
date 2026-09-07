@@ -1,7 +1,8 @@
 # Frozen pretrained Qwen Next with additive simplicial modules
 
-Status: NeMo AutoModel is selected; additive integration qualification is in
-progress. Full-model finetuning is **not launched**.
+Status: NeMo AutoModel additive-model integration passed the full four-node,
+16K real-FineWeb probe. Production training-entry/schedule qualification remains;
+full-model finetuning is **not launched**.
 
 ## Agreed experiment
 
@@ -181,8 +182,8 @@ AutoModel checkout remains unmodified. Container packages and nodes are unchange
   lr=1e-3 on synthetic tokens; these losses are not a finetuning curve. Full-size
   checkpoint weights, optimizer and per-rank RNG restore exactly on every rank.
   Rank-zero replay gradient/update relative L2 errors are 0.000274/0.000718.
-  Four-node qualification is in progress; do not treat the eight-GPU pass as
-  four-node production qualification.
+  The subsequent four-node real-data result below is separate from this
+  eight-GPU synthetic-token result.
 - Cross-node DeepEP EP16 initialized on two complete eight-GPU nodes but timed
   out in its first token dispatch. Its normal-mode implementation assumes
   contiguous eight-rank NVLink groups; a prior four-GPUs-per-node reduced probe
@@ -192,18 +193,45 @@ AutoModel checkout remains unmodified. Container packages and nodes are unchange
   replay. Combined-batch unsharded-reference logits are equal; adapter-gradient
   relative L2 error is approximately 0.00306–0.00424. This exercises cross-node
   FSDP while keeping DeepEP token dispatch within each node. The proposed
-  four-node topology is therefore DP32/EP8, subject to full-size qualification;
+  four-node topology is therefore DP32/EP8, subsequently exercised at full size;
   cross-node EP32 is not selected.
 - The first full DP32/EP8 attempt was stopped during base loading, before any
   forward/update: all worker loaders waited in `folio_wait_bit_common` on cold
   OSS safetensor pages while the master waited for them. A sequential test read
   managed only ~252 MB in 20 seconds on a worker. This is distinct from the
-  cross-node DeepEP failure. `stage_checkpoint.py` is creating a separate NAS
+  cross-node DeepEP failure. `stage_checkpoint.py` created a separate NAS
   copy using standard file-copy operations and SHA256 verification of every
   file; it does not transform weights or alter the original read-only artifact.
   The completion sentinel is written only after all indexed weight shards and
-  accompanying top-level files verify. The four-node retry must use the complete
-  verified copy, not a partially copied directory. No DLC nodes were restarted.
+  accompanying top-level files verify. The completed cache contains all 131
+  weight shards and 360,023,349,599 bytes across its files. Every source/copy
+  SHA256 matched; all four nodes see the completion manifest. Its source index
+  SHA256 is `99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de`.
+  The four-node real-FineWeb retry uses that verified copy, not a partial cache.
+  No DLC nodes were restarted.
+- **Full DP32/EP8, 16K, real FineWeb passed on every rank.** All 32 ranks loaded
+  finite pretrained weights, installed twelve additions, and passed exact
+  initial logits identity at every position. Initial global mean next-token CE
+  is 1.85804379 over 524,288 targets. All added gradients are finite and nonzero
+  after output warm-up; no original parameter receives a gradient. Adapter
+  parameters, optimizer moments/steps and per-rank RNG restore exactly, including
+  into a newly constructed optimizer using upstream lazy-state materialization.
+  Replay loss is equal; gradient relative L2 errors are 0.002165–0.003411 and
+  update relative L2 errors 0.001782–0.002350. Maximum absolute replay weight
+  difference is 4.992e-5, consistent with the predeclared BF16/atomic-sum bounds.
+  All four launchers exited zero and released their GPUs.
+- Full32 peak allocated memory is 89,768,656,384 bytes/rank (89.8 GB, 83.6 GiB).
+  The verified NAS checkpoint load took approximately 13 minutes. Diagnostic
+  update maximum rank times were 45.79 seconds for the first backward, followed
+  by 18.65, 16.35 and 13.88 seconds (the last is replay). These are bounded probe
+  timings, not a steady-state finetuning throughput claim.
+- At the diagnostic constant AdamW lr=1e-4, repeated-batch global mean losses
+  were **1.858044 → 2.477143 → 1.844002**, with replay exactly matching the last
+  mean. The initial overshoot means this is **not** an approved production LR
+  schedule. Qualify a gradual warm-up/lower starting LR, production batch size,
+  held-out reporting, one-pass cursor and separate-process training-entry recovery
+  before launching the corpus pass. Do not interpret repeated-batch fitting as
+  held-out improvement or initialize finetuning from this diagnostic checkpoint.
 
 Saved probe evidence is under `results/automodel-ep2-probe-20260907-v6-logs`,
 `results/automodel-full-ep4-load-20260907-v1-logs`,
@@ -218,6 +246,16 @@ restriction regressions also pass (44 selected CPU tests total).
 Three additional CPU tests cover exact checkpoint copying, missing/escaping
 index entries, refusal to overwrite completed/unrelated artifacts, and repair
 of an explicitly selected incomplete cache (47 selected CPU tests total).
+Two further CPU tests cover cache provenance/index drift and exact restoration
+into a fresh AdamW optimizer (49 selected CPU tests total). The latter reuses
+upstream `OptimizerState` with its PEFT+EP path, including materializing lazy
+Adam state before DCP loading. The full four-node retry discards the live
+optimizer before checkpoint restoration as well. This is not yet a separate-
+process training-entry recovery test.
+Full32 real-data evidence is under
+`results/automodel-full-dp32-ep8-fineweb-20260907-v2-logs`; every `probe_pass`
+explicitly retains `production_qualified: false` because the production entry
+and its remaining gates are distinct from the now-passed model integration.
 
 ## One-pass data contract
 
