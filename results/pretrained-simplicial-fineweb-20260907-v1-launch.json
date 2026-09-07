@@ -1,0 +1,36 @@
+{
+  "run": "pretrained-simplicial-fineweb-20260907-v1",
+  "source_snapshot": "results/pretrained-simplicial-source-20260907-v1",
+  "project_commit": "688f036",
+  "upstream_commit": "a4ce87c003f08b74d68684d3627f6e6048bc0140",
+  "nodes": [
+    {
+      "host": "22.0.243.22",
+      "node_rank": 0,
+      "launcher_pid": 250367
+    },
+    {
+      "host": "22.0.254.34",
+      "node_rank": 1,
+      "launcher_pid": 142949
+    },
+    {
+      "host": "22.0.241.50",
+      "node_rank": 2,
+      "launcher_pid": 142432
+    },
+    {
+      "host": "22.0.241.128",
+      "node_rank": 3,
+      "launcher_pid": 161133
+    }
+  ],
+  "world_size": 32,
+  "ep_size": 8,
+  "mtp": false,
+  "backbone_frozen": true,
+  "initialization": "released-checkpoint-plus-fresh-zero-output-additions",
+  "resume_from": null,
+  "stop_after": null,
+  "nodes_restarted": false
+}

@@ -1,8 +1,8 @@
 # Frozen pretrained Qwen Next with additive simplicial modules
 
-Status: NeMo AutoModel additive-model integration passed the full four-node,
-16K real-FineWeb probe. Production training-entry/schedule qualification remains;
-full-model finetuning is **not launched**.
+Status: the qualified production entry has been launched on the existing four
+DLC nodes as `pretrained-simplicial-fineweb-20260907-v1`. It starts from the released
+pretrained checkpoint with fresh additions, not any diagnostic checkpoint.
 
 ## Agreed experiment
 
@@ -26,8 +26,83 @@ full-model finetuning is **not launched**.
   the data mesh: this still uses 32 GPUs. Historical curves are not a controlled
   pretrained baseline.
 
-The portable, non-launchable contract is
+The portable training contract is
 `recipes/proposals/qwen38_pretrained_simplicial_fineweb.yaml`.
+
+## Production entry and launch
+
+The source snapshot is `results/pretrained-simplicial-source-20260907-v1`, made
+from project commit `688f036`. NeMo AutoModel remains pinned to
+`a4ce87c003f08b74d68684d3627f6e6048bc0140`. The launch happened before git push;
+no new user permission, package installation, environment, subagent or node
+restart was required.
+
+- `src/archlab/automodel/train.py`: production entry, one-pass optimizer loop,
+  fixed held-out evaluation, signal-requested save/stop, and metrics.
+- `src/archlab/automodel/training_config.py`: typed optimizer/schedule policy;
+  the YAML `training` section is the editable experiment configuration.
+- `src/archlab/automodel/execution.py`: the construction/load functions already
+  exercised by the full32 probe, shared unchanged with that probe.
+- `src/archlab/automodel/checkpointing.py`: adapter-only DCP, upstream PEFT/EP
+  Adam-state materialization, exact per-rank state hashes, completion manifests,
+  and strict cursor/runtime/data checks before fresh-process restoration.
+- `src/archlab/architectures/simplicial_adapter.py`: independent added-module
+  definition and shapes. `automodel/simplicial.py` owns the insertion boundary;
+  the original backbone remains the pinned upstream implementation.
+
+The launch uses microbatch one, no accumulation, 524,288 targets per step,
+AdamW (betas 0.9/0.95, epsilon 1e-8, weight decay 0.1), global adapter-gradient
+clipping at 1.0, LR 1e-7 rising linearly to 1e-5 over 200 steps, then cosine decay
+to 1e-6 over the one-pass horizon of 191,570 steps. This deliberately does not
+reuse the overshooting constant-lr=1e-4 diagnostic settings.
+
+Validation uses the same first four global held-out batches (2,097,152 targets)
+at step zero, step ten, and every 100 steps. It is a labelled fixed validation
+prefix, not the whole validation split. Checkpoints are saved after step one,
+warm-up, every 1,000 steps, at the final/explicit stop boundary, or after a
+SIGUSR1 request to a training rank. SIGTERM/SIGINT request save-and-stop at a
+completed optimizer-step boundary. Original weights are never saved over or
+included in these new adapter checkpoints. `LATEST.json` points to a completed
+checkpoint; incomplete saves never publish `COMPLETE.json`. Checkpoints are not
+automatically deleted.
+
+The original checkpoint remains at its supplied read-only path. This run loads
+the separate SHA256-verified NAS copy; provenance retains the original location
+and hashes. Source, model/config/tokenizer, data manifest, schedule, tensor names
+and topology must match on resume. A new process restores the saved optimizer,
+scheduler, CPU/CUDA RNG and exact next data cursor; it cannot silently load the
+earlier diagnostic checkpoints or restart the data stream.
+
+Training-entry qualification passed 19 project CPU tests, a two-GPU comparison
+of FSDP gradients/global clipping norm/Adam updates against a CPU oracle, and an
+actual two-process exit/restart from step two. Exact state digests passed on
+both resumed ranks. Compared with uninterrupted continuation to step four,
+adapter-update relative L2 error was 3.856e-5 and maximum absolute weight error
+3.167e-8; scheduler, RNG and step counters matched exactly. The staged tests
+followed AutoModel's recipe and parity-testing guidance. Full32 model/EP evidence
+below remains distinct from this small, fresh-process training-entry test.
+
+Run files are under `results/pretrained-simplicial-fineweb-20260907-v1`:
+`metrics.jsonl`, per-attempt manifests, `LATEST.json` and `checkpoints/`.
+Per-rank startup/errors are in the sibling `-logs` directory; node launcher PIDs
+and source pins are in the sibling `-launch.json` record.
+
+Initial production observations (attempt `34c05fc2e901`, through step 22):
+
+- Exact initial 16K logits identity passed before any optimizer update.
+- Fixed held-out loss decreased from 1.936017 at step zero to 1.923916 at step
+  ten, on the same 2,097,152 targets. This is an early warm-up observation, not
+  evidence of a converged gain or a controlled comparison with historical runs.
+- All observed gradients were finite; peak allocated memory stayed at
+  89,768,406,528 bytes per rank. Recent steps take about 13.3–14.1 seconds,
+  approximately 37,000–39,500 target tokens/second across all 32 GPUs.
+- The completed step-one checkpoint is
+  `checkpoints/step-00000001-34c05fc2e901`, with cursor one, all 32 rank-state
+  hashes and an 8.53 GB state payload. It contains additions and training state,
+  not a duplicate of the frozen pretrained backbone.
+- A full 100.44B-target pass is roughly a month at this early throughput, before
+  allowing for interruptions and checkpoint/evaluation overhead. This is an
+  extrapolation, not a completion-time guarantee.
 
 ## Added leaf mechanism
 
@@ -230,7 +305,8 @@ AutoModel checkout remains unmodified. Container packages and nodes are unchange
   mean. The initial overshoot means this is **not** an approved production LR
   schedule. Qualify a gradual warm-up/lower starting LR, production batch size,
   held-out reporting, one-pass cursor and separate-process training-entry recovery
-  before launching the corpus pass. Do not interpret repeated-batch fitting as
+  before launching the corpus pass; the subsequent production-entry tests above
+  cover that path. Do not interpret repeated-batch fitting as
   held-out improvement or initialize finetuning from this diagnostic checkpoint.
 
 Saved probe evidence is under `results/automodel-ep2-probe-20260907-v6-logs`,
@@ -281,6 +357,6 @@ and tested against its upstream numerical reference. Runtime upgrades,
 unapproved topology changes and silent architectural substitutions are not
 fallbacks; approved AutoModel runtime hooks and EP are recorded exceptions.
 
-Do not launch the portable proposal until every listed gate has dedicated
-evidence. Never replace the original attention with the simplicial pilot wrapper:
+Changes to the qualified model, topology or training policy must revalidate the
+affected gates. Never replace the original attention with the simplicial pilot wrapper:
 that wrapper swaps attention, whereas this experiment must add a new branch.
