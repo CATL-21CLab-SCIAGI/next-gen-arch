@@ -31,6 +31,15 @@ class CollectiveModel(TinyCausalModel):
         return super().forward(*args, **kwargs)
 
 
+class VersionCounterModel(TinyCausalModel):
+    def forward(self, *args, **kwargs):
+        # FSDP all-gather copy-out needs versioned tensors even in evaluation.
+        assert not torch.is_grad_enabled()
+        assert kwargs["input_ids"]._version >= 0
+        assert torch.empty(1)._version >= 0
+        return super().forward(*args, **kwargs)
+
+
 def _collective_worker(rank, rendezvous):
     dist.init_process_group("gloo", init_method=rendezvous, rank=rank, world_size=2,
                             timeout=timedelta(seconds=45))
@@ -71,6 +80,15 @@ def _collective_worker(rank, rendezvous):
 
 
 class DistributedEvaluationTests(unittest.TestCase):
+    def test_scoring_and_generation_preserve_version_counters_without_gradients(self):
+        model, tokenizer = VersionCounterModel(), CharacterTokenizer()
+        for choices in (["A", "B"], [" A", " BB", " CCC"]):
+            result = continuation_scores(model, tokenizer, "Q:", choices, max_context=20, device="cpu")
+            self.assertEqual(len(result["loglikelihoods"]), len(choices))
+        generated = math_completion(model, tokenizer, "Q:",
+            config=EvaluationConfig(max_context=20, max_new_tokens=2), eos_ids={0}, device="cpu")
+        self.assertGreater(generated["new_tokens"], 0)
+
     def test_rounds_cover_each_example_once_without_mixing_mc_and_math(self):
         rows = [{"id": f"{task}:{i}", "task": task} for task, count in
                 (("mmlu", 57), ("arc_challenge", 32), ("gsm8k", 8), ("aime24", 2), ("aime25", 2))

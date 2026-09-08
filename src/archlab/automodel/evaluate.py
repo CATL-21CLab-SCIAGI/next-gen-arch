@@ -89,7 +89,9 @@ def _check_logits(logits: torch.Tensor, *, synchronize: bool, device: str) -> No
         raise FloatingPointError("nonfinite benchmark logits on an evaluation rank")
 
 
-@torch.inference_mode()
+# FSDP's all-gather copy-out preserves tensor version counters, which inference
+# tensors do not have. Disable gradients without disabling those counters.
+@torch.no_grad()
 def continuation_scores(model: torch.nn.Module, tokenizer, context: str,
                         continuations: list[str], *, max_context: int, device: str = "cuda",
                         synchronize: bool = False) -> dict:
@@ -126,7 +128,7 @@ def continuation_scores(model: torch.nn.Module, tokenizer, context: str,
             "prefix_tokens": [len(p) for p, _ in pairs], "continuation_tokens": [len(t) for _, t in pairs]}
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def math_completion(model: torch.nn.Module, tokenizer, prompt: str, *, config,
                     eos_ids: set[int], device: str = "cuda", synchronize: bool = False) -> dict:
     """Greedy native-chat decoding; persist the cap and unfinished-reasoning state."""

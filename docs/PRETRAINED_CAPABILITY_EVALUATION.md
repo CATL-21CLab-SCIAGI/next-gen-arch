@@ -22,6 +22,12 @@ PyTorch allocator is capped at 30% of device memory; startup requires at least
 96 GiB free on every device. These are memory safeguards, not compute isolation:
 concurrent evaluation can reduce training throughput.
 
+The distributed scorer uses `torch.no_grad()`, not `torch.inference_mode()`:
+the frozen container's FSDP all-gather copy-out requires tensor version counters.
+This disables autograd while retaining those counters; it does not enable
+training or change model weights. The first full-model evaluation exposed this
+requirement before scoring any pairs; its failed output is preserved separately.
+
 The 101 examples and scoring budgets are unchanged. MMLU uses two distributed
 rounds (32 and 25 pairs), ARC one (32), and the three math subsets share one
 round (12). Each rank processes an unpadded question. Dummy lanes are never
