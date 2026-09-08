@@ -1,5 +1,64 @@
 # Pretrained capability regression evaluation
 
+## Concurrent DLC evaluation (2026-09-08)
+
+The user requested moving the step-4000 evaluation from DSW to the 32 DLC GPUs,
+then clarified that training must run concurrently. The stopped DSW directory
+`results/pretrained-capability-pilot-step4000-20260908-v2` retains 90 completed
+pairs; those scores are not merged into the new runtime's results. Training
+saved at step 4741 before the clarification and resumes from that exact state.
+The first resume omitted the container's `TRITON_PTXAS_PATH`; it restored state
+but failed before an update. The corrected launch uses the existing CUDA 13.2
+assembler, not an installation or runtime upgrade.
+
+`src/archlab/automodel/evaluate_distributed.py` is the separate inference entry.
+It reuses the original immutable architecture source, AutoModel's production
+FSDP32/EP8 construction and sharded pretrained loader, and the existing paired
+scoring functions in `evaluate.py`. Native distributed PLE lookup stays on GPU.
+The checkpoint is still step 4000, not live trainer weights. No optimizer is
+created, every parameter is frozen, and before/after local adapter digests must
+match. The evaluation process group uses its own rendezvous port. Each rank's
+PyTorch allocator is capped at 30% of device memory; startup requires at least
+96 GiB free on every device. These are memory safeguards, not compute isolation:
+concurrent evaluation can reduce training throughput.
+
+The 101 examples and scoring budgets are unchanged. MMLU uses two distributed
+rounds (32 and 25 pairs), ARC one (32), and the three math subsets share one
+round (12). Each rank processes an unpadded question. Dummy lanes are never
+scored. All ranks execute both modes in the same order, alternating by global
+round rather than by individual example. Choice counts and early EOS are
+coordinated so EP/FSDP collectives stay matched. A finished generation retains
+its exact token list while making unscored forwards until its peers finish.
+The new immutable contract records these execution differences. This is still
+a bounded pilot, and the 1024-token AIME cap remains a limitation.
+
+Launch on each existing node with its own node rank, the frozen interpreter,
+and the original training source first on `PYTHONPATH`:
+
+```bash
+TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas \
+OMP_NUM_THREADS=2 PYTHONDONTWRITEBYTECODE=1 \
+NGA_CONTAINER_DIGEST="$EXISTING_CONTAINER_IMAGE" \
+PYTHONPATH="$TRAINING_SOURCE/src:$AUTOMODEL_SOURCE:$LM_EVAL_SOURCE" \
+"$CONTAINER_PYTHON" -m torch.distributed.run \
+  --nnodes=4 --nproc-per-node=8 --node-rank="$NODE_RANK" \
+  --master-addr="$MASTER_ADDR" --master-port="$EVAL_PORT" --max-restarts=0 \
+  src/archlab/automodel/evaluate_distributed.py \
+  --base "$VERIFIED_PRETRAINED_CACHE" --checkpoint "$STEP4000_CHECKPOINT" \
+  --data "$BENCHMARK_DATA" \
+  --recipe recipes/evaluations/qwen38_simplicial_regression_pilot.yaml \
+  --prompts src/archlab/prompts/capability_regression.yaml \
+  --harness "$LM_EVAL_SOURCE" --output "$NEW_EVAL_OUTPUT" \
+  --ep-size 8 --gpu-memory-fraction 0.30
+```
+
+Qualification includes exact serial-versus-collective scoring with unequal
+choice counts, early EOS versus token caps, collective nonfinite failure,
+adapter-only DCP key/shape validation, and a two-GPU real EP/FSDP smoke test
+with nonzero branches and exact before/after adapter hashes. Full-model load
+and live concurrent progress remain separate runtime checks, not implied by
+the small-model tests. The installed container and upstream source are unchanged.
+
 The DSW pilot compares the **unchanged Qwen3.8-Flash-Next language backbone**
 with **the same backbone plus the trained step-200 simplicial additions**.
 It is not a comparison against published leaderboard numbers or another model.

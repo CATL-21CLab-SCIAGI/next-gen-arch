@@ -25,6 +25,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 import yaml
 
 
@@ -73,31 +74,50 @@ def encode_pair(tokenizer, context: str, continuation: str) -> tuple[list[int], 
     return prefix, combined[len(prefix):]
 
 
+def _sync_integer(value: int, *, minimum: bool, synchronize: bool, device: str) -> int:
+    """Keep EP/FSDP forward counts identical, including finished/dummy ranks."""
+    if not synchronize:
+        return value
+    tensor = torch.tensor(value, device=device, dtype=torch.int64)
+    dist.all_reduce(tensor, op=dist.ReduceOp.MIN if minimum else dist.ReduceOp.MAX)
+    return int(tensor.item())
+
+
+def _check_logits(logits: torch.Tensor, *, synchronize: bool, device: str) -> None:
+    finite = int(torch.isfinite(logits).all())
+    if not _sync_integer(finite, minimum=True, synchronize=synchronize, device=device):
+        raise FloatingPointError("nonfinite benchmark logits on an evaluation rank")
+
+
 @torch.inference_mode()
 def continuation_scores(model: torch.nn.Module, tokenizer, context: str,
-                        continuations: list[str], *, max_context: int, device: str = "cuda") -> dict:
+                        continuations: list[str], *, max_context: int, device: str = "cuda",
+                        synchronize: bool = False) -> dict:
     """Score each candidate's causal token log-probabilities without padding."""
     pairs = [encode_pair(tokenizer, context, choice) for choice in continuations]
     if any(len(prefix) + len(target) - 1 > max_context for prefix, target in pairs):
         raise ValueError("multiple-choice prompt exceeds the registered context budget")
     scores = []
     # MMLU's four answer labels share one prefix and are single tokens.
-    if all(len(target) == 1 and prefix == pairs[0][0] for prefix, target in pairs):
+    fast = all(len(target) == 1 and prefix == pairs[0][0] for prefix, target in pairs)
+    if _sync_integer(int(fast), minimum=True, synchronize=synchronize, device=device):
         ids = torch.tensor([pairs[0][0]], device=device, dtype=torch.long)
         logits = model(input_ids=ids, logits_to_keep=1, use_cache=False, output_hidden_states=False).logits[0, -1].float()
-        if not torch.isfinite(logits).all():
-            raise FloatingPointError("nonfinite choice logits")
+        _check_logits(logits, synchronize=synchronize, device=device)
         probabilities = logits.log_softmax(-1)
         scores = [probabilities[target[0]].item() for _, target in pairs]
     else:
-        for prefix, target in pairs:
+        count = _sync_integer(len(pairs), minimum=False, synchronize=synchronize, device=device)
+        for index in range(count):
+            prefix, target = pairs[index % len(pairs)]
             ids = torch.tensor([prefix + target[:-1]], device=device, dtype=torch.long)
             logits = model(input_ids=ids, logits_to_keep=len(target), use_cache=False,
                            output_hidden_states=False).logits[0].float()
-            if not torch.isfinite(logits).all():
-                raise FloatingPointError("nonfinite continuation logits")
+            _check_logits(logits, synchronize=synchronize, device=device)
             labels = torch.tensor(target, device=device, dtype=torch.long)
-            scores.append(logits.log_softmax(-1).gather(1, labels[:, None]).sum().item())
+            score = logits.log_softmax(-1).gather(1, labels[:, None]).sum().item()
+            if index < len(pairs):
+                scores.append(score)
     # lm-eval normalizes by the choice text length, excluding target_delimiter.
     normalized = [score / len(choice.removeprefix(" ")) for score, choice in zip(scores, continuations, strict=True)]
     return {"loglikelihoods": scores, "character_normalized_loglikelihoods": normalized,
@@ -108,7 +128,7 @@ def continuation_scores(model: torch.nn.Module, tokenizer, context: str,
 
 @torch.inference_mode()
 def math_completion(model: torch.nn.Module, tokenizer, prompt: str, *, config,
-                    eos_ids: set[int], device: str = "cuda") -> dict:
+                    eos_ids: set[int], device: str = "cuda", synchronize: bool = False) -> dict:
     """Greedy native-chat decoding; persist the cap and unfinished-reasoning state."""
     tokens = tokenizer.encode(prompt, add_special_tokens=False)
     original = len(tokens)
@@ -117,15 +137,21 @@ def math_completion(model: torch.nn.Module, tokenizer, prompt: str, *, config,
     budget = min(config.max_new_tokens, config.max_context - original)
     started = time.monotonic()
     stop_reason = "token_cap"
-    for index in range(budget):
+    finished = False
+    loop_budget = _sync_integer(budget, minimum=False, synchronize=synchronize, device=device)
+    for index in range(loop_budget):
         ids = torch.tensor([tokens], device=device, dtype=torch.long)
         logits = model(input_ids=ids, logits_to_keep=1, use_cache=False, output_hidden_states=False).logits[0, -1].float()
-        if not torch.isfinite(logits).all():
-            raise FloatingPointError("nonfinite benchmark generation logits")
-        token = logits.argmax(-1).item()
-        tokens.append(token)
-        if token in eos_ids:
-            stop_reason = "eos"
+        _check_logits(logits, synchronize=synchronize, device=device)
+        if not finished:
+            token = logits.argmax(-1).item()
+            tokens.append(token)
+            if token in eos_ids:
+                stop_reason = "eos"
+                finished = True
+            elif len(tokens) - original >= budget:
+                finished = True
+        if not _sync_integer(int(not finished), minimum=False, synchronize=synchronize, device=device):
             break
         if index % 64 == 0:
             _sampling.emit("generation_progress", new_tokens=index + 1, seconds=time.monotonic() - started)
@@ -157,7 +183,8 @@ def _summary(records: list[dict], selected: list[dict], *, complete: bool) -> di
             "interpretation": "Small subsets and capped reasoning cannot establish preservation of full benchmark ability."}
 
 
-def _provenance(checkpoint: Path, harness: Path) -> dict:
+def _provenance(checkpoint: Path, harness: Path, *, environment: str =
+                "existing approved DSW venv plus existing pinned lm-eval source; no installs") -> dict:
     import nemo_automodel
 
     import archlab
@@ -179,24 +206,16 @@ def _provenance(checkpoint: Path, harness: Path) -> dict:
             "checkpoint_complete_sha256": _capability.file_sha256(checkpoint / "COMPLETE.json"),
             "packages": {name: importlib.metadata.version(name) for name in
                          ("torch", "transformers", "accelerate", "fla-core", "triton", "lm_eval")},
-            "environment": "existing approved DSW venv plus existing pinned lm-eval source; no installs",
+            "environment": environment,
             "entry_source_sha256": {str(p): _capability.file_sha256(p) for p in (
                 Path(__file__), Path(_sampling.__file__), Path(_capability.__file__))}}
 
 
-def main() -> None:
+def prepare_benchmark(args) -> tuple:
+    """Share exact selection, prompts and fail-closed budgets across executors."""
     from jinja2 import Environment, StrictUndefined
     from transformers import AutoTokenizer
 
-    from archlab.automodel.checkpointing import write_json
-    from archlab.automodel.runtime import configure_frozen_gdn_runtime
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("base", "checkpoint", "data", "recipe", "prompts", "harness", "output"):
-        parser.add_argument("--" + name, type=Path, required=True)
-    parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--preflight-only", action="store_true", help="validate all selected prompts without allocating the model")
-    args = parser.parse_args()
     recipe = yaml.safe_load(args.recipe.read_text())
     config = _capability.EvaluationConfig(**recipe["evaluation"])
     prompts = yaml.safe_load(args.prompts.read_text())
@@ -228,6 +247,20 @@ def main() -> None:
             rendered[row["id"]] = (context, None)
     grader = _capability.MathGrader(args.harness)
     eos_ids = set(json.loads((args.base / "generation_config.json").read_text())["eos_token_id"])
+    return recipe, config, data_manifest, selected, tokenizer, rendered, grader, eos_ids
+
+
+def main() -> None:
+    from archlab.automodel.checkpointing import write_json
+    from archlab.automodel.runtime import configure_frozen_gdn_runtime
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("base", "checkpoint", "data", "recipe", "prompts", "harness", "output"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--preflight-only", action="store_true", help="validate all selected prompts without allocating the model")
+    args = parser.parse_args()
+    recipe, config, data_manifest, selected, tokenizer, rendered, grader, eos_ids = prepare_benchmark(args)
     if args.preflight_only:
         _sampling.emit("benchmark_preflight_passed", selected=len(selected),
                        tasks=recipe["limits"], eos_ids=sorted(eos_ids))
