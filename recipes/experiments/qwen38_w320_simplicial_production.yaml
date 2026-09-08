@@ -1,0 +1,71 @@
+name: qwen38-w320-e32-simplicial-production-controlled
+status: opt-in-production-with-mandatory-native-probe
+base_model: package:recipes/models/qwen38_flash_next_w320_e32.yaml
+entry: archlab.megatron.qwen38_flash_next_full_train
+attention_variant: simplicial-rope-16x128
+attention:
+  changed_layers_1based: [8, 16, 24, 32, 40, 48]
+  unchanged_global_layers_1based: [4, 12, 20, 28, 36, 44]
+  windows: [16, 128]
+  positional_encoding: ordinary-partial-rope-on-q-k1-k2
+  output_gate: retained
+  qk_norm: retained
+  extra_key_norm: retained
+  extra_parameters: 245952
+model:
+  total_parameters: 387926912
+  width: 320
+  layers: 48
+  residual_streams: 4
+  routed_experts: 32
+  experts_per_token: 10
+  shared_experts: 1
+  expert_intermediate: 80
+  gdn: unchanged
+  ple: unchanged
+  mtp: disabled
+training:
+  initialization: fresh-seed42-no-checkpoint
+  seed: 42
+  sequence_length: 2048
+  micro_batch: 4
+  global_batch: 4096
+  accumulation_per_rank: 32
+  steps: 11921
+  effective_tokens: 100000595968
+  peak_lr: 0.00176
+  minimum_lr: 0.000176
+  warmup_fraction: 0.01
+  weight_decay: 0.1
+  gradient_clip: 0.5
+  eval_interval: 1192
+  eval_iters: 1
+  checkpoint_interval: 1192
+  optimizer: unchanged-native-muon-and-adam
+  data_order: unchanged-production-DP-rank-prefix-partition
+  validation: unchanged-production-fixed-window-per-rank
+parallelism: {data: 32, tensor: 1, pipeline: 1, expert: 1, context: 1, expert_tensor: 1}
+runtime:
+  container: sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06
+  package_installations: forbidden
+  vendor_runtime_changes: forbidden
+  node_restarts: forbidden
+  attention_backend: native-auto
+paths:
+  data: env:NGA_DATA_ROOT
+  tokenizer: env:NGA_TOKENIZER
+  output: env:NGA_OUTPUT_DIR
+  initialization_reference: env:NGA_INITIALIZATION_REFERENCE
+comparison:
+  primary: original-W320-E32-production-global-attention
+  shared: [common-initial-weights, data-order, optimizer, schedule, batch, heldout-window, runtime]
+  differences: [six-attention-cores, 245952-extra-parameters]
+  earlier_3b_pilots: different-data-iterator-and-training-loop-not-exact-production-controls
+  available_baseline_tokens: 12180258816
+  beyond_baseline: no-matched-baseline-observations-yet
+gates:
+  - native-two-rank-attention-forward-backward-and-DP-gradient-oracles
+  - full-shape-DP32-production-save-and-reload-probes
+  - exact-common-initialization-reference
+  - finite-nonzero-extra-and-restored-gradients
+  - DP-replica-equality

@@ -32,6 +32,12 @@ from archlab.architectures.qwen38_flash_next_full import (
     parameter_count_contract,
 )
 from archlab.megatron.backend import validate_runtime
+from archlab.megatron.simplicial_production import (
+    GLOBAL_ATTENTION,
+    SIMPLICIAL_ATTENTION,
+    attention_variant_contract,
+    validate_attention_resume,
+)
 
 TRAIN_STEPS = 11_921
 TOKENS_PER_STEP = 8_388_608
@@ -243,6 +249,7 @@ def _native_muon_contract() -> dict[str, Any]:
 
 
 def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextFullConfig) -> list[str]:
+    attention_variant_contract(args)
     if config.attention_output_gate and args.parallelism != "dp-only":
         raise ValueError("the width-scaled gated variant requires DP-only execution")
     if args.parallelism == "dp-only" and len(config.pipeline_layers) != 1:
@@ -1082,6 +1089,7 @@ def _write_contract(args, config) -> None:
     if tokenizer_hash != TOKENIZER_SHA256 or config_hash != SOURCE_CONFIG_SHA256:
         raise RuntimeError("pinned Qwen source/tokenizer hash drift")
     runtime = validate_runtime(require_pretrain=False)
+    attention_variant = attention_variant_contract(args)
     if args.model_variant == FULL_MODEL_VARIANT:
         model_name = "Qwen3.8-Flash-Next dense-attention owner-sharded-PLE variant"
         variant_differences = [
@@ -1222,6 +1230,23 @@ def _write_contract(args, config) -> None:
         "python": platform.python_version(),
         "created_at_unix": time.time(),
     }
+    if attention_variant is not None:
+        import importlib.metadata
+
+        payload["attention_variant"] = attention_variant
+        payload["model"] += " / " + attention_variant["name"]
+        payload["parameter_count"]["simplicial_extra"] = attention_variant["extra_parameters"]
+        payload["parameter_count"]["total"] += attention_variant["extra_parameters"]
+        payload["variant_differences"].append(
+            "six alternate full-attention cores replaced with 16x128 gated simplicial attention"
+        )
+        source_root = Path(__file__).parents[1]
+        for relative in ("megatron/simplicial_production.py", "megatron/simplicial_attention.py",
+                         "architectures/simplicial_attention.py", "architectures/simplicial_kernels.py"):
+            payload["implementation_sha256"][relative] = _sha256(source_root / relative)
+        payload["runtime"]["simplicial_packages"] = {
+            name: importlib.metadata.version(name) for name in ("fla-core", "triton", "emerging-optimizers")
+        }
     contract = args.run_dir / "RUN_CONTRACT.json"
     if contract.exists() and not args.resume:
         raise RuntimeError("run directory already contains a contract")
@@ -1232,6 +1257,7 @@ def _write_contract(args, config) -> None:
         if not previous_contract.exists():
             continue
         previous = json.loads(previous_contract.read_text())
+        validate_attention_resume(previous, payload)
         if previous.get("training", {}).get("loss_normalization") != LOSS_NORMALIZATION:
             raise RuntimeError("loss normalization changed; use a fresh run directory and weights")
         if previous.get("model_config") != payload["model_config"]:
@@ -1312,6 +1338,9 @@ def _probe_restored_replica_equality(model, group):
                 ".attention_residual.",
                 ".mlp_residual.",
                 ".final_mixer.",
+                ".attention.k2.",
+                ".attention.v2.",
+                ".attention.k2_layernorm.",
             )
         ):
             continue
@@ -1342,6 +1371,7 @@ def _run(args: argparse.Namespace) -> None:
     else:
         config = Qwen38FlashNextFullConfig.quarter_depth48_no_mtp()
     train_prefixes, validation_prefixes = _validated_data_prefixes(args.data_root)
+    attention_variant = attention_variant_contract(args)
     _write_contract(args, config)
     sys.argv = _megatron_argv(args, config)
 
@@ -1379,6 +1409,13 @@ def _run(args: argparse.Namespace) -> None:
             post_process=post_process,
             vp_stage=vp_stage,
         )
+        if (attention_variant is not None or args.initialization_reference is not None
+                or (args.probe_steps and config_outer.attention_output_gate)):
+            from archlab.megatron.simplicial_production import install_production_attention
+
+            initialization = install_production_attention(model, args)
+            if torch.distributed.get_rank() == 0:
+                _atomic_json(args.run_dir / "INITIALIZATION.json", initialization)
         partition = _tag_native_optimizer_fallbacks(model)
         if config_outer.attention_output_gate and torch.distributed.get_rank() == 0:
             _atomic_json(
@@ -1411,6 +1448,22 @@ def _run(args: argparse.Namespace) -> None:
                     return gradient
 
                 parameter.register_hook(record)
+        if args.probe_steps and attention_variant is not None:
+            from archlab.megatron.simplicial_attention import EXTRA_MARKERS
+
+            for name, parameter in model.named_parameters():
+                if not any(marker in name for marker in EXTRA_MARKERS):
+                    continue
+                restored_gradients[name] = {"seen": False, "nonfinite": False}
+
+                def record_extra(gradient, key=name, weight=parameter):
+                    state = restored_gradients[key]
+                    effective = _effective_probe_gradient(weight, gradient)
+                    state["nonfinite"] |= not bool(torch.isfinite(effective).all())
+                    state["seen"] |= bool(torch.count_nonzero(effective))
+                    return gradient
+
+                parameter.register_hook(record_extra)
         if args.probe_steps:
             probe_models.append(model)
         if args.probe_steps or args.parallelism == "dp-only":
@@ -1419,7 +1472,10 @@ def _run(args: argparse.Namespace) -> None:
                 data_replicas=groups.dp.size(),
                 expert_replicas=groups.expt_dp.size(),
             )
-            if counts["total"] != parameter_count_contract(config_outer)["total"]:
+            expected_count = parameter_count_contract(config_outer)["total"] + (
+                attention_variant["extra_parameters"] if attention_variant else 0
+            )
+            if counts["total"] != expected_count:
                 raise RuntimeError(f"native model parameter count differs from recipe: {counts}")
             if torch.distributed.get_rank() == 0:
                 _atomic_json(
@@ -1574,6 +1630,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", required=True, type=Path)
     parser.add_argument("--tokenizer", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
+    parser.add_argument("--attention-variant", choices=(GLOBAL_ATTENTION, SIMPLICIAL_ATTENTION),
+                        default=GLOBAL_ATTENTION)
+    parser.add_argument("--initialization-reference", type=Path,
+                        help="Require byte-identical common initial weights from INITIALIZATION.json")
     parser.add_argument(
         "--load-dir", type=Path, help="Native checkpoint root; defaults to run-dir/checkpoints"
     )
