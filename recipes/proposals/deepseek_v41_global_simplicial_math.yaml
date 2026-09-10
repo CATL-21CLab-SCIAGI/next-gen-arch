@@ -1,0 +1,138 @@
+name: deepseek-v41-frozen-global-softmax-simplicial-math
+status: tokenization-running-training-not-yet-qualified
+model:
+  id: deepseek-ai/DeepSeek-V4.1-Flash
+  revision: df42c109f1defefcbfcedbe7d905718a12266e40
+  checkpoint: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
+  download_weights: deferred-by-user
+  freeze_existing_parameters: true
+  preserve: [CED, CSA2, shared-KV, hierarchical-indexer, single-pass-mHC, Engram, MoE, norms, gates, positional-encoding]
+  backbone_hidden_size: 5120
+  backbone_layers: 40
+  backbone_residual_streams: 4
+  backbone_routed_experts: 384
+  backbone_active_routed_experts: 6
+  backbone_shared_experts: 1
+  vision: preserve-checkpoint-inactive-for-text-only-training
+  dspark_mtp: preserve-checkpoint-no-auxiliary-objective
+adapter_proposal:
+  implemented: false
+  insertion: after-original-attention-hc-post-before-original-ffn-mixes
+  layers_1based: [5, 10, 15, 20, 25, 30, 35, 40]
+  input_output_width: 5120
+  query_heads: 8
+  kv_heads: 2
+  head_dim: 128
+  q_k1_k2_rmsnorm: true
+  input_rmsnorm: true
+  rms_norm_eps: 1.0e-6
+  output_gate: sigmoid-learned-linear
+  residual_read: softmax-over-four-learned-scalar-stream-logits
+  residual_write: four-learned-scalar-stream-coefficients
+  additional_rope: false
+  positional_note: backbone-position-encoding-unchanged-no-additional-adapter-rotation
+  additional_ffn: false
+  score: sum_d(q_i_d*k1_j_d*k2_k_d)/sqrt(head_dim)
+  probability: one-joint-softmax-over-all-allowed-j-k-pairs
+  value: v1_j-elementwise-times-v2_k
+  visibility: j<=i-and-k<=i-and-same-document
+  include_diagonal_pairs: true
+  key_axis_windows: full-context-both-axes
+  approximation: none-no-local-window-no-topk-no-linearization-no-delta-rule
+  complexity: O(B*adapter_layers*query_heads*N^3*head_dim)
+  workspace: tiled-online-softmax-no-materialized-N-cubed-scores
+  parameters_per_adapter: 20977032
+  total_trainable_parameters: 167816256
+  initialization:
+    qkv_and_output_gate_std: 0.02
+    output_projection_std: 0.001
+    output_projection_zero: false
+    rmsnorm_effective_scale: 1.0
+    stream_read_logits: 0.0
+    stream_write_coefficients: 1.0
+    parity_test: explicit-adapter-bypass-not-assumed-zero-init
+data_preparation:
+  entrypoint: archlab.preprocessing.nemotron_math
+  source: env:ARCHLAB_NEMOTRON_MATH_SOURCE
+  tokenizer_assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+  output: env:ARCHLAB_NEMOTRON_MATH_TOKENIZED
+  stage: env:ARCHLAB_NEMOTRON_MATH_STAGE
+  tokenizer_format: deepseek-v41
+  official_encoder_sha256: b4bd8a06f94a06a61564156c7a543d649ed86ecdd72a4dfb94b064e16d9c572f
+  source_representation: parquet-only-no-duplicate-jsonl-mirror
+  expected_conversations: 7085839
+  workers: 32
+  batch_size: 16
+  row_groups_per_part: 1
+  reasoning_effort: 75
+  source_effort_mapping: none-original-effort-retained-in-metadata
+  keep_source_variants: [low, medium, high, tools, no-tools]
+  drop_thinking: false
+  truncation: false
+  execute_tools: false
+  document: complete-conversation
+  dtype: int32
+  validation_basis_points: 100
+  validation_group: normalized-problem-hash-across-all-variants
+  loss_metadata: half-open-assistant-token-spans-before-next-token-shift
+  ready_gate: DATA_READY.json-or-individually-checksummed-READY.json-parts
+training_proposal:
+  launch_now: false
+  jobs: 1
+  baseline_training_jobs: 0
+  loss: assistant-only-next-token-cross-entropy-including-reasoning
+  exclude_loss_on: [user-prompts, system-prompts, tool-results, padding]
+  corpus_target: one-pass-complete-math-corpus
+  production_context: unresolved-until-length-coverage-and-cubic-cost-audit
+  silent_truncation_or_long-example-discard: forbidden
+  smoke_contexts: [128, 256, 512, 1024, 2048]
+  conditional_profile_contexts: [4096, 8192, 16384]
+  packing: disabled-first-then-document-isolated-only
+  optimizer: AdamW
+  learning_rate: 1.0e-5
+  warmup_steps: 100
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+  gradient_clip: 1.0
+  micro_batch_per_rank: 1
+  global_batch_and_accumulation: determine-from-supervised-token-budget-and-profile
+  checkpoint: adapters-optimizer-scheduler-RNG-data-cursor-base-revision
+  validation: fixed-heldout-problems-plus-effort-tool-and-length-breakdowns
+  evaluation: same-DeepSeek-checkpoint-adapter-disabled-vs-enabled
+parallelism_proposal:
+  world_size: 32
+  weight_sharding: FSDP2
+  expert_parallel_size: 8
+  expert_parallel_scope: node-local
+  expert_fsdp_shards_across_nodes: 4
+  tensor_parallel_size: 1
+  pipeline_parallel_size: 1
+  context_parallel_size: 1
+  note: EP-overlays-the-32-rank-mesh-not-32-times-8-GPUs
+  engram: retain-all-tables-with-explicit-row-sharding-audit
+  status: candidate-not-validated-for-V41
+runtime:
+  container: frozen-nemo-26.06
+  container_python: env:ARCHLAB_CONTAINER_PYTHON
+  upstream_automodel: env:ARCHLAB_AUTOMODEL_ROOT
+  package_installations: forbidden
+  container_or_controller_restart: forbidden
+  vendor_runtime_modifications: forbidden
+  subagents: forbidden
+qualification:
+  backend_search_first: true
+  official_reference_is_inference_only: true
+  exact_V41_training_backend_found: false
+  gates:
+    - complete-model-tensor-map-and-native-forward-parity
+    - CED-next-token-causality-and-shared-KV-index-cache-correctness
+    - preserve-single-pass-mHC-coefficient-flow
+    - all-Engram-rows-and-routing-preserved
+    - dInput-backward-through-frozen-quantized-attention-and-MoE
+    - no-inference-mode-or-detach-cutting-early-adapter-gradients
+    - cubic-core-forward-and-all-five-input-gradients-match-FP32-oracle
+    - full-history-and-diagonal-pair-mask-coverage
+    - document-boundaries-and-assistant-label-shift
+    - 32-rank-EP-FSDP-gradient-and-checkpoint-roundtrip
+    - measured-GPU-memory-node-RSS-and-throughput
+    - original-weights-unchanged-and-excluded-from-optimizer
