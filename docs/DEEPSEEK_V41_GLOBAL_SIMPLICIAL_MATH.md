@@ -1,8 +1,15 @@
-# DeepSeek V4.1 + full-history softmax 2-simplicial adapters
+# DeepSeek V4.1 + windowed softmax 2-simplicial adapters
 
-Status, 2026-09-10: CPU tokenization launched; training is a proposal, not implemented
-or launched. Model-weight downloads are deferred by the user. No subagents, package
+Status, 2026-09-10, revision 2: CPU tokenization launched but subsequently failed
+closed on an unsupported assistant-message sequence; training is a proposal, not
+implemented or launched. Model-weight downloads are deferred by the user. No subagents, package
 installs, DLC stops, or node/controller restarts.
+
+The historical filename is retained for existing links. **Full-history cubic
+attention is superseded by fixed windows**, as requested. See the complete
+[report/code audit](DEEPSEEK_V41_SIMPLICIAL_AUDIT.md) for evidence, intentional
+departures, and remaining qualification gates. The earlier nonzero-output/AdamW-only
+proposal is superseded; the tokenization contract is not changed by this revision.
 
 ## Completed operations
 
@@ -17,7 +24,10 @@ installs, DLC stops, or node/controller restarts.
   All four nodes' training processes exited; controllers stayed alive and GPUs
   released their allocations. There is no automatic resume.
 - CPU preprocessing PID **189474**, host `dlc1hig7iitpry5n-worker-0` / `22.0.254.34`.
-  It uses `/opt/venv/bin/python`, 32 worker processes, and no visible CUDA devices.
+  It used `/opt/venv/bin/python`, 32 worker processes, and no visible CUDA devices.
+  Its progress marker reports failure at **08:01:38 UTC**, after publishing
+  **156 parts / 312,000 conversations / 5,396,920,359 tokens**. The process was
+  verified defunct during this audit. Do not report it as running or blindly retry.
 - 47 tests passed, including the official encoder's complete test suite and our
   multi-turn/tool supervision checks. A five-source smoke conversion produced
   40 conversations / 360,350 tokens, with indexed readback and SHA256 verification.
@@ -69,8 +79,11 @@ results/nemotron-math-v41-20260910-v1-stage/parts/*/progress.json
 Top-level progress counts only published/checksummed parts. Per-part progress also
 counts in-flight work; do not add both totals. `DATA_READY.json` appears only after
 all parts complete. Partial `.bin` files are not training-ready. Do not change the
-conversion contract mid-run. The running code is snapshotted under
+conversion contract mid-run. The original launch code is snapshotted under
 `results/nemotron-math-v41-code-20260910-v1/src`, separate from editable project code.
+The failed case is file `high_part00.parquet`, row group 184, row 63 within that
+group: a reasoning-only assistant fragment immediately precedes another assistant
+tool-call message. The audit records a candidate versioned repair, not an applied fix.
 
 Runtime recorded in the manifest: torch `2.12.0a0+0291f960b6.nv26.4.48445190`,
 Transformers `5.8.1`, tokenizers `0.23.0rc0`, pyarrow `25.0.0`, numpy `1.26.4`.
@@ -78,7 +91,9 @@ The existing AutoModel checkout supplies its indexed writer through `PYTHONPATH`
 no environment was created and no package was installed. Staging and published
 output both live on NAS, so budget roughly twice the final token-file storage.
 
-Resume only after verifying PID 189474 has exited, using the **same snapshot**:
+Historical launch/resume command, **not currently a remedy**: the same snapshot
+will reject the same source row. First qualify a versioned message-policy repair;
+do not edit the old snapshot or rewrite its manifests to force a resume.
 
 ```sh
 export PYTHONPATH=/mnt/nas/evergreen/arch/results/nemotron-math-v41-code-20260910-v1/src:/mnt/nas/evergreen/arch/results/pretrained-backend-audit-20260907/Automodel
@@ -91,7 +106,7 @@ export PYTHONPATH=/mnt/nas/evergreen/arch/results/nemotron-math-v41-code-2026091
   --workers 32 --batch-size 16 --row-groups-per-part 1 --detach
 ```
 
-This is a resume command for the existing DLC worker, not a new environment.
+This command targets the existing DLC worker, not a new environment.
 Post-launch import formatting in the editable source does not change the snapshot.
 
 ## Proposed model integration
@@ -107,6 +122,14 @@ indexing, Single-Pass mHC, Engram, MoE, norms, gates and positional encoding. Ke
 the original checkpoint intact. Vision is inactive for this text-only experiment;
 DSpark/MTP has no auxiliary objective. Neither is a reason to omit Engram or replace
 the text attention with a simpler model.
+
+Also freeze non-optimizer state: no automatic MoE correction-bias updates, quantizer
+calibration, auxiliary indexer/router losses, or checkpoint-scale changes. Ordinary
+per-request KV state and native input-dependent quantization still operate during
+execution. Disable speculative decoding
+and approximate bounded replay initially; adding local branches changes their
+cache/replay requirements. Native attention sinks and inverse output RoPE must be
+preserved, even though neither is the new branch's sigmoid output gate.
 
 Initial proposal: eight additive branches after attention's residual update and
 before the MoE residual read, in layers **5, 10, 15, 20, 25, 30, 35, 40** (one-based).
@@ -136,7 +159,9 @@ an explicitly smaller attention projection width.
 Eight query heads, two KV heads, head dimension 128. Total **20,977,032 per site**,
 **167,816,256 trainable parameters** across eight sites. No added FFN. Read a learned
 softmax-weighted combination of four streams; add the projected branch back with
-four learned scalar coefficients. Preserve the original stream mixing separately.
+four bounded learned coefficients `2 * sigmoid(write_logits)` (initially one).
+Preserve the original stream mixing separately. This lightweight read/write is an
+explicit adapter design, not an implementation of an extra Single-Pass mHC block.
 
 Include Q/K normalization and a learned sigmoid output gate. Proposed first variant
 uses **no extra adapter RoPE**; pretrained hidden states retain their original
@@ -144,11 +169,14 @@ position encoding. This keeps the new core's algebra explicit and avoids claimin
 ordinary three-way RoPE is translation invariant. Extra adapter positional schemes
 are separately named experiments, not silent defaults.
 
-Proposed initialization follows the preference for nonzero outputs: Q/K/V/gate
-normal std 0.02, output normal std 0.001, effective norm scales one, stream-read
-logits zero, stream-write coefficients one. Measure initial loss perturbation;
-the exact pretrained control uses an explicit branch bypass. No quality improvement
-is assumed from the nonzero initialization.
+Proposed initialization: Q/K/V/gate normal std 0.02, **output projection zero**,
+effective norm scales one, stream-read/write logits zero. The active adapter must
+initially match its bypass, with finite intermediates and no hidden base-state
+mutation. Zero O is an identity-preserving adapter choice, **not** a prescription
+found in the V4.1 report. The first backward should give O a task gradient while
+earlier branch task gradients are zero; test their onset after O's first update.
+Do not initialize both V paths or the effective stream write to zero. Do not use
+a norm-preserving optimizer that would trap zero-initialized O at norm zero.
 
 ## Exact attention contract and feasibility
 
@@ -156,32 +184,42 @@ For each head, within one document:
 
 ```text
 score[i,j,k] = sum_d(Q[i,d] * K1[j,d] * K2[k,d]) / sqrt(d)
-P[i,:,:] = joint_softmax(score[i,:,:], over j <= i AND k <= i)
+J(i) = [max(document_start, i - 32 + 1), i]
+K(i) = [max(document_start, i - 512 + 1), i]
+P[i,:,:] = joint_softmax(score[i,:,:], over j in J(i), k in K(i))
 Y[i,d] = sum_{j,k} P[i,j,k] * V1[j,d] * V2[k,d]
 ```
 
-Both key axes see the full causal prefix, including `j == k` and the current
-position. There is no local window, pair Top-K, factorized softmax, delta rule,
-or random-feature approximation. Online softmax can avoid materializing cubic
-scores, but it **does not remove cubic arithmetic**.
+Both windows include the current position and permit `j == k`. They contain 32 and
+512 positions, not that many preceding tokens plus self. This is exact softmax over
+the allowed local pairs, **not global pair attention**. There is no pair Top-K,
+factorized softmax, delta rule, or random-feature approximation. No additional K/V
+bias is implicit; upstream oracle comparisons must disable its optional biases.
 
-For N tokens there are `N(N+1)(2N+1)/6` allowed triples per head:
+Work is `O(B * sites * Hq * N * 32 * 512 * d)`: at most **16,384 pairs/query/head**.
+Exact per-document triple count is `sum(min(t,32)*min(t,512), t=1..N)`:
 
-| Context | Causal triples/head | Work relative to 2K |
+| Context | Windowed triples/head | Global/windowed triple ratio |
 | --- | ---: | ---: |
-| 1,024 | 358,438,400 | 0.125x |
-| 2,048 | 2,865,409,024 | 1x |
-| 4,096 | 22,914,881,536 | 8x |
-| 8,192 | 183,285,493,760 | 64x |
-| 16,384 | 1,466,149,724,160 | 512x |
+| 2,048 | 29,362,864 | 97.6x |
+| 4,096 | 62,917,296 | 364.2x |
+| 8,192 | 130,026,160 | 1,409.6x |
+| 16,384 | 264,243,888 | 5,548.5x |
 
-These are arithmetic ratios, not measured throughput. Begin correctness/profiling
-at 128–2,048 tokens, then measure 4K/8K/16K only if feasible. Full corpus preparation
-does not imply all long trajectories can be affordably trained with full cubic
-attention. Before production, report length coverage and choose the actual context
-policy; no silent long-example discard or truncation. A short-context diagnostic
-is not the full-data run. Initial tests avoid packing; later packing must reset
-attention, shared caches, positions and Engram history at document boundaries.
+These are core arithmetic ratios, not throughput speedups. The windows reproduce
+the paper's 512-by-32 size pair with the axes exchanged for our kernel's short-first
+convention. This exchange requires swapping both K and V paths together. The smaller
+GQA ratio (4 versus the paper's 64) is an intentional adapter-budget choice, not a
+performance match; forward plus backward must be profiled on the actual container.
+
+The **whole model is not globally O(N)**: original Full-mode sparse indexers still
+scan the causal prefix. Frozen-block dInput, activation memory, logits and EP traffic
+remain significant. Target 16K after 128–2K correctness and 4K/8K/16K profiling.
+Sliding windows do not decide how >16K conversations are trained. Before production,
+report token/length coverage and finalize a context policy; no silent long-example
+discard, truncation, or claim that detached chunk caches give full-context gradients.
+Initial tests avoid packing; later packing must isolate original attention, the
+adapter, shared caches, positions and Engram history at document boundaries.
 
 ## Backend reuse audit and qualification order
 
@@ -204,16 +242,19 @@ attention, shared caches, positions and Engram history at document boundaries.
    [FBGEMM source](https://github.com/pytorch/FBGEMM/tree/main/fbgemm_gpu/experimental/simplicial_attention)
    and [PyTorch blog](https://pytorch.org/blog/fast-2-simplicial-attention-hardware-efficient-kernels-in-tlx/)
    primarily optimize windowed attention. TLX installation would violate the frozen
-   environment. Our stock-Triton core has forward/backward and can express full
-   prefixes with both windows at least N, but that configuration is **not qualified
-   for performance or full-model training**. Validate before selecting it or adapting
-   tiling. A correct slow oracle is not a production performance claim.
+   environment. Our stock-Triton core has forward/backward and can express
+   the selected windows, but is **not qualified for this geometry's full-model
+   performance**. FBGEMM also contains backward code; the audit documents wrapper,
+   window and GQA compatibility gaps rather than treating it as forward-only.
+   Validate before selecting it or adapting tiling. A correct slow oracle is not a
+   production performance claim.
 5. **Small-to-full tests before finetuning.** FP32 forward and all five input-gradient
-   oracles; causal/diagonal/full-history masks; mixed lengths; grouped heads; loss
+   oracles; causal/window-edge/diagonal masks; mixed lengths; grouped heads; loss
    masking; adapter-bypass parity; gradients through frozen blocks; immutable base
    weights; distributed EP/FSDP numerical tests; fresh-process checkpoint reload.
-   Verify full-sequence teacher forcing matches tokenwise next-token causality,
-   especially at the encoder/decoder and shared-KV boundaries.
+   Verify teacher forcing against exact tokenwise next-token execution, especially
+   at the encoder/decoder and shared-KV boundaries. Do not demand equivalence to
+   the report's deliberately approximate SWA bounded replay.
 
 Candidate topology: existing 32 GPUs, FSDP2 plus node-local EP8, four cross-node
 expert-FSDP shards, TP/PP/CP=1. EP overlays the 32-rank mesh. All Engram tables
@@ -222,10 +263,22 @@ of 552B parameters alone is about 1.1 TB, so loading/staging and node RSS matter
 not only advertised GPU memory. This topology is proposed, not V4.1-validated.
 
 After weight availability and qualification: one adapter-only training job, assistant
-CE including reasoning, initial AdamW LR 1e-5, warmup 100 steps, weight decay 0.01,
-betas (0.9, 0.95), clip 1.0, microbatch 1. Choose accumulation from measured supervised
-tokens and memory. Checkpoint adapters, optimizer, scheduler, RNG and exact data
-cursor with base revision; never automatically unfreeze the backbone.
+CE including reasoning. Use **headwise Muon on Q/K1/K2**, ordinary full-matrix Muon
+on V1/V2/O/gate, and AdamW on norms and scalar vectors. Follow the report's momentum
+0.95, Nesterov and update-RMS target 0.18; matrix/norm decay 0.1, scalar decay zero;
+AdamW betas (0.9, 0.95), epsilon 1e-20 with FP32 states. Inherit V4's hybrid
+Newton–Schulz: eight fast iterations then two stabilization iterations; scale the
+direction by `0.18 * sqrt(max(rows,cols))`, not a different post-hoc measured-RMS
+normalizer. No Sinkhorn embedding optimizer is
+needed because all original tables and the prediction head are frozen.
+
+Pilot LR 1e-5, warmup 100 steps, clip 1.0, microbatch 1 are **our adapter choices**,
+not the report's pretraining schedule. Set accumulation and the cosine schedule's
+supervised-token horizon after profiling and finalizing length handling. Normalize
+loss by global supervised-token count, not unweighted per-rank means. Headwise
+orthogonalization must see each complete head gradient, not arbitrary FSDP slices.
+Checkpoint adapters, optimizer, scheduler, RNG and exact data cursor with base
+revision; never automatically unfreeze the backbone.
 
 Observe fixed held-out assistant CE, breakdowns by effort/tool/length, branch-to-
 residual norms, early-adapter gradients, tokens/s, GPU memory and node RSS. Compare
@@ -246,5 +299,5 @@ not a controlled baseline for a different tokenizer, backbone, dataset and loss 
 - `src/archlab/automodel/train.py` and `simplicial.py`: existing Qwen-specific
   execution/injection examples, **not** a working V4.1 training entry.
 
-The new V4.1 model integration and global adapter class do not exist yet. This
+The new V4.1 model integration and windowed adapter class do not exist yet. This
 document deliberately does not advertise a ready-to-launch finetuning command.
