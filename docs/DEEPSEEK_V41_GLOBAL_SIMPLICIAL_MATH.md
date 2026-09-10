@@ -1,7 +1,7 @@
 # DeepSeek V4.1 + windowed softmax 2-simplicial adapters
 
-Status, 2026-09-10, revision 2: CPU tokenization launched but subsequently failed
-closed on an unsupported assistant-message sequence; training is a proposal, not
+Status, 2026-09-10, revision 2, data recovery v3: CPU tokenization repaired and
+resumed with versioned provenance; training is a proposal, not
 implemented or launched. Model-weight downloads are deferred by the user. No subagents, package
 installs, DLC stops, or node/controller restarts.
 
@@ -9,7 +9,8 @@ The historical filename is retained for existing links. **Full-history cubic
 attention is superseded by fixed windows**, as requested. See the complete
 [report/code audit](DEEPSEEK_V41_SIMPLICIAL_AUDIT.md) for evidence, intentional
 departures, and remaining qualification gates. The earlier nonzero-output/AdamW-only
-proposal is superseded; the tokenization contract is not changed by this revision.
+proposal is superseded. The separate data recovery described below uses schema 3;
+the original schema-2 output and code snapshot are preserved unchanged.
 
 ## Completed operations
 
@@ -31,6 +32,20 @@ proposal is superseded; the tokenization contract is not changed by this revisio
 - 47 tests passed, including the official encoder's complete test suite and our
   multi-turn/tool supervision checks. A five-source smoke conversion produced
   40 conversations / 360,350 tokens, with indexed readback and SHA256 verification.
+- Recovery: a post-shutdown READY inventory found **184 parts / 368,000
+  conversations / 6,780,235,595 tokens**, including workers that finished after the
+  old progress marker reported failure. Schema 3 imports these parts with full
+  checksum and provenance checks; these are reused tokens, not new throughput.
+- The first recovery (v2, PID 191680) passed the original source row but failed
+  closed on another representation at file row 374002: consecutive assistant
+  tool calls without an intervening result. Further inspection found trajectories
+  ending in an assistant tool call. Its process exited; artifacts are preserved.
+- The repaired v3 CPU job launched as PID **192780** on the same worker, using the
+  frozen `/opt/venv/bin/python` and 32 workers. Before launch, **54 tests and four
+  subtests passed** for the first repair; **57 tests and three subtests passed**
+  for the final extension, including six actual counterexamples, exact old/new
+  rendering and supervision equality on 40 previously accepted real examples,
+  import-corruption rejection, and the official encoder suite.
 
 ## Tokenization contract
 
@@ -65,15 +80,26 @@ The encoder SHA256 is checked before importing it. `tokenizer.json` SHA256:
 - Reserve 1% of normalized problem-hash buckets for validation. Group all variants
   of a problem together. This is exact/normalized grouping, not near-duplicate detection.
 - Retain source provenance, licensing, source-row IDs and token-length histograms.
+- Coalesce consecutive reasoning-only assistant prefixes into the following
+  assistant message, preserving every reasoning character and its final answer or
+  tool call. Record original indices, character lengths, hashes and the inserted
+  paragraph separator in `message_repairs`. Never merge completed answers or
+  unresolved tool calls, drop a row, or fabricate a user message.
+- Other adjacent assistants are rendered individually by the official encoder,
+  with their calls/reasoning/order preserved and the native-preservation policy
+  recorded. Terminal assistant tool calls are retained but flagged
+  `complete_answer: false`; no missing tool result or answer is synthesized.
+  This is full-source tokenization, not an assertion that every teacher trajectory
+  is complete or suitable for SFT. Final training selection must review these flags.
 
 Outputs and monitoring:
 
 ```text
-results/nemotron-math-v41-20260910-v1/progress.json
-results/nemotron-math-v41-20260910-v1/parts/*/READY.json
-results/nemotron-math-v41-20260910-v1-stage/job.log
-results/nemotron-math-v41-20260910-v1-stage/launcher.json
-results/nemotron-math-v41-20260910-v1-stage/parts/*/progress.json
+results/nemotron-math-v41-20260910-v3/progress.json
+results/nemotron-math-v41-20260910-v3/parts/*/READY.json
+results/nemotron-math-v41-20260910-v3-stage/job.log
+results/nemotron-math-v41-20260910-v3-stage/launcher.json
+results/nemotron-math-v41-20260910-v3-stage/parts/*/progress.json
 ```
 
 Top-level progress counts only published/checksummed parts. Per-part progress also
@@ -81,9 +107,16 @@ counts in-flight work; do not add both totals. `DATA_READY.json` appears only af
 all parts complete. Partial `.bin` files are not training-ready. Do not change the
 conversion contract mid-run. The original launch code is snapshotted under
 `results/nemotron-math-v41-code-20260910-v1/src`, separate from editable project code.
+The new launch code is separately snapshotted under
+`results/nemotron-math-v41-code-20260910-v3/src`. Reused parts retain their original
+payload bytes and embed the original READY manifest inside `reused_from`; source
+and destination files are not mutable hardlinks. Progress separates reused and
+newly tokenized documents. `repaired_documents` counts newly completed documents
+with encoding events (reasoning merges, native adjacent turns or terminal calls).
 The failed case is file `high_part00.parquet`, row group 184, row 63 within that
 group: a reasoning-only assistant fragment immediately precedes another assistant
-tool-call message. The audit records a candidate versioned repair, not an applied fix.
+tool-call message. The regression test now verifies its native encoding and
+assistant supervision after the narrowly scoped repair.
 
 Runtime recorded in the manifest: torch `2.12.0a0+0291f960b6.nv26.4.48445190`,
 Transformers `5.8.1`, tokenizers `0.23.0rc0`, pyarrow `25.0.0`, numpy `1.26.4`.
@@ -91,18 +124,18 @@ The existing AutoModel checkout supplies its indexed writer through `PYTHONPATH`
 no environment was created and no package was installed. Staging and published
 output both live on NAS, so budget roughly twice the final token-file storage.
 
-Historical launch/resume command, **not currently a remedy**: the same snapshot
-will reject the same source row. First qualify a versioned message-policy repair;
-do not edit the old snapshot or rewrite its manifests to force a resume.
+Current launch/resume command. Keep this snapshot and all format arguments fixed;
+the old snapshot still rejects the original row and is not a remedy.
 
 ```sh
-export PYTHONPATH=/mnt/nas/evergreen/arch/results/nemotron-math-v41-code-20260910-v1/src:/mnt/nas/evergreen/arch/results/pretrained-backend-audit-20260907/Automodel
+export PYTHONPATH=/mnt/nas/evergreen/arch/results/nemotron-math-v41-code-20260910-v3/src:/mnt/nas/evergreen/arch/results/pretrained-backend-audit-20260907/Automodel
 /opt/venv/bin/python -m archlab.preprocessing.nemotron_math \
   --source /mnt/oss-dataset/datasets/nv-community/Nemotron-Math-v2 \
   --tokenizer /mnt/nas/evergreen/arch/results/deepseek-v41-flash-assets-df42c109 \
   --tokenizer-format deepseek-v41 --reasoning-effort 75 \
-  --stage /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v1-stage \
-  --output /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v1 \
+  --stage /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v3-stage \
+  --output /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v3 \
+  --reuse-completed-from /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v1 \
   --workers 32 --batch-size 16 --row-groups-per-part 1 --detach
 ```
 

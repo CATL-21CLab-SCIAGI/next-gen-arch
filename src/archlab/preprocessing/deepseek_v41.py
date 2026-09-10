@@ -15,14 +15,72 @@ from pathlib import Path
 MODEL_ID = "deepseek-ai/DeepSeek-V4.1-Flash"
 REVISION = "df42c109f1defefcbfcedbe7d905718a12266e40"
 ENCODER_SHA256 = "b4bd8a06f94a06a61564156c7a543d649ed86ecdd72a4dfb94b064e16d9c572f"
+ASSISTANT_MESSAGE_POLICY = "lossless-assistant-sequences-and-terminal-calls-v2"
+
+
+def coalesce_reasoning_fragments(row):
+    """Join split analysis before one answer/call, never merge completed answers.
+
+    The accepted v1 domain (no adjacent assistant messages) is unchanged. Retain
+    every reasoning character, insert a documented separator, and keep the final
+    message's content/call intact. Source indices refer to the original row.
+    """
+    messages = row["messages"]
+    merged, repairs = [], []
+    index = 0
+    while index < len(messages):
+        end = index + 1
+        if messages[index].get("role") == "assistant":
+            while end < len(messages) and messages[end].get("role") == "assistant":
+                end += 1
+        if end == index + 1:
+            merged.append(messages[index])
+        else:
+            group = messages[index:end]
+            safe_prefixes = all(
+                not fragment.get("content") and not fragment.get("tool_calls")
+                and isinstance(fragment.get("reasoning_content"), str) and fragment["reasoning_content"]
+                for fragment in group[:-1]
+            )
+            if not safe_prefixes:
+                # Native encoding accepts adjacent assistants. Keep each original
+                # message/EOS/call in order, never fabricate a missing tool result
+                # or turn multiple calls into a single parallel call batch.
+                merged.extend(group)
+                repairs.append(dict(
+                    policy="preserve-native-consecutive-assistants-v1",
+                    source_message_indices=list(range(index, end)),
+                    messages_merged=False,
+                ))
+                index = end
+                continue
+            for fragment in group[:-1]:
+                for key, value in fragment.items():
+                    if key not in {"role", "content", "reasoning_content", "tool_calls"} and value not in (None, "", [], {}):
+                        raise ValueError(f"Cannot discard assistant fragment field {key!r}")
+            reasoning = [message.get("reasoning_content") or "" for message in group]
+            if any(not isinstance(value, str) for value in reasoning):
+                raise ValueError("Assistant reasoning must be text")
+            final = copy.deepcopy(group[-1])
+            final["reasoning_content"] = "\n\n".join(reasoning)
+            merged.append(final)
+            repairs.append(dict(
+                policy="merge-consecutive-reasoning-only-prefixes-v1",
+                source_message_indices=list(range(index, end)),
+                reasoning_character_lengths=[len(value) for value in reasoning],
+                reasoning_sha256=[hashlib.sha256(value.encode()).hexdigest() for value in reasoning],
+                separator="\n\n",
+            ))
+        index = end
+    return ({**row, "messages": merged} if repairs else row), repairs
 
 
 def prepare_messages(row):
     from archlab.preprocessing.nemotron_math import normalize_row
 
     messages, has_tools = normalize_row(row)
-    if messages[-1].get("role") != "assistant" or messages[-1].get("tool_calls"):
-        raise ValueError("Expected a completed assistant answer, not an unfinished tool call")
+    if messages[-1].get("role") != "assistant":
+        raise ValueError("Expected an assistant-ended source trajectory")
     for message in messages:
         if message.get("role") not in {"system", "user", "assistant", "tool"}:
             raise ValueError("Unsupported source message role")
@@ -62,7 +120,16 @@ class DeepSeekV41Renderer:
         return text
 
     def render(self, row):
+        source_last_index = len(row["messages"]) - 1
+        row, repairs = coalesce_reasoning_fragments(row)
         messages, has_tools = prepare_messages(row)
+        if messages[-1].get("tool_calls"):
+            repairs.append(dict(
+                policy="preserve-terminal-assistant-tool-call-v1",
+                source_message_indices=[source_last_index],
+                complete_answer=False,
+                tool_result_fabricated=False,
+            ))
         text = self.encode(messages)
         if not text.startswith(self.encoder.bos_token) or not text.endswith(self.encoder.eos_token):
             raise ValueError("Official encoding lost the native conversation boundaries")
@@ -70,8 +137,8 @@ class DeepSeekV41Renderer:
         for index, message in enumerate(messages):
             if message["role"] != "assistant":
                 continue
-            if index == 0 or messages[index - 1]["role"] == "assistant":
-                raise ValueError("Assistant-only/consecutive-assistant source requires explicit policy")
+            if index == 0:
+                raise ValueError("Assistant-only source requires explicit policy")
             prefix = self.encode(messages[:index])
             through_answer = self.encode(messages[:index + 1])
             if not text.startswith(prefix) or not text.startswith(through_answer):
@@ -79,7 +146,10 @@ class DeepSeekV41Renderer:
             spans.append((len(prefix), len(through_answer)))
             if len(prefix) >= len(through_answer):
                 raise ValueError("Empty assistant supervision span")
-        return text, has_tools, messages, {"assistant_character_spans": spans}
+        metadata = {"assistant_character_spans": spans}
+        if repairs:
+            metadata["message_repairs"] = repairs
+        return text, has_tools, messages, metadata
 
 
 def token_spans(offsets, character_spans):

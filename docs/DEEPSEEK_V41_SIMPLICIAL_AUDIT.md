@@ -153,6 +153,22 @@ arbitrary consecutive completed answers or unresolved tool calls.
 Changing renderer bytes changes the dataset contract: use a new version or a
 verified explicit migration, never rewrite old hashes merely to pass resume checks.
 
+Recovery addendum (2026-09-10): the narrowly scoped reasoning repair above is now
+implemented and qualified against the actual failing row. A live v2 retry passed
+that row but uncovered additional source cases: adjacent tool calls with missing
+results, and trajectories ending in tool calls. The v3 extension retains these
+messages individually through the official encoder and flags them in metadata;
+it never merges their calls, fabricates results or claims a completed answer.
+All 57 preprocessing/native-encoder tests passed, including six real counterexamples
+and exact old/new rendering and supervision comparisons on
+40 previously accepted corpus examples. A final v1 READY inventory recovered
+184 parts / 368,000 conversations / 6,780,235,595 tokens. A new schema-3 dataset
+imports checksum-verified copies with embedded original-manifest provenance;
+the v1 output and code are unchanged. CPU tokenization resumed as PID 192780 on
+the existing worker and container. See the main plan's v3 monitoring paths.
+Training selection must explicitly review the retained incomplete trajectories.
+This data repair does not qualify or launch the proposed training backend.
+
 The corpus contains teacher-generated reasoning at multiple effort settings.
 Using native effort 75 for every trajectory is an explicit conditioning choice,
 not reproduction of DeepSeek's effort-training procedure. Measure retention at

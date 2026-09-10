@@ -22,6 +22,7 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 import unicodedata
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
@@ -167,6 +168,10 @@ def process_part(task, settings):
         verify_part(local, manifest)
         publish_part(local, destination, manifest)
         return manifest
+    if task["id"] in settings.get("reuse_completed", {}).get("parts", {}):
+        from archlab.preprocessing.reuse import reuse_part
+
+        return reuse_part(task, settings, local, destination)
 
     writers, sidecars, summaries = {}, {}, {}
     done = 0
@@ -182,10 +187,17 @@ def process_part(task, settings):
             rows = batch.to_pylist()
             if task.get("row_limit"):
                 rows = rows[:task["row_limit"] - done]
-            if _STATE["tokenizer_format"] == "deepseek-v41":
-                rendered = [_STATE["renderer"].render(row) for row in rows]
-            else:
-                rendered = [render_row(_STATE["tokenizer"], row, mode) for row in rows]
+            rendered = []
+            for offset, row in enumerate(rows):
+                try:
+                    if _STATE["tokenizer_format"] == "deepseek-v41":
+                        rendered.append(_STATE["renderer"].render(row))
+                    else:
+                        rendered.append(render_row(_STATE["tokenizer"], row, mode))
+                except Exception as error:
+                    raise ValueError(
+                        f"Render failed: part={task['id']} source_row={task['row_start'] + done + offset}: {error}"
+                    ) from error
             encodings = _STATE["fast"].encode_batch(
                 [item[0] for item in rendered], add_special_tokens=False,
             )
@@ -241,6 +253,9 @@ def process_part(task, settings):
                         encoding.offsets, kwargs["assistant_character_spans"],
                     )
                     record["reasoning_effort"] = _STATE["renderer"].reasoning_effort
+                    if kwargs.get("message_repairs"):
+                        record["message_repairs"] = kwargs["message_repairs"]
+                        summary["repaired_documents"] = summary.get("repaired_documents", 0) + 1
                 sidecars[partition].write(json.dumps(record, ensure_ascii=False) + "\n")
                 summary["documents"] += 1
                 summary["tokens"] += len(ids)
@@ -375,7 +390,7 @@ def prepare_contract(args):
         from archlab.preprocessing import deepseek_v41
 
         contract.update(
-            schema_version=2, tokenizer_format=tokenizer_format,
+            schema_version=3, tokenizer_format=tokenizer_format,
             model_id=deepseek_v41.MODEL_ID, model_revision=deepseek_v41.REVISION,
             template="checkpoint official encoding.encode_messages; no Jinja template",
             reasoning_effort_mapping=None, reasoning_effort=args.reasoning_effort,
@@ -385,7 +400,16 @@ def prepare_contract(args):
             loss_mask="assistant_token_spans: half-open token indices including reasoning, answers, calls, EOS; excluding prompt headers and tool results",
             renderer_sha256=file_sha(deepseek_v41.__file__),
             official_encoder_sha256=deepseek_v41.ENCODER_SHA256,
+            assistant_message_policy=deepseek_v41.ASSISTANT_MESSAGE_POLICY,
         )
+    if getattr(args, "reuse_completed_from", None):
+        from archlab.preprocessing.reuse import import_contract
+
+        origin = Path(args.reuse_completed_from).resolve()
+        for destination in (Path(args.stage).resolve(), Path(args.output).resolve()):
+            if origin == destination or origin in destination.parents or destination in origin.parents:
+                raise ValueError("Legacy dataset and new destinations must not overlap")
+        contract["reuse_completed"] = import_contract(contract, origin)
     return contract
 
 
@@ -427,6 +451,8 @@ def run(args):
         stage=str(stage), output=str(output), contract_sha256=contract_hash,
         validation_basis_points=args.validation_basis_points, batch_size=args.batch_size,
     )
+    if "reuse_completed" in contract:
+        settings["reuse_completed"] = contract["reuse_completed"]
     started = time.monotonic()
     completed = []
     tasks = iter(contract["tasks"])
@@ -447,6 +473,13 @@ def run(args):
             expected_documents=contract["expected_documents"],
             active_parts=[task["id"] for task in pending.values()],
         )
+        if "reuse_completed" in contract:
+            report.update(
+                reused_parts=sum("reused_from" in item for item in completed),
+                reused_documents=sum(item["documents"] for item in completed if "reused_from" in item),
+                newly_tokenized_documents=sum(item["documents"] for item in completed if "reused_from" not in item),
+                repaired_documents=sum(p.get("repaired_documents", 0) for item in completed for p in item["partitions"].values()),
+            )
         write_json(stage / "progress.json", report)
         write_json(output / "progress.json", report)
         print(json.dumps(report), flush=True)
@@ -482,6 +515,8 @@ def run(args):
         write_json(stage / marker, report)
         write_json(output / marker, report)
     except BaseException:
+        # Report the offending row immediately, not after all workers drain.
+        traceback.print_exc()
         progress("failed")
         for future in pending:
             future.cancel()
@@ -505,6 +540,7 @@ def main():
     parser.add_argument("--row-groups-per-part", type=int, default=2)
     parser.add_argument("--validation-basis-points", type=int, default=100)
     parser.add_argument("--smoke-rows", type=int, default=0)
+    parser.add_argument("--reuse-completed-from", help="Import verified READY parts from the audited DeepSeek v1 dataset into a new version")
     parser.add_argument("--detach", action="store_true")
     args = parser.parse_args()
     if min(args.workers, args.batch_size, args.row_groups_per_part) < 1 or args.smoke_rows < 0:

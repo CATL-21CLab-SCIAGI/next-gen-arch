@@ -9,6 +9,32 @@ not the Qwen effort-name mapping below. See
 `docs/DEEPSEEK_V41_GLOBAL_SIMPLICIAL_MATH.md` for the experiment contract and launch.
 The default `--tokenizer-format qwen` retains the original behavior described below.
 
+DeepSeek schema 3 joins consecutive assistant messages **only when every prefix
+is a nonempty reasoning-only fragment**, without an answer, tool call, or other
+meaningful fields. Reasoning characters are preserved with a recorded `\n\n`
+separator; the final answer/call and following tool results are unchanged.
+`message_repairs` records the original message indices, reasoning lengths and
+SHA256 hashes. Other adjacent assistant messages, including completed answers and
+unresolved tool calls, are **never merged**: the official encoder preserves them
+individually in their original order, with a metadata event recording that choice.
+Terminal assistant tool calls are retained and explicitly marked
+`complete_answer: false`. No result or final answer is fabricated. “Complete
+conversation” means the entire supplied source record, not a guarantee that its
+teacher finished the problem. Training must review these quality flags before
+choosing which targets to supervise. Unsupported roles/internal tasks and invalid
+token boundaries still fail closed, with rendering errors identifying the row.
+
+For the reviewed schema-2 output only, `--reuse-completed-from OLD_OUTPUT` imports
+completed parts into **new, separate** stage/output directories. It checks the
+pinned old implementation, identical source/tokenizer/split/runtime contracts,
+coverage, READY markers and every payload checksum. Payloads are copied, not
+hardlinked; the new READY records embed the original manifest and provenance.
+Old output, manifests and code snapshots are never rewritten. Previously accepted
+examples keep identical rendering and supervision; previously rejected assistant
+sequences and terminal calls are added without deleting source messages. Progress
+separates reused from newly tokenized
+documents. Resume the new dataset with its same snapshotted code and arguments.
+
 `python -m archlab.preprocessing.nemotron_math --help` describes the standalone,
 CPU-only entry point. Supply source, tokenizer, output and staging directories
 explicitly. The existing NeMo AutoModel checkout must be on `PYTHONPATH`; no
