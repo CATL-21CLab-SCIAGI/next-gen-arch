@@ -76,8 +76,8 @@ def test_not_a_launchable_or_data_complete_contract(proposal):
     assert not proposal["training_proposal"]["launch_now"]
     assert not proposal["qualification"]["exact_V41_training_backend_found"]
     data = proposal["data_preparation"]
-    assert data["current_status"] == "running-versioned-recovery-v3-not-data-complete"
-    assert data["schema_version"] == 3
+    assert data["current_status"] == "running-versioned-recovery-v4-not-data-complete"
+    assert data["schema_version"] == 4
     assert data["assistant_message_policy"] == "lossless-assistant-sequences-and-terminal-calls-v2"
     assert "source-quality-selection-policy-including-terminal-calls" in proposal["qualification"]["gates"]
     assert data["reused_conversations"] < data["expected_conversations"]

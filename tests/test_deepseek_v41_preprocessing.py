@@ -27,10 +27,12 @@ class DeepSeekV41PreprocessingTests(unittest.TestCase):
         self.assertEqual(messages[-1]["reasoning_content"], "reason")
         self.assertEqual(row, before)
 
-    def test_unfinished_trajectory_rejected(self):
-        with self.assertRaises(ValueError):
-            prepare_messages({"messages": [{"role": "assistant", "content": "x"},
-                                           {"role": "tool", "content": "2"}]})
+    def test_unfinished_source_is_preserved_without_fabricating_answer(self):
+        row = {"messages": [{"role": "user", "content": "q"},
+                            {"role": "assistant", "content": "x"},
+                            {"role": "tool", "content": "2"}]}
+        messages, _ = prepare_messages(row)
+        self.assertEqual(messages, row["messages"])
 
     def test_token_spans_preserve_multiple_turns(self):
         self.assertEqual(token_spans([(0, 2), (2, 4), (4, 5), (5, 8)], [(2, 4), (5, 8)]),
@@ -237,6 +239,11 @@ class DeepSeekV41AssetTests(unittest.TestCase):
             row = parquet.read_row_group(rg).slice(offset, 1).to_pylist()[0]
             before = copy.deepcopy(row)
             text, _, messages, metadata = renderer.render(row)
+            if os.environ.get("ARCHLAB_V41_V3_RENDERER"):
+                spec = importlib.util.spec_from_file_location("v3_v41_test", os.environ["ARCHLAB_V41_V3_RENDERER"])
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                self.assertEqual(module.DeepSeekV41Renderer(assets).render(row), renderer.render(row))
             self.assertEqual(row, before)
             self.assertEqual(text, renderer.encode(messages))
             self.assertTrue(metadata["message_repairs"])
@@ -249,6 +256,49 @@ class DeepSeekV41AssetTests(unittest.TestCase):
             enc = tokenizer.encode(text, add_special_tokens=False)
             spans = token_spans(enc.offsets, metadata["assistant_character_spans"])
             self.assertEqual(len(spans), sum(m["role"] == "assistant" for m in messages))
+
+    def test_native_nonassistant_endings_are_unsupervised(self):
+        from tokenizers import Tokenizer
+
+        assets = os.environ["ARCHLAB_DEEPSEEK_V41_ASSETS"]
+        renderer, tokenizer = DeepSeekV41Renderer(assets), Tokenizer.from_file(assets + "/tokenizer.json")
+        for role in ("tool", "user", "system"):
+            row = {"messages": [
+                {"role": "user", "content": "QUESTION_ONLY"},
+                {"role": "assistant", "content": "", "reasoning_content": "REASON_ONLY",
+                 "tool_calls": [{"id": "call0", "type": "function", "function": {"name": "python", "arguments": '{"code":"2+2"}'}}]},
+                {"role": role, "content": "UNSUPERVISED_ENDING", "tool_call_id": "call0"},
+            ]}
+            text, _, messages, metadata = renderer.render(row)
+            self.assertEqual(messages, prepare_messages(row)[0])
+            self.assertEqual(text, renderer.encode(messages))
+            self.assertFalse(metadata["message_repairs"][-1]["complete_answer"])
+            self.assertEqual(metadata["message_repairs"][-1]["terminal_role"], role)
+            enc = tokenizer.encode(text, add_special_tokens=False)
+            spans = token_spans(enc.offsets, metadata["assistant_character_spans"])
+            self.assertEqual(len(spans), 1)
+            self.assertLess(spans[-1][1], len(enc.ids))
+            supervised = tokenizer.decode(enc.ids[spans[0][0]:spans[0][1]], skip_special_tokens=False)
+            self.assertIn("REASON_ONLY", supervised)
+            self.assertNotIn("QUESTION_ONLY", supervised)
+            self.assertNotIn("UNSUPERVISED_ENDING", supervised)
+
+    @unittest.skipUnless(os.environ.get("ARCHLAB_NEMOTRON_MATH_SOURCE"), "requires original corpus")
+    def test_real_terminal_tool_result(self):
+        import pyarrow.parquet as pq
+        from tokenizers import Tokenizer
+
+        assets = os.environ["ARCHLAB_DEEPSEEK_V41_ASSETS"]
+        source = Path(os.environ["ARCHLAB_NEMOTRON_MATH_SOURCE"]) / "data/high_part00.parquet"
+        row = pq.ParquetFile(source).read_row_group(190).slice(1861, 1).to_pylist()[0]
+        renderer, tokenizer = DeepSeekV41Renderer(assets), Tokenizer.from_file(assets + "/tokenizer.json")
+        text, _, messages, metadata = renderer.render(row)
+        self.assertEqual(text, renderer.encode(prepare_messages(row)[0]))
+        self.assertEqual(messages[-1]["role"], "tool")
+        self.assertFalse(metadata["message_repairs"][-1]["complete_answer"])
+        enc = tokenizer.encode(text, add_special_tokens=False)
+        spans = token_spans(enc.offsets, metadata["assistant_character_spans"])
+        self.assertLess(spans[-1][1], len(enc.ids))
 
 
 if __name__ == "__main__":

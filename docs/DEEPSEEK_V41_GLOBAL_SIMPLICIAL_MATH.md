@@ -1,6 +1,6 @@
 # DeepSeek V4.1 + windowed softmax 2-simplicial adapters
 
-Status, 2026-09-10, revision 2, data recovery v3: CPU tokenization repaired and
+Status, 2026-09-10, revision 2, data recovery v4: CPU tokenization repaired and
 resumed with versioned provenance; training is a proposal, not
 implemented or launched. Model-weight downloads are deferred by the user. No subagents, package
 installs, DLC stops, or node/controller restarts.
@@ -9,7 +9,7 @@ The historical filename is retained for existing links. **Full-history cubic
 attention is superseded by fixed windows**, as requested. See the complete
 [report/code audit](DEEPSEEK_V41_SIMPLICIAL_AUDIT.md) for evidence, intentional
 departures, and remaining qualification gates. The earlier nonzero-output/AdamW-only
-proposal is superseded. The separate data recovery described below uses schema 3;
+proposal is superseded. The separate data recovery described below uses schema 4;
 the original schema-2 output and code snapshot are preserved unchanged.
 
 ## Completed operations
@@ -46,6 +46,14 @@ the original schema-2 output and code snapshot are preserved unchanged.
   for the final extension, including six actual counterexamples, exact old/new
   rendering and supervision equality on 40 previously accepted real examples,
   import-corruption rejection, and the official encoder suite.
+- V3 published 31 new parts before a later source row exposed a non-assistant
+  ending: `high_part00.parquet`, row group 190, row 1861, ends on a tool result.
+  All **215 parts / 430,000 conversations / 7,791,512,843 tokens** are preserved.
+  V3 exited; v4 resumed as PID **193616**, reusing these verified parts. Schema 4
+  preserves native non-assistant endings without adding an answer or EOS, and
+  excludes the trailing non-assistant text/header from supervision. Before this
+  launch, 59 tests and three subtests passed, covering seven real counterexamples
+  and successful-domain compatibility with both v1 and v3.
 
 ## Tokenization contract
 
@@ -71,7 +79,8 @@ The encoder SHA256 is checked before importing it. `tokenizer.json` SHA256:
   for all examples. This is an explicit fixed training setting, **not** a claim
   that GPT-OSS effort labels map to DeepSeek budgets. Original effort stays in metadata.
 - Tools are rendered, never executed. Tool definitions enter the native system schema.
-- Preserve complete conversations; no truncation, extra EOD, or trajectory deduplication.
+- Preserve entire supplied conversations, including unfinished source endings;
+  no truncation, extra EOS/EOD, or trajectory deduplication.
 - Store native BOS/EOS and int32 tokens with document boundaries. Compare fast
   tokenization to Transformers for every observed effort/tool combination per worker.
 - Preserve assistant target spans, including reasoning, answers, calls and EOS;
@@ -89,17 +98,19 @@ The encoder SHA256 is checked before importing it. `tokenizer.json` SHA256:
   with their calls/reasoning/order preserved and the native-preservation policy
   recorded. Terminal assistant tool calls are retained but flagged
   `complete_answer: false`; no missing tool result or answer is synthesized.
+  Native tool/user/system endings are likewise retained and flagged, including
+  any native trailing assistant header, with no supervision on that suffix.
   This is full-source tokenization, not an assertion that every teacher trajectory
   is complete or suitable for SFT. Final training selection must review these flags.
 
 Outputs and monitoring:
 
 ```text
-results/nemotron-math-v41-20260910-v3/progress.json
-results/nemotron-math-v41-20260910-v3/parts/*/READY.json
-results/nemotron-math-v41-20260910-v3-stage/job.log
-results/nemotron-math-v41-20260910-v3-stage/launcher.json
-results/nemotron-math-v41-20260910-v3-stage/parts/*/progress.json
+results/nemotron-math-v41-20260910-v4/progress.json
+results/nemotron-math-v41-20260910-v4/parts/*/READY.json
+results/nemotron-math-v41-20260910-v4-stage/job.log
+results/nemotron-math-v41-20260910-v4-stage/launcher.json
+results/nemotron-math-v41-20260910-v4-stage/parts/*/progress.json
 ```
 
 Top-level progress counts only published/checksummed parts. Per-part progress also
@@ -108,11 +119,12 @@ all parts complete. Partial `.bin` files are not training-ready. Do not change t
 conversion contract mid-run. The original launch code is snapshotted under
 `results/nemotron-math-v41-code-20260910-v1/src`, separate from editable project code.
 The new launch code is separately snapshotted under
-`results/nemotron-math-v41-code-20260910-v3/src`. Reused parts retain their original
+`results/nemotron-math-v41-code-20260910-v4/src`. Reused parts retain their original
 payload bytes and embed the original READY manifest inside `reused_from`; source
 and destination files are not mutable hardlinks. Progress separates reused and
-newly tokenized documents. `repaired_documents` counts newly completed documents
-with encoding events (reasoning merges, native adjacent turns or terminal calls).
+newly tokenized documents. `repaired_documents` counts published documents with
+encoding events (including inherited flags): reasoning merges, native adjacent
+turns, terminal calls or non-assistant endings.
 The failed case is file `high_part00.parquet`, row group 184, row 63 within that
 group: a reasoning-only assistant fragment immediately precedes another assistant
 tool-call message. The regression test now verifies its native encoding and
@@ -128,14 +140,14 @@ Current launch/resume command. Keep this snapshot and all format arguments fixed
 the old snapshot still rejects the original row and is not a remedy.
 
 ```sh
-export PYTHONPATH=/mnt/nas/evergreen/arch/results/nemotron-math-v41-code-20260910-v3/src:/mnt/nas/evergreen/arch/results/pretrained-backend-audit-20260907/Automodel
+export PYTHONPATH=/mnt/nas/evergreen/arch/results/nemotron-math-v41-code-20260910-v4/src:/mnt/nas/evergreen/arch/results/pretrained-backend-audit-20260907/Automodel
 /opt/venv/bin/python -m archlab.preprocessing.nemotron_math \
   --source /mnt/oss-dataset/datasets/nv-community/Nemotron-Math-v2 \
   --tokenizer /mnt/nas/evergreen/arch/results/deepseek-v41-flash-assets-df42c109 \
   --tokenizer-format deepseek-v41 --reasoning-effort 75 \
-  --stage /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v3-stage \
-  --output /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v3 \
-  --reuse-completed-from /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v1 \
+  --stage /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v4-stage \
+  --output /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v4 \
+  --reuse-completed-from /mnt/nas/evergreen/arch/results/nemotron-math-v41-20260910-v3 \
   --workers 32 --batch-size 16 --row-groups-per-part 1 --detach
 ```
 

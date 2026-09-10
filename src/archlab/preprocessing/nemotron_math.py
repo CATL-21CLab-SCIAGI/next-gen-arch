@@ -390,13 +390,13 @@ def prepare_contract(args):
         from archlab.preprocessing import deepseek_v41
 
         contract.update(
-            schema_version=3, tokenizer_format=tokenizer_format,
+            schema_version=4, tokenizer_format=tokenizer_format,
             model_id=deepseek_v41.MODEL_ID, model_revision=deepseek_v41.REVISION,
             template="checkpoint official encoding.encode_messages; no Jinja template",
             reasoning_effort_mapping=None, reasoning_effort=args.reasoning_effort,
             source_effort_policy="retain original mode in metadata; use one explicit native numeric budget",
             preserve_thinking=True, enable_thinking=True, drop_thinking=False,
-            ending="One native BOS; native assistant EOS; no extra EOD",
+            ending="Exact native source ending; no added EOS/EOD; incomplete trajectories flagged",
             loss_mask="assistant_token_spans: half-open token indices including reasoning, answers, calls, EOS; excluding prompt headers and tool results",
             renderer_sha256=file_sha(deepseek_v41.__file__),
             official_encoder_sha256=deepseek_v41.ENCODER_SHA256,
@@ -540,7 +540,7 @@ def main():
     parser.add_argument("--row-groups-per-part", type=int, default=2)
     parser.add_argument("--validation-basis-points", type=int, default=100)
     parser.add_argument("--smoke-rows", type=int, default=0)
-    parser.add_argument("--reuse-completed-from", help="Import verified READY parts from the audited DeepSeek v1 dataset into a new version")
+    parser.add_argument("--reuse-completed-from", help="Import verified READY parts from an audited DeepSeek dataset into a new version")
     parser.add_argument("--detach", action="store_true")
     args = parser.parse_args()
     if min(args.workers, args.batch_size, args.row_groups_per_part) < 1 or args.smoke_rows < 0:

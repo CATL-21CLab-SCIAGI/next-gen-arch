@@ -1,0 +1,82 @@
+{
+  "operation": "continue repaired CPU tokenization with native unfinished source endings",
+  "date_utc": "2026-09-10",
+  "previous_recovery_record": "results/deepseek-v41-math-recovery-20260910-v3.json",
+  "v3_failure": {
+    "pid": 192780,
+    "process_verified_defunct": true,
+    "source": "high_part00.parquet",
+    "row_group": 190,
+    "row_in_group": 1861,
+    "file_row": 381861,
+    "structure": "source trajectory ends on a tool result",
+    "published_new_parts": 31,
+    "published_new_documents": 62000,
+    "published_new_tokens": 1011277248,
+    "artifacts_preserved": true
+  },
+  "recovery": {
+    "pid": 193616,
+    "host": "dlc1hig7iitpry5n-worker-0",
+    "ip": "22.0.254.34",
+    "python": "/opt/venv/bin/python",
+    "cpu_workers": 32,
+    "batch_size": 16,
+    "row_groups_per_part": 1,
+    "cuda_visible_devices": "",
+    "source": "/mnt/oss-dataset/datasets/nv-community/Nemotron-Math-v2",
+    "snapshot": "results/nemotron-math-v41-code-20260910-v4/src",
+    "stage": "results/nemotron-math-v41-20260910-v4-stage",
+    "output": "results/nemotron-math-v41-20260910-v4",
+    "reuse_completed_from": "results/nemotron-math-v41-20260910-v3",
+    "verified_import_inventory": {
+      "parts": 215,
+      "documents": 430000,
+      "tokens": 7791512843
+    },
+    "schema_version": 4,
+    "contract_sha256": "4cb2bfdd9289fcf1d426f6a06e7f16ca917e9ecc7aab5168ff26a5f3e822855d",
+    "ending_policy": "Exact native source ending; no added EOS/EOD; incomplete trajectories flagged",
+    "supervision": "assistant tokens only; no targets on trailing tool/user/system content or the native pending assistant header",
+    "truncation": false,
+    "filtered_rows": false,
+    "fabricated_messages": false,
+    "tool_execution": false,
+    "source_quality_training_selection": "review retained incomplete-trajectory flags before finetuning"
+  },
+  "verification": {
+    "prelaunch_tests_passed": 59,
+    "prelaunch_subtests_passed": 3,
+    "final_tests_including_proposal_passed": 64,
+    "final_subtests_passed": 3,
+    "real_counterexamples": 7,
+    "v1_and_v3_success_domain_compatibility_tested": true,
+    "terminal_tool_user_system_suffix_supervision_exclusion_tested": true,
+    "original_failure_published_metadata_verified": {
+      "source_row": 368063,
+      "tokens": 62191,
+      "assistant_spans": 62,
+      "source_message_indices": [121, 122],
+      "reasoning_character_lengths": [1721, 186]
+    },
+    "ruff": "passed"
+  },
+  "code_sha256": {
+    "deepseek_v41.py": "79fef0fd60119527d73cb64f918ec2b63f7b7139ee712badcc61ba602669deb1",
+    "nemotron_math.py": "a82a7db65ab1879176a76cd6dc5168246deef98e771941b58d872753d89bc014",
+    "reuse.py": "c9e5032be719ea867ed406d73cd2f8edd93f3fc90a2950b052815481a1349313"
+  },
+  "runtime": {
+    "container": "sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06",
+    "torch": "2.12.0a0+0291f960b6.nv26.4.48445190",
+    "transformers": "5.8.1",
+    "tokenizers": "0.23.0rc0",
+    "pyarrow": "25.0.0",
+    "numpy": "1.26.4"
+  },
+  "packages_changed": false,
+  "nodes_or_controllers_restarted": false,
+  "training_launched": false,
+  "weights_downloaded": false,
+  "subagents_used": false
+}

@@ -1,7 +1,7 @@
-"""Explicit, checksum-verified import of the reviewed v1 tokenizer's READY parts.
+"""Explicit, checksum-verified import of reviewed tokenizer READY parts.
 
-No existing manifest is changed. Only the pinned v1 implementation is admitted:
-the new renderer extends its accepted domain and leaves its successful rows alone.
+No existing manifest is changed. Only pinned implementations are admitted:
+the new renderer extends their accepted domains and leaves successful rows alone.
 Payloads are copied (not mutable hardlinks) into the new dataset version.
 """
 
@@ -14,17 +14,25 @@ from pathlib import Path
 
 LEGACY_IMPLEMENTATION_SHA256 = "8d77664898eceb1813714c6774ffb7484b3b2d2dc5a157c3bbd8fb66fa2162ba"
 LEGACY_RENDERER_SHA256 = "24ec8341d94ab955a3d5e80fa553f30135b6eda8d02ac95d237187fa00ba5867"
-POLICY = "deepseek-v41-v1-success-domain-unchanged-lossless-source-extension-v3"
+V3_IMPLEMENTATION_SHA256 = "ecdb44fa506b1450109107315b8309b1c03fd23ff4182729fd514927a79cb19c"
+V3_RENDERER_SHA256 = "a6f17b6681c3b30e632f4c38c7fc766ac935d09ff122c373dfee8611dce26178"
+POLICY = "deepseek-v41-reviewed-v1-v3-success-domain-unchanged-native-endings-v4"
 
 
 def validate_legacy_contract(current, legacy):
-    if (legacy.get("schema_version") != 2 or current.get("schema_version") != 3
+    signature = (legacy.get("schema_version"), legacy.get("implementation_sha256"),
+                 legacy.get("renderer_sha256"), legacy.get("assistant_message_policy"))
+    reviewed = {
+        (2, LEGACY_IMPLEMENTATION_SHA256, LEGACY_RENDERER_SHA256, None),
+        (3, V3_IMPLEMENTATION_SHA256, V3_RENDERER_SHA256, "lossless-assistant-sequences-and-terminal-calls-v2"),
+    }
+    if (signature not in reviewed or current.get("schema_version") != 4
             or legacy.get("tokenizer_format") != "deepseek-v41"
             or current.get("tokenizer_format") != "deepseek-v41"
-            or legacy.get("implementation_sha256") != LEGACY_IMPLEMENTATION_SHA256
-            or legacy.get("renderer_sha256") != LEGACY_RENDERER_SHA256):
-        raise ValueError("Only the audited DeepSeek V4.1 v1 contract can be imported")
-    allowed = {"schema_version", "implementation_sha256", "renderer_sha256", "assistant_message_policy", "reuse_completed"}
+            or legacy.get("ending") != "One native BOS; native assistant EOS; no extra EOD"
+            or current.get("ending") != "Exact native source ending; no added EOS/EOD; incomplete trajectories flagged"):
+        raise ValueError("Only audited DeepSeek V4.1 v1/v3 contracts can be imported")
+    allowed = {"schema_version", "implementation_sha256", "renderer_sha256", "assistant_message_policy", "reuse_completed", "ending"}
     if {k: v for k, v in current.items() if k not in allowed} != {k: v for k, v in legacy.items() if k not in allowed}:
         raise ValueError("Legacy source/tokenizer/split/runtime contract is not identical")
 

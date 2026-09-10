@@ -164,8 +164,14 @@ and exact old/new rendering and supervision comparisons on
 40 previously accepted corpus examples. A final v1 READY inventory recovered
 184 parts / 368,000 conversations / 6,780,235,595 tokens. A new schema-3 dataset
 imports checksum-verified copies with embedded original-manifest provenance;
-the v1 output and code are unchanged. CPU tokenization resumed as PID 192780 on
-the existing worker and container. See the main plan's v3 monitoring paths.
+the v1 output and code are unchanged. V3 published 31 new parts, then encountered
+a tool-result-ended source row (file row 381861), exposing another terminal-role
+assumption. Schema 4 now preserves native non-assistant endings too, with no added
+answer/EOS or supervision on trailing non-assistant text. All 215 completed parts
+(430,000 conversations / 7,791,512,843 tokens) are reused unchanged. The final
+extension passed 59 preprocessing/native tests, including seven real failures and
+v1/v3 successful-domain compatibility. CPU tokenization resumed as PID 193616 on
+the existing worker and container. See the main plan's v4 monitoring paths.
 Training selection must explicitly review the retained incomplete trajectories.
 This data repair does not qualify or launch the proposed training backend.
 

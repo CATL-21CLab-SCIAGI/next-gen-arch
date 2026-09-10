@@ -79,8 +79,6 @@ def prepare_messages(row):
     from archlab.preprocessing.nemotron_math import normalize_row
 
     messages, has_tools = normalize_row(row)
-    if messages[-1].get("role") != "assistant":
-        raise ValueError("Expected an assistant-ended source trajectory")
     for message in messages:
         if message.get("role") not in {"system", "user", "assistant", "tool"}:
             raise ValueError("Unsupported source message role")
@@ -130,9 +128,19 @@ class DeepSeekV41Renderer:
                 complete_answer=False,
                 tool_result_fabricated=False,
             ))
+        if messages[-1]["role"] != "assistant":
+            repairs.append(dict(
+                policy="preserve-native-nonassistant-ending-v1",
+                source_message_indices=[source_last_index],
+                terminal_role=messages[-1]["role"],
+                complete_answer=False,
+                assistant_answer_fabricated=False,
+            ))
         text = self.encode(messages)
-        if not text.startswith(self.encoder.bos_token) or not text.endswith(self.encoder.eos_token):
+        if not text.startswith(self.encoder.bos_token):
             raise ValueError("Official encoding lost the native conversation boundaries")
+        if messages[-1]["role"] == "assistant" and not text.endswith(self.encoder.eos_token):
+            raise ValueError("Official encoding lost the native assistant ending")
         spans = []
         for index, message in enumerate(messages):
             if message["role"] != "assistant":

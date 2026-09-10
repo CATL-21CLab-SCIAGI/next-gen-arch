@@ -9,6 +9,8 @@ from archlab.preprocessing.nemotron_math import file_sha, json_sha, write_json
 from archlab.preprocessing.reuse import (
     LEGACY_IMPLEMENTATION_SHA256,
     LEGACY_RENDERER_SHA256,
+    V3_IMPLEMENTATION_SHA256,
+    V3_RENDERER_SHA256,
     reuse_part,
     validate_legacy_contract,
 )
@@ -17,8 +19,10 @@ from archlab.preprocessing.reuse import (
 def contracts():
     legacy = dict(schema_version=2, tokenizer_format="deepseek-v41", tokenizer_files={"tokenizer.json": "hash"},
                   split={"seed": "fixed"}, sources=["same"], tasks=["same"],
+                  ending="One native BOS; native assistant EOS; no extra EOD",
                   implementation_sha256=LEGACY_IMPLEMENTATION_SHA256, renderer_sha256=LEGACY_RENDERER_SHA256)
-    current = {**legacy, "schema_version": 3, "implementation_sha256": "new", "renderer_sha256": "new",
+    current = {**legacy, "schema_version": 4, "implementation_sha256": "new", "renderer_sha256": "new",
+               "ending": "Exact native source ending; no added EOS/EOD; incomplete trajectories flagged",
                "assistant_message_policy": "lossless-assistant-sequences-and-terminal-calls-v2"}
     return current, legacy
 
@@ -26,8 +30,12 @@ def contracts():
 def test_only_reviewed_extension_is_importable():
     current, legacy = contracts()
     validate_legacy_contract(current, legacy)
+    v3 = {**legacy, "schema_version": 3, "implementation_sha256": V3_IMPLEMENTATION_SHA256,
+          "renderer_sha256": V3_RENDERER_SHA256,
+          "assistant_message_policy": "lossless-assistant-sequences-and-terminal-calls-v2", "reuse_completed": {"original": "provenance"}}
+    validate_legacy_contract(current, v3)
     for key, value in (("sources", ["different"]), ("split", {}), ("tokenizer_files", {}),
-                       ("tokenizer_format", "qwen")):
+                       ("tokenizer_format", "qwen"), ("ending", "arbitrary-new-ending")):
         with pytest.raises(ValueError):
             validate_legacy_contract({**current, key: value}, legacy)
     with pytest.raises(ValueError):

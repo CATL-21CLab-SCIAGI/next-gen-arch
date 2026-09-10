@@ -1,6 +1,6 @@
 name: deepseek-v41-frozen-windowed-softmax-simplicial-math
 proposal_revision: 2
-status: tokenization-resumed-v3-training-not-yet-qualified
+status: tokenization-resumed-v4-training-not-yet-qualified
 audit: docs/DEEPSEEK_V41_SIMPLICIAL_AUDIT.md
 reference_report_sha256: ba68e2e40408125ae6d2f63a9a241b61c73910691c74ec1a2a7023c851eac08d
 model:
@@ -94,17 +94,18 @@ data_preparation:
   validation_group: normalized-problem-hash-across-all-variants
   loss_metadata: half-open-assistant-token-spans-before-next-token-shift
   ready_gate: DATA_READY.json-or-individually-checksummed-READY.json-parts
-  current_status: running-versioned-recovery-v3-not-data-complete
-  schema_version: 3
+  current_status: running-versioned-recovery-v4-not-data-complete
+  schema_version: 4
   assistant_message_policy: lossless-assistant-sequences-and-terminal-calls-v2
   unsafe_to_merge_adjacent_assistants: preserve-individually-with-official-native-encoder-and-flag
   terminal_assistant_tool_calls: preserve-and-flag-complete_answer-false-no-fabricated-results
+  nonassistant_endings: preserve-native-no-extra-EOS-no-suffix-supervision-flag-incomplete
   source_quality_training_selection: unresolved-review-retained-trajectory-flags-before-training
   repair_metadata: original-message-indices-reasoning-lengths-sha256-and-separator
-  reused_parts: 184
-  reused_conversations: 368000
-  reused_tokens: 6780235595
-  reuse_validation: pinned-v1-code-identical-source-tokenizer-split-runtime-and-payload-checksums
+  reused_parts: 215
+  reused_conversations: 430000
+  reused_tokens: 7791512843
+  reuse_validation: pinned-v1-v3-code-identical-source-tokenizer-split-runtime-and-payload-checksums
   reproduced_source_structure: high_part00.parquet-row-group-184-row-63-assistant-reasoning-fragment
   repair_policy: preserve-v1-parts-no-silent-row-dropping-or-manifest-hash-rewrite
 training_proposal:
