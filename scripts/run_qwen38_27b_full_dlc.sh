@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Compatibility entrypoint for resident controllers whose launcher allowlist
-# was frozen when the DLC allocation started. Historical 27B runs remain
-# reproducible from their pinned commits; at this commit this path accepts only
-# one of the exact Flash-Next compatibility contracts and forwards to the
-# container-native launcher.
+# Historical compatibility path. Model selection comes only from an explicit recipe.
 : "${NGA_OUTPUT_ROOT:?set the validated controller compatibility handle}"
 : "${NGA_EXPECTED_COMMIT:?set the immutable repository commit}"
+: "${NGA_REPO_ROOT:?set the immutable repository root}"
+: "${NGA_LAUNCH_RECIPE:?select a Flash-Next recipe explicitly; output names no longer select models}"
+NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
+source "$(dirname "$0")/lib/dlc_runtime.sh"
+nga_load_recipe "$NGA_LAUNCH_RECIPE"
+if [[ "$NGA_LAUNCH_FAMILY" != "flash-next" ]]; then
+    echo "compatibility entrypoint requires a flash-next recipe" >&2
+    exit 1
+fi
 
 if [[ "${NGA_EXPECTED_NODES:-}" != "4" || "${NGA_GPUS_PER_NODE:-}" != "8" ]]; then
     echo "compatibility launch requires the 4-node, 8-GPU-per-node allocation" >&2
@@ -40,35 +45,5 @@ esac
 
 production_name="${NGA_OUTPUT_ROOT##*/compat-}"
 export NGA_OUTPUT_ROOT="/mnt/oss/evergreen/next-gen-arch/$production_name"
-NGA_PROBE_STEPS="${NGA_PROBE_STEPS:-0}"
-if ((NGA_PROBE_STEPS > 0)); then
-    case "$production_name" in
-        *-probe-*) ;;
-        *)
-            echo "probe generations require a probe-labelled output handle" >&2
-            exit 1
-            ;;
-    esac
-    export NGA_PROBE_SAVE_INTERVAL=1
-fi
-export NGA_PROBE_STEPS
-case "$production_name" in
-    qwen38-flash-next-w320-e32-depth48-nomtp-*)
-        export NGA_FLASH_NEXT_MODEL_VARIANT=w320-e32-depth48-no-mtp
-        ;;
-    qwen38-flash-next-1b-depth48-nomtp-*)
-        export NGA_FLASH_NEXT_MODEL_VARIANT=1b-depth48-no-mtp
-        ;;
-    qwen38-flash-next-quarter-depth48-nomtp-*)
-        export NGA_FLASH_NEXT_MODEL_VARIANT=quarter-depth48-no-mtp
-        ;;
-    qwen38-flash-next-dense-ple-*)
-        export NGA_FLASH_NEXT_MODEL_VARIANT=full
-        ;;
-    *)
-        echo "compatibility handle does not identify a supported Flash-Next variant" >&2
-        exit 1
-        ;;
-esac
 
 exec bash "$(dirname "$0")/run_qwen38_flash_next_full_dlc.sh"

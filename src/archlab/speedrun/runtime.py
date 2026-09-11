@@ -6,11 +6,23 @@ import logging
 import os
 import re
 import urllib.request
-from pathlib import Path
 
 import torch
 import torch.distributed as dist
 from filelock import FileLock
+
+from archlab.dataset_paths import (
+    resolve_climbmix_data_dir as resolve_climbmix_data_dir,
+)
+from archlab.distributed import (
+    get_dist_info as get_dist_info,
+)
+from archlab.distributed import (
+    is_ddp_initialized as is_ddp_initialized,
+)
+from archlab.distributed import (
+    is_ddp_requested as is_ddp_requested,
+)
 
 # The dtype used for compute (matmuls, activations). Master weights stay fp32 for optimizer precision.
 # Linear layers cast their weights to this dtype in forward, replacing torch.amp.autocast.
@@ -98,16 +110,6 @@ def get_base_dir():
     return nanochat_dir
 
 
-def resolve_climbmix_data_dir(base_dir: str | os.PathLike[str]) -> Path:
-    """Return the canonical ClimbMix inventory root, with legacy-data fallback."""
-
-    base = Path(base_dir).expanduser().resolve()
-    current = base / "base_data_climbmix"
-    if current.is_dir():
-        return current
-    return base / "base_data"
-
-
 def download_file_with_lock(url, filename, postprocess_fn=None):
     """
     Downloads a file from a URL to a local path in the base directory.
@@ -164,35 +166,6 @@ def print_banner():
     ░░░░ ░░░░░  ░░░░░░░░ ░░░░ ░░░░░  ░░░░░░   ░░░░░░  ░░░░ ░░░░░  ░░░░░░░░   ░░░░░
     """
     print0(banner)
-
-
-def is_ddp_requested() -> bool:
-    """
-    True if launched by torchrun (env present), even before init.
-    Used to decide whether we *should* initialize a PG.
-    """
-    return all(k in os.environ for k in ("RANK", "LOCAL_RANK", "WORLD_SIZE"))
-
-
-def is_ddp_initialized() -> bool:
-    """
-    True if torch.distributed is available and the process group is initialized.
-    Used at cleanup to avoid destroying a non-existent PG.
-    """
-    return dist.is_available() and dist.is_initialized()
-
-
-def get_dist_info():
-    if is_ddp_requested():
-        # We rely on torchrun's env to decide if we SHOULD init.
-        # (Initialization itself happens in compute init.)
-        assert all(var in os.environ for var in ["RANK", "LOCAL_RANK", "WORLD_SIZE"])
-        ddp_rank = int(os.environ["RANK"])
-        ddp_local_rank = int(os.environ["LOCAL_RANK"])
-        ddp_world_size = int(os.environ["WORLD_SIZE"])
-        return True, ddp_rank, ddp_local_rank, ddp_world_size
-    else:
-        return False, 0, 0, 1
 
 
 def autodetect_device_type():

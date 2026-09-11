@@ -16,10 +16,8 @@ the ordered file set, byte sizes, row counts, and published token counts.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
-import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -28,25 +26,13 @@ from typing import Any
 
 import numpy as np
 
+from archlab.artifacts import atomic_write_json as _write_json
+from archlab.artifacts import sha256_file as _sha256
+
 FINEWEB_MAGIC = 20_240_520
 FINEWEB_VERSION = 1
 FINEWEB_HEADER_INTS = 256
 GPT2_EOT = 50_256
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
 
 
 def _minimum_unique_train_tokens(required_tokens: int, max_wrap_fraction: float) -> int:

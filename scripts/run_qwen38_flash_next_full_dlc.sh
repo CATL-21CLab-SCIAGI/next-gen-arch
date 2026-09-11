@@ -12,16 +12,13 @@ NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100BT-qwen38-de4b8
 NGA_TOKENIZER="${NGA_TOKENIZER:-/mnt/oss/models/qwen38-flash-next-de4b8e4d43b9}"
 NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:?set a fresh /mnt/oss/evergreen/next-gen-arch run directory}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
+source "$(dirname "$0")/lib/dlc_runtime.sh"
+nga_load_recipe "${NGA_LAUNCH_RECIPE:-$NGA_REPO_ROOT/recipes/launches/qwen38_flash_next_full.yaml}"
+if [[ "$NGA_LAUNCH_FAMILY" != "flash-next" ]]; then
+    echo "Flash-Next launcher requires a flash-next recipe" >&2
+    exit 1
+fi
 NGA_MEGATRON_ROOT="${NGA_MEGATRON_ROOT:-/opt/Megatron-Bridge/3rdparty/Megatron-LM}"
-NGA_EXPECTED_NODES="${NGA_EXPECTED_NODES:-4}"
-NGA_GPUS_PER_NODE="${NGA_GPUS_PER_NODE:-8}"
-NGA_SEQUENCE_LENGTH="${NGA_SEQUENCE_LENGTH:-2048}"
-NGA_MICRO_BATCH_SIZE="${NGA_MICRO_BATCH_SIZE:-1}"
-NGA_GLOBAL_BATCH_SIZE="${NGA_GLOBAL_BATCH_SIZE:-4096}"
-NGA_TARGET_TRAIN_TOKENS="${NGA_TARGET_TRAIN_TOKENS:-100000595968}"
-NGA_PROBE_STEPS="${NGA_PROBE_STEPS:-0}"
-NGA_PROBE_SAVE_INTERVAL="${NGA_PROBE_SAVE_INTERVAL:-0}"
-NGA_FLASH_NEXT_MODEL_VARIANT="${NGA_FLASH_NEXT_MODEL_VARIANT:-full}"
 # next-gen-arch itself may be an OSS symlink; use a distinct real NAS directory.
 NGA_LIVE_LOG_ROOT="${NGA_LIVE_LOG_ROOT:-/mnt/nas/evergreen/arch-live-logs/${NGA_OUTPUT_ROOT##*/}}"
 export NGA_EXPECTED_NODES NGA_GPUS_PER_NODE
@@ -90,39 +87,18 @@ jq -e \
      and (.train_tokens >= $target)' \
     "$NGA_DATA_ROOT/DATA_READY.json" >/dev/null
 
-test "$(git -C "$NGA_REPO_ROOT" rev-parse HEAD)" = "$NGA_EXPECTED_COMMIT"
-repo_drift="$({ git -C "$NGA_REPO_ROOT" status --porcelain=v1 --untracked-files=all || true; } \
-    | grep -Ev '^\?\? (\.LAUNCH_READY|repo-head\.txt)$' || true)"
-if [[ -n "$repo_drift" ]]; then
-    echo "immutable repository is not clean: $repo_drift" >&2
-    exit 1
-fi
+nga_require_immutable_repo
 
-export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
-export PATH="$(dirname "$NGA_PYTHON"):$CUDA_HOME/bin:$PATH"
-export CPATH="$CUDA_HOME/targets/x86_64-linux/include${CPATH:+:$CPATH}"
-export TRITON_PTXAS_PATH="${TRITON_PTXAS_PATH:-$CUDA_HOME/bin/ptxas}"
-export PYTHONPATH="$NGA_REPO_ROOT/src:$NGA_MEGATRON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-export CUDA_DEVICE_MAX_CONNECTIONS=1
+nga_container_environment
 if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" == "1b-depth48-no-mtp" || "$NGA_FLASH_NEXT_MODEL_VARIANT" == "w320-e32-depth48-no-mtp" ]]; then
     # DP-only has no TP/SP overlap ordering requirement. Allow native TE's
     # small expert GEMMs to use independent CUDA work queues.
     export CUDA_DEVICE_MAX_CONNECTIONS=32
 fi
-export TOKENIZERS_PARALLELISM=true
-export NVTE_ALLOW_NONDETERMINISTIC_ALGO="${NGA_ALLOW_NONDETERMINISTIC_ALGO:-1}"
-unset NVTE_GROUPED_LINEAR_SINGLE_PARAM
-export NGA_CONTAINER_DIGEST="${NGA_CONTAINER_DIGEST:-sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06}"
 
 mkdir -p "$NGA_OUTPUT_ROOT/logs" "$NGA_OUTPUT_ROOT/checkpoints" "$NGA_LIVE_LOG_ROOT"
 
-"$NGA_PYTHON" -m torch.distributed.run \
-    --nnodes="$WORLD_SIZE" \
-    --nproc-per-node="$NGA_GPUS_PER_NODE" \
-    --node-rank="$RANK" \
-    --master-addr="$MASTER_ADDR" \
-    --master-port="$MASTER_PORT" \
-    --module archlab.megatron.collective_probe \
+nga_torchrun archlab.megatron.collective_probe \
     2>&1 | tee -a "$NGA_LIVE_LOG_ROOT/collective-node-$RANK.log" "$NGA_OUTPUT_ROOT/logs/collective-node-$RANK.log"
 test -f "$NGA_OUTPUT_ROOT/COLLECTIVE_VALIDATED.json"
 
@@ -148,12 +124,6 @@ if ((NGA_PROBE_STEPS > 0)); then
     )
 fi
 
-"$NGA_PYTHON" -m torch.distributed.run \
-    --nnodes="$WORLD_SIZE" \
-    --nproc-per-node="$NGA_GPUS_PER_NODE" \
-    --node-rank="$RANK" \
-    --master-addr="$MASTER_ADDR" \
-    --master-port="$MASTER_PORT" \
-    --module archlab.megatron.qwen38_flash_next_full_train \
+nga_torchrun archlab.megatron.qwen38_flash_next_full_train \
     "${train_args[@]}" \
     2>&1 | tee -a "$NGA_LIVE_LOG_ROOT/train-node-$RANK.log" "$NGA_OUTPUT_ROOT/logs/train-node-$RANK.log"

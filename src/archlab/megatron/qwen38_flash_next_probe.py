@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import time
 from pathlib import Path
@@ -20,13 +19,7 @@ from archlab.architectures.qwen38_flash_next_full import (
     Qwen38FlashNextFullConfig,
     ple_partition_ownership,
 )
-
-
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.replace(temporary, path)
+from archlab.artifacts import atomic_write_json as _atomic_json
 
 
 def _require_finite_gradients(module: torch.nn.Module) -> int:

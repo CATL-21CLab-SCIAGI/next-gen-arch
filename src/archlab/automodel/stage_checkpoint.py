@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-
-def sha256(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+from archlab.artifacts import sha256_file as sha256
 
 
 def stage_checkpoint(source: Path, destination: Path, workers: int = 4, *, resume: bool = False):

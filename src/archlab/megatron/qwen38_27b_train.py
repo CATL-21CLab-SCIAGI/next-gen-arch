@@ -24,20 +24,21 @@ from archlab.architectures.qwen38_27b import (
     Qwen38Dense,
     Qwen38DenseConfig,
 )
+from archlab.artifacts import atomic_write_json as _atomic_json
+from archlab.artifacts import sha256_file as _sha256
 from archlab.megatron.backend import validate_runtime
-from archlab.megatron.qwen38_train import (
-    BinaryTokenBatches,
-    _architecture_from_model,
-    _atomic_json,
-    _current_iteration,
-    _distributed_rank,
-    _distributed_world_size,
-    _invoke_pretrain,
-    _loss_func,
-    _partition_prefixes,
-    _sha256,
-    _validated_data_prefixes,
+from archlab.megatron.indexed_data import (  # noqa: F401 - historical private import compatibility
+    data_prefixes as _data_prefixes,
 )
+from archlab.megatron.indexed_data import validated_data_prefixes as _validated_data_prefixes
+from archlab.megatron.lifecycle import architecture_from_model as _architecture_from_model
+from archlab.megatron.lifecycle import current_iteration as _current_iteration
+from archlab.megatron.lifecycle import distributed_rank as _distributed_rank
+from archlab.megatron.lifecycle import distributed_world_size as _distributed_world_size
+from archlab.megatron.lifecycle import invoke_pretrain
+from archlab.megatron.losses import component_mean_loss as _loss_func
+from archlab.megatron.token_batches import BinaryTokenBatches
+from archlab.megatron.token_batches import partition_prefixes as _partition_prefixes
 from archlab.speedrun.precision import resolve_precision_backend
 
 NATIVE_MUON_FP32_MATMUL_PRECISION = "medium"
@@ -413,6 +414,10 @@ def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None
             "probe_steps": args.probe_steps,
         },
         "source_commit": os.environ.get("NGA_EXPECTED_COMMIT"),
+        "launch_recipe": {
+            "path": os.environ.get("NGA_LAUNCH_RECIPE"),
+            "sha256": os.environ.get("NGA_LAUNCH_RECIPE_SHA256"),
+        },
         "tokenizer": str(args.tokenizer),
         "tokenizer_sha256": tokenizer_sha256,
         "data_root": str(args.data_root),
@@ -428,6 +433,8 @@ def _write_contract(args: argparse.Namespace, config: Qwen38DenseConfig) -> None
         "python": platform.python_version(),
         "created_at_unix": time.time(),
     }
+    for relative in ("artifacts.py", "megatron/indexed_data.py", "megatron/lifecycle.py", "megatron/losses.py"):
+        payload["implementation_sha256"][relative] = _sha256(Path(__file__).parents[1] / relative)
     _attach_resume_contract(payload)
     _record_run_contract(args.run_dir, payload, resume=args.resume)
 
@@ -546,11 +553,12 @@ def _run(args: argparse.Namespace) -> None:
         return train_batches(), validation_batches(), None
 
     datasets_provider.is_distributed = True
-    _invoke_pretrain(
+    invoke_pretrain(
         training_module,
         datasets_provider,
         model_provider,
         ModelType.encoder_or_decoder,
+        forward_step=_forward_step,
     )
 
     if _distributed_rank() == 0:

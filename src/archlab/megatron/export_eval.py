@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -13,12 +12,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+from archlab.artifacts import atomic_write_json as _write_json
+from archlab.artifacts import sha256_file as _sha256
 
 
 def expected_checkpoint_iterations(train_iters: int, save_interval: int) -> list[int]:
@@ -103,14 +98,6 @@ def _valid_hf_export(path: Path) -> bool:
         and (path / "tokenizer.json").is_file()
         and (any(path.glob("*.safetensors")) or any(path.glob("pytorch_model*.bin")))
     )
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(8 * 1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _is_oss_path(path: Path) -> bool:

@@ -10,7 +10,6 @@ that every mechanism has a tensor-parallel-native MCore layer implementation.
 from __future__ import annotations
 
 import argparse
-import inspect
 import json
 import math
 import os
@@ -26,30 +25,7 @@ from typing import Any
 
 import torch
 
-from archlab.contracts import (
-    BudgetResolution,
-    ComparisonRegime,
-    ContractError,
-    resolve_training_budget,
-)
-from archlab.failures import classify_failure
-from archlab.megatron.backend import validate_runtime
-from archlab.optimizers.recipes import (
-    OPTIMIZATION_RECIPES,
-    OptimizationRecipe,
-    get_optimization_recipe,
-)
-from archlab.optimizers.speedrun import setup_model_optimizer
-from archlab.performance import ThroughputProtocol, summarize_step_timestamps
-from archlab.provenance import (
-    hash_named_tensors,
-    hash_tokenizer_vocabulary,
-    sha256_file,
-    source_provenance,
-    stable_json_sha256,
-    verify_dataset_manifest,
-)
-from archlab.speedrun.campaigns import (
+from archlab.campaigns import (
     CAMPAIGN_VARIANTS,
     COMPARISON_BATCH_TOKENS,
     COMPARISON_EVAL_TOKENS,
@@ -67,20 +43,47 @@ from archlab.speedrun.campaigns import (
     get_campaign_variant,
     get_fineweb_variant_template,
 )
-from archlab.speedrun.dataloader import (
+from archlab.contracts import (
+    BudgetResolution,
+    ComparisonRegime,
+    ContractError,
+    resolve_training_budget,
+)
+from archlab.dataset_paths import resolve_climbmix_data_dir
+from archlab.failures import classify_failure
+from archlab.fineweb import (
     fineweb_distributed_data_loader,
     fixed_fineweb_validation_loader,
     inspect_fineweb_dataset,
-    tokenizing_distributed_data_loader_bos_bestfit,
-    tokenizing_distributed_data_loader_with_state_bos_bestfit,
-    tokenizing_replicated_global_batch_loader_with_state_bos_bestfit,
 )
-from archlab.speedrun.models import (
+from archlab.megatron.backend import validate_runtime
+from archlab.megatron.lifecycle import invoke_pretrain
+from archlab.model_factory import (
     build_engram_token_map,
     build_model_config,
     instantiate_model,
 )
-from archlab.speedrun.runtime import resolve_climbmix_data_dir
+from archlab.optimizers.recipes import (
+    OPTIMIZATION_RECIPES,
+    OptimizationRecipe,
+    get_optimization_recipe,
+)
+from archlab.optimizers.speedrun import setup_model_optimizer
+from archlab.performance import ThroughputProtocol, summarize_step_timestamps
+from archlab.provenance import (
+    hash_named_tensors,
+    hash_tokenizer_vocabulary,
+    sha256_file,
+    source_provenance,
+    stable_json_sha256,
+    verify_dataset_manifest,
+)
+from archlab.speedrun.dataloader import (
+    tokenizing_distributed_data_loader_bos_bestfit,
+    tokenizing_distributed_data_loader_with_state_bos_bestfit,
+    tokenizing_replicated_global_batch_loader_with_state_bos_bestfit,
+)
+from archlab.speedrun.models import training_architecture_runtime
 from archlab.speedrun.tokenizer import (
     get_pretrained_tokenizer,
     get_token_bytes,
@@ -247,7 +250,7 @@ def _variant_model_metrics(
     scale: str,
     template: CampaignVariant,
 ) -> tuple[int, float, float]:
-    config = build_model_config(**_model_config_kwargs(dataset, scale, template))
+    config = build_model_config(**_model_config_kwargs(dataset, scale, template), runtime=training_architecture_runtime())
     with torch.device("meta"):
         model = instantiate_model(config)
     parameter_count = int(model.num_scaling_params()["total"])
@@ -1041,35 +1044,8 @@ def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
     return output_tensor, partial(_loss_func, labels, bool(model.training))
 
 
-def _invoke_megatron_pretrain(
-    training_module,
-    datasets_provider,
-    model_provider,
-    model_type,
-) -> None:
-    """Call both the legacy CLI API and the config-container API from MCore 0.18+."""
-    parameters = inspect.signature(training_module.pretrain).parameters
-    if "cfg_container" in parameters:
-        from megatron.training.argument_utils import pretrain_cfg_container_from_args
-        from megatron.training.arguments import parse_and_validate_args
-
-        args = parse_and_validate_args(args_defaults={"tokenizer_type": "NullTokenizer"})
-        config = pretrain_cfg_container_from_args(args)
-        training_module.pretrain(
-            config,
-            datasets_provider,
-            model_provider,
-            model_type,
-            _forward_step,
-        )
-        return
-    training_module.pretrain(
-        datasets_provider,
-        model_provider,
-        model_type,
-        _forward_step,
-        args_defaults={"tokenizer_type": "NullTokenizer"},
-    )
+def _invoke_megatron_pretrain(training_module, datasets_provider, model_provider, model_type):
+    return invoke_pretrain(training_module, datasets_provider, model_provider, model_type, forward_step=_forward_step)
 
 
 def _run_megatron(
@@ -1145,7 +1121,7 @@ def _run_megatron(
             self.input_tensor = None
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
-            model_config = build_model_config(**model_kwargs)
+            model_config = build_model_config(**model_kwargs, runtime=training_architecture_runtime())
             architecture = instantiate_model(model_config)
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
@@ -1190,7 +1166,7 @@ def _run_megatron(
                     baseline_kwargs = _model_config_kwargs(dataset, scale, baseline_template)
                     baseline_kwargs.update(recipe.model_overrides)
                     with torch.device("meta"):
-                        baseline_model = instantiate_model(build_model_config(**baseline_kwargs))
+                        baseline_model = instantiate_model(build_model_config(**baseline_kwargs, runtime=training_architecture_runtime()))
                     include_names = {name for name, _parameter in baseline_model.named_parameters()}
                     include_names &= {name for name, _parameter in architecture.named_parameters()}
                 selected_count = sum(

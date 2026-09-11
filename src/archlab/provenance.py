@@ -13,8 +13,10 @@ from typing import Any
 
 import torch
 
+from archlab.artifacts import atomic_write_json
+from archlab.artifacts import sha256_file as sha256_file
+
 DATASET_MANIFEST_SCHEMA = 1
-_HASH_CHUNK_BYTES = 8 * 1024 * 1024
 
 
 class ProvenanceError(ValueError):
@@ -34,15 +36,6 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 def stable_json_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
-
-
-def sha256_file(path: str | Path, *, chunk_bytes: int = _HASH_CHUNK_BYTES) -> str:
-    path = Path(path)
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(chunk_bytes):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _safe_relative_path(value: str) -> Path:
@@ -147,14 +140,7 @@ def create_dataset_manifest(
 
 def write_dataset_manifest(path: str | Path, manifest: DatasetManifest) -> None:
     manifest.validate()
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    atomic_write_json(path, manifest.to_dict())
 
 
 def _manifest_from_json(path: Path) -> DatasetManifest:

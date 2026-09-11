@@ -722,21 +722,22 @@ def test_legacy_full_launcher_is_a_narrow_flash_next_forwarder():
     assert "export NGA_EXPECTED_NODES NGA_GPUS_PER_NODE" in supported_launcher
 
 
-def test_resident_controller_launcher_dispatches_only_the_flash_next_handle():
+def test_compatibility_dispatch_requires_explicit_recipe():
     root = Path(__file__).resolve().parents[1]
     launcher = (root / "scripts" / "run_qwen38_27b_quarter_dlc.sh").read_text()
 
-    assert "/compat-qwen38-flash-next-*" in launcher
+    assert "NGA_LAUNCH_RECIPE:?" in launcher
+    assert '"$NGA_LAUNCH_FAMILY" == "flash-next"' in launcher
     assert "run_qwen38_27b_full_dlc.sh" in launcher
-    assert "/mnt/nas/evergreen/compat-qwen38-flash-next-*" in launcher
 
 
-def test_compatibility_launcher_selects_depth48_quarter_without_mtp():
+def test_compatibility_launcher_no_longer_infers_model_from_name():
     root = Path(__file__).resolve().parents[1]
     launcher = (root / "scripts" / "run_qwen38_27b_full_dlc.sh").read_text()
     supported_launcher = (root / "scripts" / "run_qwen38_flash_next_full_dlc.sh").read_text()
 
-    assert "qwen38-flash-next-quarter-depth48-nomtp-*" in launcher
-    assert "NGA_FLASH_NEXT_MODEL_VARIANT=quarter-depth48-no-mtp" in launcher
-    assert "NGA_PROBE_SAVE_INTERVAL=1" in launcher
+    assert "NGA_LAUNCH_RECIPE:?" in launcher
+    assert 'case "$production_name"' not in launcher
+    assert "NGA_FLASH_NEXT_MODEL_VARIANT=" not in launcher
+    assert "NGA_PROBE_SAVE_INTERVAL=1" not in launcher
     assert '--model-variant "$NGA_FLASH_NEXT_MODEL_VARIANT"' in supported_launcher

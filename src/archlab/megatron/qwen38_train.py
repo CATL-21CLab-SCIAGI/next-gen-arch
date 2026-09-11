@@ -3,251 +3,40 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import inspect
-import json
 import math
 import os
 import platform
 import sys
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from archlab.architectures.qwen38_flash_next import (
     Qwen38FlashNext,
     Qwen38FlashNextConfig,
 )
+from archlab.artifacts import atomic_write_json as _atomic_json
+from archlab.artifacts import sha256_file as _sha256
 from archlab.megatron.backend import validate_runtime
+from archlab.megatron.indexed_data import (  # noqa: F401 - historical private import compatibility
+    data_prefixes as _data_prefixes,
+)
+from archlab.megatron.indexed_data import validated_data_prefixes as _validated_data_prefixes
+from archlab.megatron.lifecycle import architecture_from_model as _architecture_from_model
+from archlab.megatron.lifecycle import current_iteration as _current_iteration
+from archlab.megatron.lifecycle import distributed_rank as _distributed_rank
+from archlab.megatron.lifecycle import distributed_world_size as _distributed_world_size
+from archlab.megatron.lifecycle import invoke_pretrain
+from archlab.megatron.losses import component_mean_loss as _loss_func
 from archlab.megatron.qwen38_muon import install_qwen38_muon_adapter, muon_recipe_contract
+from archlab.megatron.token_batches import BinaryTokenBatches
+from archlab.megatron.token_batches import partition_prefixes as _partition_prefixes
 from archlab.speedrun.precision import resolve_precision_backend
 
 PRECISION_RECIPES = {"bf16": "bf16", "fp4": "fp4_blackwell"}
 RUNTIME_BACKENDS = {"bf16": "te_bf16", "fp4": "te_fp4"}
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _atomic_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.replace(temporary, path)
-
-
-class BinaryTokenBatches:
-    """Rank-local deterministic iterator over raw int32 Megatron ``.bin`` tokens."""
-
-    def __init__(
-        self,
-        prefixes: list[Path],
-        *,
-        batch_size: int,
-        sequence_len: int,
-        start_batch: int,
-        device: torch.device,
-        repeat_window_batches: int | None = None,
-    ):
-        if not prefixes:
-            raise ValueError("at least one indexed-data prefix is required")
-        self.arrays = [np.memmap(f"{prefix}.bin", mode="r", dtype=np.int32) for prefix in prefixes]
-        if any(array.size <= sequence_len for array in self.arrays):
-            raise ValueError("each indexed-data part must contain more than one sequence")
-        self.batch_size = batch_size
-        self.sequence_len = sequence_len
-        self.batch_index = start_batch
-        self.start_batch = start_batch
-        if repeat_window_batches is not None and repeat_window_batches < 1:
-            raise ValueError("repeat_window_batches must be positive")
-        self.repeat_window_batches = repeat_window_batches
-        self.device = device
-        self._executor: ThreadPoolExecutor | None = None
-        self._future: Future | None = None
-        if self.device.type == "cuda":
-            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="token-prefetch")
-            self._future = self._executor.submit(
-                self._cpu_batch, self._source_batch_index(self.batch_index)
-            )
-
-    @staticmethod
-    def _cyclic_slice(array: np.memmap, start: int, length: int) -> np.ndarray:
-        start %= array.size
-        if start + length <= array.size:
-            return np.asarray(array[start : start + length])
-        first = np.asarray(array[start:])
-        remainder = length - first.size
-        chunks = [first]
-        while remainder >= array.size:
-            chunks.append(np.asarray(array[:]))
-            remainder -= array.size
-        if remainder:
-            chunks.append(np.asarray(array[:remainder]))
-        return np.concatenate(chunks)
-
-    def __iter__(self):
-        return self
-
-    def _source_batch_index(self, batch_index: int) -> int:
-        if self.repeat_window_batches is None:
-            return batch_index
-        return self.start_batch + (
-            (batch_index - self.start_batch) % self.repeat_window_batches
-        )
-
-    def _cpu_batch(self, batch_index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        array = self.arrays[batch_index % len(self.arrays)]
-        flat_tokens = self.batch_size * self.sequence_len
-        start = (batch_index // len(self.arrays)) * flat_tokens
-        window = self._cyclic_slice(array, start, flat_tokens + 1)
-        # Copy because memmap slices are read-only and then pin for nonblocking H2D.
-        tensor = torch.from_numpy(np.array(window, dtype=np.int64, copy=True))
-        if self.device.type == "cuda":
-            tensor = tensor.pin_memory()
-        tokens = tensor[:-1].view(self.batch_size, self.sequence_len)
-        labels = tensor[1:].view(self.batch_size, self.sequence_len)
-        return tokens, labels
-
-    def __next__(self) -> dict[str, torch.Tensor]:
-        if self._future is None:
-            tokens, labels = self._cpu_batch(self._source_batch_index(self.batch_index))
-        else:
-            tokens, labels = self._future.result()
-        self.batch_index += 1
-        if self._executor is not None:
-            self._future = self._executor.submit(
-                self._cpu_batch, self._source_batch_index(self.batch_index)
-            )
-        return {
-            "tokens": tokens.to(self.device, non_blocking=True),
-            "labels": labels.to(self.device, non_blocking=True),
-        }
-
-    def __del__(self):
-        executor = getattr(self, "_executor", None)
-        if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
-
-
-def _distributed_rank() -> int:
-    if torch.distributed.is_initialized():
-        return torch.distributed.get_rank()
-    return int(os.environ.get("RANK", "0"))
-
-
-def _distributed_world_size() -> int:
-    if torch.distributed.is_initialized():
-        return torch.distributed.get_world_size()
-    return int(os.environ.get("WORLD_SIZE", "1"))
-
-
-def _partition_prefixes(
-    prefixes: list[Path],
-    rank: int,
-    world_size: int,
-    *,
-    require_distinct: bool = True,
-) -> list[Path]:
-    if not prefixes:
-        raise ValueError("at least one indexed-data prefix is required")
-    if world_size < 1 or not 0 <= rank < world_size:
-        raise ValueError(f"invalid rank/world size: {rank}/{world_size}")
-    if require_distinct and len(prefixes) < world_size:
-        raise ValueError(
-            f"training requires at least one distinct indexed-data part per rank: "
-            f"parts={len(prefixes)}, world_size={world_size}"
-        )
-    assigned = prefixes[rank::world_size]
-    if assigned:
-        return assigned
-    return [prefixes[rank % len(prefixes)]]
-
-
-def _data_prefixes(data_root: Path, split: str) -> list[Path]:
-    prefixes = sorted(path.with_suffix("") for path in (data_root / split).glob("part-*.bin"))
-    if not prefixes:
-        raise FileNotFoundError(f"no {split} part-*.bin files under {data_root}")
-    for prefix in prefixes:
-        for suffix in (".bin", ".idx", ".json"):
-            artifact = Path(f"{prefix}{suffix}")
-            if not artifact.is_file() or artifact.stat().st_size <= 0:
-                raise FileNotFoundError(f"missing or empty indexed-data artifact: {artifact}")
-    return prefixes
-
-
-def _validated_data_prefixes(data_root: Path) -> tuple[list[Path], list[Path]]:
-    """Return artifacts only when DATA_READY declares their exact membership."""
-    data_root = data_root.expanduser().resolve()
-    ready_path = data_root / "DATA_READY.json"
-    try:
-        ready = json.loads(ready_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"invalid indexed-data manifest: {ready_path}") from error
-    if not isinstance(ready, dict):
-        raise RuntimeError(f"indexed-data manifest must contain an object: {ready_path}")
-
-    validated = []
-    for split, manifest_key in (("train", "train_parts"), ("val", "valid_parts")):
-        declared_values = ready.get(manifest_key)
-        if not isinstance(declared_values, list) or not declared_values:
-            raise RuntimeError(f"indexed-data manifest lacks nonempty {manifest_key}")
-        if not all(isinstance(value, str) and value for value in declared_values):
-            raise RuntimeError(f"indexed-data manifest has invalid {manifest_key}")
-        declared = []
-        for value in declared_values:
-            prefix = Path(value).expanduser()
-            if not prefix.is_absolute():
-                prefix = data_root / prefix
-            declared.append(prefix.resolve())
-        if len(set(declared)) != len(declared):
-            raise RuntimeError(f"indexed-data manifest has duplicate {manifest_key}")
-        discovered = [prefix.resolve() for prefix in _data_prefixes(data_root, split)]
-        if set(declared) != set(discovered):
-            missing = sorted(str(path) for path in set(declared) - set(discovered))
-            undeclared = sorted(str(path) for path in set(discovered) - set(declared))
-            raise RuntimeError(
-                f"indexed-data manifest membership changed for {split}: "
-                f"missing={missing}, undeclared={undeclared}"
-            )
-        validated.append(discovered)
-    return validated[0], validated[1]
-
-
-def _current_iteration() -> int:
-    from megatron.training import get_args
-
-    args = get_args()
-    return int(getattr(args, "curr_iteration", getattr(args, "iteration", 0)))
-
-
-def _loss_func(
-    output_tensor: torch.Tensor,
-    component_metrics: dict[str, torch.Tensor] | None = None,
-):
-    losses = output_tensor.reshape(-1).float()
-    count = torch.tensor(losses.numel(), dtype=torch.float32, device=losses.device)
-    loss_sum = losses.sum()
-    report = {"lm loss": torch.stack((loss_sum.detach(), count))}
-    for name, value in (component_metrics or {}).items():
-        metric_count = torch.ones((), dtype=torch.float32, device=value.device)
-        report[name] = torch.stack((value.float(), metric_count))
-    return loss_sum / count, report
-
-
-def _architecture_from_model(model):
-    current = model
-    while hasattr(current, "module"):
-        current = current.module
-    return current.architecture
 
 
 def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
@@ -257,27 +46,6 @@ def _forward_step(data_iterator, model, return_schedule_plan: bool = False):
     losses = model(batch["tokens"], labels=batch["labels"])
     component_metrics = dict(_architecture_from_model(model).last_loss_metrics)
     return losses, partial(_loss_func, component_metrics=component_metrics)
-
-
-def _invoke_pretrain(training_module, datasets_provider, model_provider, model_type) -> None:
-    parameters = inspect.signature(training_module.pretrain).parameters
-    if "cfg_container" in parameters:
-        from megatron.training.argument_utils import pretrain_cfg_container_from_args
-        from megatron.training.arguments import parse_and_validate_args
-
-        args = parse_and_validate_args(args_defaults={"tokenizer_type": "NullTokenizer"})
-        config = pretrain_cfg_container_from_args(args)
-        training_module.pretrain(
-            config, datasets_provider, model_provider, model_type, _forward_step
-        )
-        return
-    training_module.pretrain(
-        datasets_provider,
-        model_provider,
-        model_type,
-        _forward_step,
-        args_defaults={"tokenizer_type": "NullTokenizer"},
-    )
 
 
 def _megatron_argv(args: argparse.Namespace, config: Qwen38FlashNextConfig) -> list[str]:
@@ -715,11 +483,12 @@ def _run(args: argparse.Namespace) -> None:
         return train_batches(), validation_batches(), None
 
     datasets_provider.is_distributed = True
-    _invoke_pretrain(
+    invoke_pretrain(
         training_module,
         datasets_provider,
         model_provider,
         ModelType.encoder_or_decoder,
+        forward_step=_forward_step,
     )
 
     if _distributed_rank() == 0:

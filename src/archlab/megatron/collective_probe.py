@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import os
 import socket
 import time
 from collections import Counter
 from datetime import timedelta
 from pathlib import Path
+
+from archlab.artifacts import atomic_write_json as _write_json
 
 
 def validate_topology(
@@ -23,13 +24,6 @@ def validate_topology(
     if invalid:
         raise RuntimeError(f"unexpected ranks per host: {invalid}")
     return counts
-
-
-def _write_json(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
 
 
 def main() -> None:

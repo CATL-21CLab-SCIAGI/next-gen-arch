@@ -16,18 +16,21 @@ The named Python factory is the executable source of geometry; each run emits
   `parameter_count_contract()` is checked against native construction.
 - `src/archlab/megatron/qwen38_flash_next_full_train.py`:
   training entry `python -m archlab.megatron.qwen38_flash_next_full_train`.
-  `_megatron_argv` controls native optimizer, schedule, batching, precision and
-  process groups. `_build_model_classes` wires GDN/global-attention alternation,
-  residual branches, PLE injection and native MoE. `build_model` is the common
-  construction boundary. `DPRankTokenBatches` defines deterministic data order.
+- `src/archlab/megatron/qwen38_flash_next_config.py`: native optimizer,
+  schedule, batching, precision and process-group arguments.
+- `src/archlab/megatron/qwen38_flash_next_model.py`: `_build_model_classes`
+  wires GDN/global-attention alternation, residual branches, PLE and native MoE;
+  `build_model` is shared by training, sampling and pilots.
+- `src/archlab/megatron/token_batches.py`: deterministic data ordering.
 - `src/archlab/megatron/gated_qkv.py`: four native TE projections packed for
   native gated SelfAttention. Separate Q/gate/K/V matrices prevent frozen
   Muon's ungated-only packed-QKV splitter from interpreting gate rows as K/V.
   This adapter is deliberately TP1-only, matching DP-only experiments.
 - `scripts/run_qwen38_flash_next_full_dlc.sh`: frozen-container launch,
   immutable source/hash checks, 32-rank collectives, microbatch and fusion flags.
-  Resident controllers enter through `scripts/run_qwen38_27b_quarter_dlc.sh`
-  and the narrowly validated compatibility forwarder; nodes are not restarted.
+  Select `recipes/launches/qwen38_flash_next_w320_e32.yaml` explicitly with
+  `NGA_LAUNCH_RECIPE`. Output names no longer choose the model. Frozen resident
+  controllers retain their old allowlists; no controller or node is restarted.
 - `tests/test_qwen38_width320.py`: count/flag contracts, zero-centered RMSNorm,
   GDN CUDA/recurrent oracle, and native gated-attention/DP-gradient oracle.
 

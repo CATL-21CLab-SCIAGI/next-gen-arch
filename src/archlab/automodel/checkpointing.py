@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+
+from archlab.artifacts import atomic_write_json
 
 
 def checkpoint_payload(adapters, optimizer):
@@ -72,15 +72,8 @@ def state_digest(value) -> str:
 
 
 def write_json(path: Path, value: dict) -> None:
-    """Atomically publish task metadata after flushing its temporary file."""
-    with tempfile.NamedTemporaryFile(mode="w", prefix=path.name + ".", suffix=".tmp",
-                                     dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+    """Preserve this checkpoint format's strict finite-JSON contract."""
+    atomic_write_json(path, value, allow_nan=False, create_parents=False)
 
 
 def save_training_checkpoint(path: Path, *, adapters: dict, optimizer, scheduler,

@@ -19,16 +19,20 @@ reduction or distribute experts across GPUs. Actual group sizes are asserted.
 | File | Responsibility / controls |
 |---|---|
 | `scripts/run_qwen38_flash_next_full_dlc.sh` | Container paths, immutable-commit checks, collective preflight, four-node torchrun, and the 1B DP/fusion switches. |
-| `src/archlab/megatron/qwen38_flash_next_full_train.py` | Training entry. `_parser` owns CLI controls; `_megatron_argv` translates to the frozen native trainer; `build_model` constructs the model; `_run` binds the optimizer, data, checkpointing, and native schedule. |
+| `src/archlab/megatron/qwen38_flash_next_full_train.py` | Training entry: run contract and native training-loop orchestration. |
+| `src/archlab/megatron/qwen38_flash_next_model.py` | Shared native model construction for training, sampling and pilots. |
+| `src/archlab/megatron/qwen38_flash_next_config.py` | CLI controls and translation to frozen native trainer arguments. |
+| `src/archlab/megatron/token_batches.py` | Shared deterministic token iterator and DP ownership. |
 | `src/archlab/architectures/qwen38_flash_next_full.py` | Model configuration, GDN, gated residuals, PLE hashing/embedding/injection, and closed-form parameter counts. No trainer imports. |
 | `recipes/models/qwen38_flash_next_1b_depth48_no_mtp.yaml` | Human-readable pinned model, execution, optimizer, and data-budget contract. This is documentation/contract, **not a dynamically loaded model builder**. Editing it alone does not change training. |
 | `src/archlab/megatron/qwen38_flash_next_sample.py` | Load a native checkpoint as one complete replica and generate bounded continuations without optimizer updates. Uses the same `build_model` as training. |
 | `src/archlab/prompts/backbone_validation.yaml` | Versioned qualitative prompts; change/add prompts here, not inside evaluation code. |
 
-Resident DLC controllers predate the dedicated launcher. Their admitted
-`run_qwen38_27b_quarter_dlc.sh` path forwards validated `compat-qwen38-flash-next-*`
-handles through `run_qwen38_27b_full_dlc.sh` to the actual Flash-Next launcher.
-These names are compatibility plumbing, not the current architecture.
+Historical pinned commits routed resident-controller compatibility handles by
+name. New launches require an explicit `NGA_LAUNCH_RECIPE`; output names no
+longer select architecture. See `docs/TRAINING_INFRASTRUCTURE.md`. Resident
+controllers are not patched or restarted by this refactor; their old allowlists
+may require using the dedicated launcher directly in the existing allocation.
 
 ## Backbone controls
 

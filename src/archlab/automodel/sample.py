@@ -9,7 +9,6 @@ This entry can run by filename with the training source snapshot on PYTHONPATH.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.metadata
 import json
 import math
@@ -23,6 +22,8 @@ from pathlib import Path
 
 import torch
 import torch.distributed.checkpoint as dcp
+
+from archlab.artifacts import sha256_file as sha256
 
 
 @dataclass(frozen=True)
@@ -47,10 +48,6 @@ class SamplingConfig:
 
 def emit(event: str, **values) -> None:
     print(json.dumps({"event": event, "time_unix": time.time(), **values}, allow_nan=False), flush=True)
-
-
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @torch.no_grad()
