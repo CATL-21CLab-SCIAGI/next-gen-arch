@@ -17,3 +17,10 @@ tokenizer/
 *.pt
 *.pth
 *.safetensors
+
+# Local service state and credentials
+/.runtime/
+
+/results
+
+/result

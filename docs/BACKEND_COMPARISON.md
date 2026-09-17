@@ -153,7 +153,7 @@ then aggregate them explicitly:
 python -m archlab.speedrun.campaign_compare \
   --megatron-root /path/to/primary-campaign \
   --override-root /path/to/dsa-correction \
-  --reference results/speedrun-10m-reference.csv \
+  --reference src/archlab/data/speedrun-10m-reference.csv \
   --output-dir /path/to/comparison
 ```
 
@@ -161,7 +161,7 @@ Published artifacts:
 
 - [`megatron-10m-safe-autotune-b300`](../results/megatron-10m-safe-autotune-b300/):
   the optimized 96-row comparison, policy manifest, and per-run provenance;
-- [`backend-10m-comparison.csv`](../results/backend-10m-comparison.csv): 32 backend/variant summaries;
-- [`backend-10m-runs.csv`](../results/backend-10m-runs.csv): all 96 accepted per-seed rows with source provenance;
-- [`backend-10m-comparison.json`](../results/backend-10m-comparison.json): raw rows, summaries, and cross-backend metrics;
-- [`speedrun-10m-reference.csv`](../results/speedrun-10m-reference.csv): frozen historical speedrun input.
+- [`backend-10m-comparison.csv`](recorded-results/backend-10m-comparison.csv): 32 backend/variant summaries;
+- [`backend-10m-runs.csv`](recorded-results/backend-10m-runs.csv): all 96 accepted per-seed rows with source provenance;
+- [`backend-10m-comparison.json`](recorded-results/backend-10m-comparison.json): raw rows, summaries, and cross-backend metrics;
+- [`speedrun-10m-reference.csv`](recorded-results/speedrun-10m-reference.csv): frozen historical speedrun input.

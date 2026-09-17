@@ -1,0 +1,1 @@
+Historical reference reports were moved out of the local-only results directory. Private node/storage addresses, cloud job identifiers, registry hostnames, and machine-specific workspace prefixes are replaced with placeholders in these public copies. Numerical results and original local records are unchanged.

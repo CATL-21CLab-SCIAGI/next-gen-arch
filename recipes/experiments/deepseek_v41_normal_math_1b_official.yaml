@@ -1,0 +1,43 @@
+# Geometry-matched normal (1-simplicial) attention control.
+# Same frozen base, placement, seed, data, schedule, and shared initialization.
+# One causal 512-token KV axis: 146843712 parameters versus 167816256.
+# BF16 FlashAttention with FP32 accumulation and deterministic backward.
+# The simplicial baseline uses its qualified FP32 ternary core.
+adapter_variant: normal
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+weights: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
+train_data: env:ARCHLAB_DEEPSEEK_V41_TRAIN_PILOT
+validation_data: env:ARCHLAB_DEEPSEEK_V41_VALIDATION_PILOT
+mesh_qualification: env:ARCHLAB_DEEPSEEK_V41_MESH_QUALIFICATION
+output: env:ARCHLAB_DEEPSEEK_V41_OUTPUT
+container_kernel_packages: env:ARCHLAB_CONTAINER_KERNEL_PACKAGES
+world_size: 32
+ep_size: 8
+context: 16384
+supervised_tokens: 1000000000
+validation_tokens: 1000000
+validation_interval_tokens: 10000000
+checkpoint_interval_tokens: 50000000
+warmup_steps: 100
+query_chunk: 32
+backend:
+  implementation: official-automodel-deepseek-v41
+  upstream_commit: f7ccd6f7902634af34c2f31b3294ac250dc97670
+  dense_fsdp: 32
+  expert_fsdp: 4
+  engram_owners: 32
+  attention: tilelang
+  sinkhorn: native-tilelang
+  experts: torch_mm
+  dispatcher: torch
+  moe_combine: ordered-float32-through-shared-add-single-final-cast
+  expert_gate_up: native-separate-bfloat16-linear
+  expert_activation: eager-float32-clamped-swiglu
+  expert_input_gradient: float32-local-and-expert-parallel
+  sparse_backward: private-query-deterministic-fp32-kv
+  deterministic_pytorch: false
+  adapter_core: flash-attn-deterministic-bf16-local512
+  expert_gather_backward: private-clone-before-allreduce
+  linear_compute: bfloat16
+  kv_index_quantization: retained
+  parity_reference: released-structure-matching-bf16-compute

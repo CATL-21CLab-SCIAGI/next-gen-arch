@@ -1,0 +1,95 @@
+{
+  "operation": "repair and continue CPU tokenization",
+  "date_utc": "2026-09-10",
+  "source": "/mnt/oss-dataset/datasets/nv-community/Nemotron-Math-v2",
+  "model_revision": "df42c109f1defefcbfcedbe7d905718a12266e40",
+  "weight_download": "still deferred; no weight shards fetched by this operation",
+  "original_failure": {
+    "output": "results/nemotron-math-v41-20260910-v1",
+    "contract_sha256": "2bb9f37f0dbf6833710cabbfe4278ab3346f9d9aa8ea1adf531e37d36e97c7a2",
+    "source": "high_part00.parquet",
+    "row_group": 184,
+    "row_in_group": 63,
+    "file_row": 368063,
+    "structure": "reasoning-only assistant fragment followed by another assistant with a tool call",
+    "stale_failure_progress": {
+      "parts": 156,
+      "documents": 312000,
+      "tokens": 5396920359
+    },
+    "verified_final_READY_inventory": {
+      "parts": 184,
+      "documents": 368000,
+      "tokens": 6780235595
+    },
+    "original_output_and_snapshot_preserved": true
+  },
+  "intermediate_v2": {
+    "pid": 191680,
+    "output": "results/nemotron-math-v41-20260910-v2",
+    "status": "failed closed; process verified defunct",
+    "original_failing_row_passed": true,
+    "next_error_file_row": 374002,
+    "next_error": "consecutive tool calls without an intervening result",
+    "additional_source_case": "assistant-ended trajectory with a terminal tool call, not a completed answer",
+    "artifacts_preserved": true
+  },
+  "recovery": {
+    "pid": 192780,
+    "host": "DLC_JOB_ID-worker-0",
+    "ip": "PRIVATE_NODE_IP",
+    "python": "/opt/venv/bin/python",
+    "entrypoint": "archlab.preprocessing.nemotron_math",
+    "snapshot": "results/nemotron-math-v41-code-20260910-v3/src",
+    "stage": "results/nemotron-math-v41-20260910-v3-stage",
+    "output": "results/nemotron-math-v41-20260910-v3",
+    "schema_version": 3,
+    "contract_sha256": "63dba60bd3b19d69efb2c18b404c6f9cf079e2ef7e0cdbb02d3f94a11f9d3545",
+    "source_conversations": 7085839,
+    "parts": 3545,
+    "cpu_workers": 32,
+    "batch_size": 16,
+    "row_groups_per_part": 1,
+    "cuda_visible_devices": "",
+    "reasoning_effort": 75,
+    "policy": "lossless-assistant-sequences-and-terminal-calls-v2",
+    "safe_reasoning_prefixes": "join with recorded paragraph separator; preserve every character",
+    "other_adjacent_assistants": "retain separately with official native encoding; never merge calls or answers",
+    "terminal_calls": "retain and flag complete_answer=false; never synthesize results or answers",
+    "metadata": "message_repairs records encoding events and source indices; reasoning merges include lengths and hashes",
+    "training_selection": "review retained source-quality flags before choosing supervised targets",
+    "reuse": "checksum-verified copies of the 184 v1 READY parts with original manifests embedded; no mutable hardlinks",
+    "truncation": false,
+    "filtered_rows": false,
+    "tool_execution": false,
+    "training_launched": false
+  },
+  "code_sha256": {
+    "deepseek_v41.py": "a6f17b6681c3b30e632f4c38c7fc766ac935d09ff122c373dfee8611dce26178",
+    "nemotron_math.py": "ecdb44fa506b1450109107315b8309b1c03fd23ff4182729fd514927a79cb19c",
+    "reuse.py": "d7c5e3cf84e2875781ba35b51c151b48bb9ca2228dbc66039cf128d7f4bd3e66"
+  },
+  "verification": {
+    "prelaunch_tests_passed": 57,
+    "prelaunch_subtests_passed": 3,
+    "final_tests_including_proposal_passed": 62,
+    "final_subtests_passed": 3,
+    "real_source_counterexamples": 6,
+    "old_success_domain_exact_render_and_supervision_comparisons": 40,
+    "native_encoder_suite_included": true,
+    "reuse_corruption_rejection_and_source_immutability_tested": true,
+    "ruff": "passed"
+  },
+  "runtime": {
+    "container": "PRIVATE_REGISTRY/dev/nemo:26.06",
+    "torch": "2.12.0a0+0291f960b6.nv26.4.48445190",
+    "transformers": "5.8.1",
+    "tokenizers": "0.23.0rc0",
+    "pyarrow": "25.0.0",
+    "numpy": "1.26.4"
+  },
+  "packages_changed": false,
+  "nodes_or_controllers_restarted": false,
+  "training_processes_started": false,
+  "subagents_used": false
+}

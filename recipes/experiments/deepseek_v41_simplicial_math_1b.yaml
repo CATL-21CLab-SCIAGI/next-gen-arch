@@ -1,0 +1,20 @@
+# Project-owned Automodel-components recipe; not an upstream V4.1 recipe.
+# python -m archlab.automodel.deepseek_v41_recipe --recipe THIS_FILE
+# The eight-rank full-model and production-window receipts are mandatory.
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+weights: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
+train_data: env:ARCHLAB_DEEPSEEK_V41_TRAIN_PILOT
+validation_data: env:ARCHLAB_DEEPSEEK_V41_VALIDATION_PILOT
+qualification: env:ARCHLAB_DEEPSEEK_V41_QUALIFICATION
+leaf_qualification: env:ARCHLAB_DEEPSEEK_V41_LEAF_QUALIFICATION
+output: env:ARCHLAB_DEEPSEEK_V41_OUTPUT
+container_kernel_packages: env:ARCHLAB_CONTAINER_KERNEL_PACKAGES
+world_size: 32
+ep_size: 8
+context: 16384
+supervised_tokens: 1000000000
+validation_tokens: 1000000
+validation_interval_tokens: 10000000
+checkpoint_interval_tokens: 50000000
+warmup_steps: 100
+query_chunk: 32

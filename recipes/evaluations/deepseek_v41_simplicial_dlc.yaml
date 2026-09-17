@@ -1,0 +1,25 @@
+schema_version: 1
+name: deepseek-v41-simplicial-step490-dlc32-evaluation
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+weights: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
+adapter_checkpoint: env:ARCHLAB_DEEPSEEK_V41_ADAPTER_CHECKPOINT
+data: env:ARCHLAB_DEEPSEEK_V41_EVALUATION_DATA
+train_pilot: env:ARCHLAB_DEEPSEEK_V41_TRAIN_PILOT
+validation_pilot: env:ARCHLAB_DEEPSEEK_V41_VALIDATION_PILOT
+output: env:ARCHLAB_DEEPSEEK_V41_EVALUATION_OUTPUT
+prompts: package:prompts/capability_regression.yaml
+world_size: 32
+ep_size: 8
+context: 16384
+cpu_weight_offload: false
+exclusive_gpu_allocation: true
+validation_targets: 1000000
+multiple_choice:
+  mmlu: 57
+  arc_challenge: 32
+  piqa: 64
+  protocol: lm-eval-0.4.13-zero-shot-likelihood
+  primary_metrics: [accuracy, character_normalized_accuracy]
+math_metrics: [cross_entropy, perplexity, top1_token_accuracy, top5_token_accuracy, base_to_adapted_kl, token_argmax_agreement]
+checkpoint_restore: adapter-weights-only-with-full-checksum-and-source-validation
+mode_order: alternate-base-and-adapted-by-round

@@ -1,0 +1,40 @@
+schema_version: 1
+name: deepseek-v41-step490-local-paired-pilot-v1
+status: bounded-pilot-not-full-benchmark
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+weights: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
+adapter_checkpoint: env:ARCHLAB_DEEPSEEK_V41_ADAPTER_CHECKPOINT
+capability_data: env:ARCHLAB_CAPABILITY_DATA
+piqa_validation: env:ARCHLAB_PIQA_VALIDATION
+train_pilot: env:ARCHLAB_DEEPSEEK_V41_TRAIN_PILOT
+validation_pilot: env:ARCHLAB_DEEPSEEK_V41_VALIDATION_PILOT
+output: env:ARCHLAB_DEEPSEEK_V41_EVALUATION_OUTPUT
+prompts: package:prompts/capability_regression.yaml
+hardware: local-single-NVIDIA-B300
+seed: 20260914
+context: 16384
+max_batch_size: 32
+max_padded_tokens: 32768
+expert_cache_gib: 96
+expert_cpu_store: pinned-encoded-resident
+float32_matmul_precision: highest
+allow_tf32: false
+samples:
+  mmlu: 57
+  arc_challenge: 32
+  piqa: 64
+  heldout_math_windows_per_difficulty: 4
+protocol:
+  pair: same-released-BF16-compute-parent-with-adapters-disabled-or-step490-adapters-enabled
+  mmlu_selection: one-held-out-example-per-subject
+  other_selection: deterministic-uniform-without-replacement
+  multiple_choice: lm-eval-0.4.13-zero-shot-continuation-loglikelihood-no-chat
+  answer_normalization: raw-and-character-normalized-loglikelihood
+  math: complete-untruncated-native-validation-windows-assistant-target-masks
+  math_metrics: [cross_entropy, perplexity, top1_token_accuracy, top5_token_accuracy, base_to_adapted_kl, token_argmax_agreement]
+  overlap: NFC-whitespace-normalized-question-hashes-against-consumed-and-planned-adaptation-data
+  no_generative_solve_accuracy_claim: true
+  no_pretraining_decontamination_claim: true
+  no_full_benchmark_claim: true
+  prefill_parity_contexts: [128, 2048, 16384]
+  reference_absolute_ce_delta_limit: 0.05

@@ -1,0 +1,55 @@
+# Both variants resume their own matched adapter weights and the same data cursor.
+# The shared full-weight phase uses a fresh memory-bounded optimizer.
+format: archlab-v41-full-training-v1
+variants: [simplicial, normal]
+base_weights: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+train_data: env:ARCHLAB_DEEPSEEK_V41_TRAIN_PILOT
+validation_data: env:ARCHLAB_DEEPSEEK_V41_VALIDATION_PILOT
+adapter_checkpoint: launch-time --checkpoint
+output: launch-time --output
+container_kernel_packages: env:ARCHLAB_CONTAINER_KERNEL_PACKAGES
+start:
+  optimizer_step: 307
+  supervised_tokens: 50119869
+  global_window_cursor: 9824
+mesh:
+  world_size_per_variant: 16
+  expert_parallel: 8
+  expert_fsdp: 2
+  dense_fsdp: 16
+  engram_owners: 16
+training:
+  all_text_weights_unfrozen: true
+  microbatch_size: 1
+  accumulation: 2
+  global_windows_per_update: 32
+  context: 16384
+  order_seed: 2234
+  total_supervised_tokens_including_adapter_phase: 1000000000
+  cpu_offload: false
+optimizer:
+  implementation: archlab.optimizers.sharded_adafactor.ShardedAdafactor
+  fp32_statistics: true
+  stochastic_bfloat16_storage: true
+  first_moment: false
+  fp32_full_weight_master: false
+  peak_relative_learning_rate: 0.0001
+  warmup_phase_steps: 20
+  beta2_decay: -0.8
+  epsilon: 1.0e-30
+  parameter_scale_floor: 0.001
+  update_rms_clip: 1.0
+  gradient_global_norm_clip: 1.0
+  weight_decay: 0.0
+indexer:
+  objective: masked_kl_to_detached_current_compressed_attention
+  sampled_queries_per_window: 64
+  coefficient_averaged_across_indexers: 0.01
+  selection_forward: unchanged_hard_topk
+checkpoint:
+  full_state: true
+  first_phase_step: 5
+  interval_supervised_tokens: 20000000
+  serialization_host_chunk_mib: 256
+  cpu_optimizer_offload: false

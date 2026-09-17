@@ -201,8 +201,8 @@ The table must not be called a final leaderboard. In particular, Qwen GDN was pe
 - **Parameters:** probed instantiated parameter count. Engram's retrieval tables are trainable parameters and are included.
 
 Historical scale values, seed validity, parameter counts, and statuses are in
-[`results/key-metrics.csv`](../results/key-metrics.csv). The original and optimized
-10M comparisons have separate [legacy artifacts](../results/backend-10m-comparison.csv)
+[`results/key-metrics.csv`](recorded-results/key-metrics.csv). The original and optimized
+10M comparisons have separate [legacy artifacts](recorded-results/backend-10m-comparison.csv)
 and [B300 safe-autotune artifacts](../results/megatron-10m-safe-autotune-b300/) so
 runtime provenance is not mixed into the older campaigns.
 

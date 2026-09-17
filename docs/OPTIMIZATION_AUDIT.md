@@ -141,9 +141,9 @@ produce a plausible-looking but invalid MuonH/AdamH result.
 All 39 executable recipes in the registry were run at least once on B300; the durable
 ledger contains 93 accepted probe/full-budget runs, including the backend factorial,
 coefficient refinements, three-seed confirmations, and two-rank DDP checks. The
-[per-run ledger](../results/megatron-10m-optimization-runs-b300.csv) retains source/diff,
+[per-run ledger](recorded-results/megatron-10m-optimization-runs-b300.csv) retains source/diff,
 Megatron, toolchain, wall-time, and throughput provenance. The compact
-[promotion table](../results/megatron-10m-optimization-b300.csv) contains only the
+[promotion table](recorded-results/megatron-10m-optimization-b300.csv) contains only the
 matched three-seed controls used for the final selection. A probe is evidence that a
 recipe executes and has sane early numerics; it is not promoted as a quality result.
 
