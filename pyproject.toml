@@ -54,6 +54,7 @@ dev = [
 
 [project.optional-dependencies]
 cpu = ["torch==2.9.1"]
+tracking = ["mlflow-skinny==3.16.0"]
 eval = [
     "lm-eval==0.4.13",
     "matplotlib>=3.10.0",

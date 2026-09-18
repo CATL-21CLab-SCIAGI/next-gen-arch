@@ -33,8 +33,15 @@ class V41AdapterConfig:
     initializer_std: float = 0.02
 
     def __post_init__(self):
-        dimensions = (self.width, self.streams, self.query_heads, self.kv_heads,
-                      self.head_dim, self.short_window, self.long_window)
+        dimensions = (
+            self.width,
+            self.streams,
+            self.query_heads,
+            self.kv_heads,
+            self.head_dim,
+            self.short_window,
+            self.long_window,
+        )
         if any(type(x) is not int or x < 1 for x in dimensions):
             raise ValueError("adapter dimensions must be positive integers")
         if self.query_heads % self.kv_heads or self.query_heads // self.kv_heads > 128:
@@ -68,7 +75,9 @@ class V41SimplicialAdapter(nn.Module):
     def __init__(self, config: V41AdapterConfig, *, seed=42, backend="triton"):
         super().__init__()
         if backend not in ("triton", "reference", "deterministic"):
-            raise ValueError("choose Triton, deterministic Triton, or the explicit small-test reference")
+            raise ValueError(
+                "choose Triton, deterministic Triton, or the explicit small-test reference"
+            )
         if torch.get_default_device().type not in ("cpu", "meta"):
             raise ValueError("construct on CPU/meta, then move to the execution device")
         self.config, self.backend = config, backend
@@ -96,8 +105,11 @@ class V41SimplicialAdapter(nn.Module):
     def forward(self, streams):
         # Keep FP32 optimizer/master parameters without autocasting the frozen
         # backbone's FP32 mHC/router arithmetic. Only this branch is autocast.
-        with torch.autocast("cuda", dtype=torch.bfloat16,
-                            enabled=streams.is_cuda and streams.dtype == torch.bfloat16):
+        with torch.autocast(
+            "cuda",
+            dtype=torch.bfloat16,
+            enabled=streams.is_cuda and streams.dtype == torch.bfloat16,
+        ):
             return self._forward(streams)
 
     def _forward(self, streams):
@@ -116,7 +128,10 @@ class V41SimplicialAdapter(nn.Module):
         k2 = self.k2_norm(self.k2(x).reshape(kv_shape))
         v1, v2 = self.v1(x).reshape(kv_shape), self.v2(x).reshape(kv_shape)
         if self.backend == "deterministic":
-            from archlab.architectures.simplicial_deterministic import deterministic_simplicial_attention
+            from archlab.architectures.simplicial_deterministic import (
+                deterministic_simplicial_attention,
+            )
+
             core = deterministic_simplicial_attention
         else:
             core = simplicial_attention if self.backend == "triton" else reference_simplicial
@@ -124,9 +139,14 @@ class V41SimplicialAdapter(nn.Module):
         # core arithmetic failed the production-window gradient oracle near
         # cancellation; projections and residual outputs remain BF16.
         with torch.autocast(streams.device.type, enabled=False):
-            attended = core(*(t.float() for t in (q, k1, k2, v1, v2)),
-                            c.short_window, c.long_window).to(q.dtype).flatten(-2)
+            attended = (
+                core(*(t.float() for t in (q, k1, k2, v1, v2)), c.short_window, c.long_window)
+                .to(q.dtype)
+                .flatten(-2)
+            )
         attended = (attended.float() * self.output_gate(x).float().sigmoid()).to(attended.dtype)
         branch = self.output(attended)
         write = 2 * self.write_logits.float().sigmoid()
-        return (streams.float() + branch.float().unsqueeze(-2) * write[None, None, :, None]).to(streams.dtype)
+        return (streams.float() + branch.float().unsqueeze(-2) * write[None, None, :, None]).to(
+            streams.dtype
+        )

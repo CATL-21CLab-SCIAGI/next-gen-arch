@@ -7,14 +7,20 @@ from pathlib import Path
 import pytest
 import torch
 import yaml
+from test_deepseek_v41_official_adapter import _official_model, _skeleton, _small_config
+from test_deepseek_v41_official_recipe import mesh_receipts as mesh_receipts
 
 from archlab.architectures.deepseek_v41_adapter import V41AdapterConfig, V41SimplicialAdapter
-from archlab.architectures.deepseek_v41_normal_adapter import V41NormalAttentionAdapter, normal_adapter_parameter_count
-from archlab.architectures.local_attention import deterministic_local_attention, reference_local_attention
+from archlab.architectures.deepseek_v41_normal_adapter import (
+    V41NormalAttentionAdapter,
+    normal_adapter_parameter_count,
+)
+from archlab.architectures.local_attention import (
+    deterministic_local_attention,
+    reference_local_attention,
+)
 from archlab.automodel.deepseek_v41_official_adapter import install_official_adapters
 from archlab.automodel.deepseek_v41_official_recipe import OfficialV41Config, admit_mesh
-from test_deepseek_v41_official_adapter import _official_model, _skeleton, _small_config
-from test_deepseek_v41_official_recipe import mesh_receipts
 
 
 def test_normal_control_shares_initial_weights_and_preserves_rng():
@@ -37,10 +43,14 @@ def test_reference_matches_dense_masked_attention_and_is_causal():
     k = torch.randn(2, 7, 2, 16, dtype=torch.float64, requires_grad=True)
     v = torch.randn_like(k, requires_grad=True)
     actual = reference_local_attention(q, k, v, 3)
-    qh, kh, vh = (x.transpose(1, 2) for x in (q, k.repeat_interleave(2, 2), v.repeat_interleave(2, 2)))
+    qh, kh, vh = (
+        x.transpose(1, 2) for x in (q, k.repeat_interleave(2, 2), v.repeat_interleave(2, 2))
+    )
     indices = torch.arange(7)
     mask = (indices[:, None] >= indices[None, :]) & (indices[:, None] - indices[None, :] < 3)
-    expected = torch.nn.functional.scaled_dot_product_attention(qh, kh, vh, attn_mask=mask).transpose(1, 2)
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        qh, kh, vh, attn_mask=mask
+    ).transpose(1, 2)
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
     grad = torch.randn_like(actual)
     a = torch.autograd.grad(actual, (q, k, v), grad, retain_graph=True)
@@ -50,11 +60,15 @@ def test_reference_matches_dense_masked_attention_and_is_causal():
     changed_k, changed_v = k.detach().clone(), v.detach().clone()
     changed_k[:, 5:] += 100
     changed_v[:, 5:] -= 100
-    torch.testing.assert_close(reference_local_attention(q, changed_k, changed_v, 3)[:, :5], actual[:, :5], rtol=0, atol=0)
+    torch.testing.assert_close(
+        reference_local_attention(q, changed_k, changed_v, 3)[:, :5], actual[:, :5], rtol=0, atol=0
+    )
     changed_k, changed_v = k.detach().clone(), v.detach().clone()
     changed_k[:, :3] += 100
     changed_v[:, :3] -= 100
-    torch.testing.assert_close(reference_local_attention(q, changed_k, changed_v, 3)[:, 5:], actual[:, 5:], rtol=0, atol=0)
+    torch.testing.assert_close(
+        reference_local_attention(q, changed_k, changed_v, 3)[:, 5:], actual[:, 5:], rtol=0, atol=0
+    )
 
 
 def test_normal_insertion_identity_two_updates_and_exact_resume():
@@ -64,9 +78,13 @@ def test_normal_insertion_identity_two_updates_and_exact_resume():
     frozen = {name: p.detach().clone() for name, p in model.named_parameters()}
     with torch.no_grad():
         before = model(tokens).logits
-    adapters = install_official_adapters(model, _small_config(), layer_indices=(0, 4), backend="reference", variant="normal")
+    adapters = install_official_adapters(
+        model, _small_config(), layer_indices=(0, 4), backend="reference", variant="normal"
+    )
     torch.testing.assert_close(model(tokens).logits, before, rtol=0, atol=0)
-    optim = torch.optim.AdamW([p for a in adapters.values() for p in a.parameters()], lr=.01, foreach=False)
+    optim = torch.optim.AdamW(
+        [p for a in adapters.values() for p in a.parameters()], lr=0.01, foreach=False
+    )
     for step in range(2):
         optim.zero_grad(set_to_none=True)
         model(tokens, labels=tokens).loss.backward()
@@ -80,7 +98,9 @@ def test_normal_insertion_identity_two_updates_and_exact_resume():
             assert p.grad is None
             torch.testing.assert_close(p, frozen[name], rtol=0, atol=0)
     restored = copy.deepcopy(model)
-    other = torch.optim.AdamW([p for p in restored.parameters() if p.requires_grad], lr=.01, foreach=False)
+    other = torch.optim.AdamW(
+        [p for p in restored.parameters() if p.requires_grad], lr=0.01, foreach=False
+    )
     other.load_state_dict(copy.deepcopy(optim.state_dict()))
     for candidate, optimizer in ((model, optim), (restored, other)):
         optimizer.zero_grad(set_to_none=True)
@@ -91,8 +111,11 @@ def test_normal_insertion_identity_two_updates_and_exact_resume():
 
 def test_normal_production_optimizer_covers_each_parameter_once():
     from archlab.automodel.deepseek_v41_execution import adapter_optimizers
+
     model = _skeleton()
-    adapters = install_official_adapters(model, backend="flash-attn-deterministic", variant="normal", device="meta")
+    adapters = install_official_adapters(
+        model, backend="flash-attn-deterministic", variant="normal", device="meta"
+    )
     optimizers = adapter_optimizers(model, adapters)
     groups = [group for optimizer in optimizers for group in optimizer.param_groups]
     params = [p for group in groups for p in group["params"]]
@@ -101,7 +124,7 @@ def test_normal_production_optimizer_covers_each_parameter_once():
     assert sum(p.numel() for p in params) == 146_843_712
     assert len(groups[0]["params"]) == 16 and groups[0]["head_dim"] == 128
     assert len(groups[1]["params"]) == 24 and groups[1]["head_dim"] is None
-    assert groups[2]["weight_decay"] == .1 and groups[3]["weight_decay"] == 0
+    assert groups[2]["weight_decay"] == 0.1 and groups[3]["weight_decay"] == 0
 
 
 def test_normal_recipe_only_changes_the_adapter_variant_and_core():
@@ -124,11 +147,17 @@ def test_normal_admission_rejects_simplicial_mesh_receipts(mesh_receipts):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires the B300 container")
-@pytest.mark.parametrize("length,heads,kv_heads,dim,window", [(17, 4, 2, 32, 5), (513, 8, 2, 128, 512)])
-def test_flash_attention_forward_backward_oracle_and_repeatability(length, heads, kv_heads, dim, window):
+@pytest.mark.parametrize(
+    "length,heads,kv_heads,dim,window", [(17, 4, 2, 32, 5), (513, 8, 2, 128, 512)]
+)
+def test_flash_attention_forward_backward_oracle_and_repeatability(
+    length, heads, kv_heads, dim, window
+):
     torch.manual_seed(47)
     q = torch.randn(1, length, heads, dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    k = torch.randn(1, length, kv_heads, dim, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    k = torch.randn(
+        1, length, kv_heads, dim, device="cuda", dtype=torch.bfloat16, requires_grad=True
+    )
     v = torch.randn_like(k, requires_grad=True)
     inputs = (q, k, v)
     reference_inputs = tuple(x.detach().float().requires_grad_() for x in inputs)
@@ -139,8 +168,8 @@ def test_flash_attention_forward_backward_oracle_and_repeatability(length, heads
     expected_grads = torch.autograd.grad(expected, reference_inputs, grad.float())
     for measured, oracle in zip((actual, *actual_grads), (expected, *expected_grads), strict=True):
         relative = (measured.float() - oracle).norm() / oracle.norm()
-        assert relative < .008, float(relative)
-        torch.testing.assert_close(measured.float(), oracle, rtol=.04, atol=.035)
+        assert relative < 0.008, float(relative)
+        torch.testing.assert_close(measured.float(), oracle, rtol=0.04, atol=0.035)
     replay = deterministic_local_attention(*inputs, window)
     replay_grads = torch.autograd.grad(replay, inputs, grad)
     for first, second in zip((actual, *actual_grads), (replay, *replay_grads), strict=True):

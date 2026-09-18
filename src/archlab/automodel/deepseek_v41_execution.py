@@ -18,7 +18,8 @@ from torch.utils.checkpoint import checkpoint, set_checkpoint_early_stop
 
 from archlab.architectures.deepseek_v41_adapter import V41AdapterConfig, V41SimplicialAdapter
 from archlab.architectures.deepseek_v41_normal_adapter import (
-    V41NormalAttentionAdapter, normal_adapter_parameter_count,
+    V41NormalAttentionAdapter,
+    normal_adapter_parameter_count,
 )
 from archlab.automodel.deepseek_v41_autograd import attach_adapters, install_frozen_backward
 from archlab.automodel.deepseek_v41_loading import load_native_ep_checkpoint
@@ -72,15 +73,26 @@ def build_replica(*, assets: Path, weights: Path, group, context: int):
     from archlab.automodel.deepseek_v41_pytorch import bf16_memory_plan
 
     capacity = bf16_memory_plan(model)
-    print(json.dumps({"event": "bf16_capacity_before_checkpoint_io", "rank": dist.get_rank(),
-                      **capacity}), flush=True)
+    print(
+        json.dumps(
+            {"event": "bf16_capacity_before_checkpoint_io", "rank": dist.get_rank(), **capacity}
+        ),
+        flush=True,
+    )
     if not capacity["fits"]:
         raise MemoryError(f"BF16 capacity gate failed before reading weights: {capacity}")
-    report = load_native_ep_checkpoint(model, weights, ep_rank=dist.get_rank(group), ep_size=dist.get_world_size(group))
+    report = load_native_ep_checkpoint(
+        model, weights, ep_rank=dist.get_rank(group), ep_size=dist.get_world_size(group)
+    )
     report["native_quantization"] = native_quantization
-    report["architecture"] = {"width": args.dim, "layers": args.n_layers, "streams": args.hc_mult,
-                              "experts": args.n_routed_experts, "active_experts": args.n_activated_experts,
-                              "engram_layers_0based": args.engram_layer_ids}
+    report["architecture"] = {
+        "width": args.dim,
+        "layers": args.n_layers,
+        "streams": args.hc_mult,
+        "experts": args.n_routed_experts,
+        "active_experts": args.n_activated_experts,
+        "engram_layers_0based": args.engram_layer_ids,
+    }
     return reference, model, report
 
 
@@ -92,8 +104,10 @@ def install_training_branches(reference, model, *, seed=42):
     try:
         torch.set_default_dtype(torch.float32)
         torch.set_default_device("cpu")
-        adapters = {i: V41SimplicialAdapter(config, seed=seed + i).cuda()
-                    for i in (4, 9, 14, 19, 24, 29, 34, 39)}
+        adapters = {
+            i: V41SimplicialAdapter(config, seed=seed + i).cuda()
+            for i in (4, 9, 14, 19, 24, 29, 34, 39)
+        }
     finally:
         torch.set_default_dtype(old_dtype)
         torch.set_default_device(old_device)
@@ -135,18 +149,32 @@ def adapter_optimizers(model, adapters, *, lr=1e-7):
         values = [adapter.v] if normal else [adapter.v1, adapter.v2]
         key_norms = [adapter.k_norm] if normal else [adapter.k1_norm, adapter.k2_norm]
         heads.extend([adapter.q.weight, *(key.weight for key in keys)])
-        matrices.extend([*(value.weight for value in values), adapter.output.weight, adapter.output_gate.weight])
-        norms.extend([adapter.input_norm.weight, adapter.q_norm.weight, *(norm.weight for norm in key_norms)])
+        matrices.extend(
+            [*(value.weight for value in values), adapter.output.weight, adapter.output_gate.weight]
+        )
+        norms.extend(
+            [adapter.input_norm.weight, adapter.q_norm.weight, *(norm.weight for norm in key_norms)]
+        )
         scalars.extend([adapter.read_logits, adapter.write_logits])
     combined = heads + matrices + norms + scalars
     trainable = {id(p) for p in model.parameters() if p.requires_grad}
     if len({id(p) for p in combined}) != len(combined) or {id(p) for p in combined} != trainable:
         raise ValueError("optimizer partition is not exhaustive/disjoint or includes the base")
-    expected = 8 * (normal_adapter_parameter_count(V41AdapterConfig()) if normal
-                    else V41AdapterConfig().parameter_count())
-    if sum(p.numel() for p in combined) != expected or any(p.dtype != torch.float32 for p in combined):
+    expected = 8 * (
+        normal_adapter_parameter_count(V41AdapterConfig())
+        if normal
+        else V41AdapterConfig().parameter_count()
+    )
+    if sum(p.numel() for p in combined) != expected or any(
+        p.dtype != torch.float32 for p in combined
+    ):
         raise ValueError("wrong adapter parameter budget/master precision")
     muon = HeadwiseMuon([{"params": heads, "head_dim": 128}, {"params": matrices}], lr=lr)
-    adam = torch.optim.AdamW([{"params": norms, "weight_decay": .1}, {"params": scalars, "weight_decay": 0}],
-                             lr=lr, betas=(.9, .95), eps=1e-20, foreach=False)
+    adam = torch.optim.AdamW(
+        [{"params": norms, "weight_decay": 0.1}, {"params": scalars, "weight_decay": 0}],
+        lr=lr,
+        betas=(0.9, 0.95),
+        eps=1e-20,
+        foreach=False,
+    )
     return [muon, adam]

@@ -11,7 +11,10 @@ import torch
 from torch import nn
 
 from archlab.architectures.deepseek_v41_adapter import V41AdapterConfig, V41SimplicialAdapter
-from archlab.architectures.local_attention import deterministic_local_attention, reference_local_attention
+from archlab.architectures.local_attention import (
+    deterministic_local_attention,
+    reference_local_attention,
+)
 
 
 def normal_adapter_parameter_count(config: V41AdapterConfig) -> int:
@@ -34,8 +37,11 @@ class V41NormalAttentionAdapter(nn.Module):
         self.k, self.v, self.k_norm = source.k2, source.v2, source.k2_norm
 
     def forward(self, streams):
-        with torch.autocast("cuda", dtype=torch.bfloat16,
-                            enabled=streams.is_cuda and streams.dtype == torch.bfloat16):
+        with torch.autocast(
+            "cuda",
+            dtype=torch.bfloat16,
+            enabled=streams.is_cuda and streams.dtype == torch.bfloat16,
+        ):
             return self._forward(streams)
 
     def _forward(self, streams):
@@ -52,11 +58,15 @@ class V41NormalAttentionAdapter(nn.Module):
         v = self.v(x).reshape(batch, length, c.kv_heads, c.head_dim)
         with torch.autocast(streams.device.type, enabled=False):
             if self.backend == "reference":
-                attended = reference_local_attention(q.float(), k.float(), v.float(), c.long_window).to(q.dtype)
+                attended = reference_local_attention(
+                    q.float(), k.float(), v.float(), c.long_window
+                ).to(q.dtype)
             else:
                 attended = deterministic_local_attention(q, k, v, c.long_window)
         attended = attended.flatten(-2)
         attended = (attended.float() * self.output_gate(x).float().sigmoid()).to(attended.dtype)
         branch = self.output(attended)
         write = 2 * self.write_logits.float().sigmoid()
-        return (streams.float() + branch.float().unsqueeze(-2) * write[None, None, :, None]).to(streams.dtype)
+        return (streams.float() + branch.float().unsqueeze(-2) * write[None, None, :, None]).to(
+            streams.dtype
+        )

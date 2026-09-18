@@ -14,7 +14,6 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import torch
-from safetensors import safe_open
 
 from archlab.architectures.deepseek_v41_math import dequantize_frozen_weight
 
@@ -24,6 +23,8 @@ def load_native_ep_checkpoint(model, checkpoint: Path, *, ep_rank: int, ep_size:
                               engram_rank: int | None = None, engram_size: int | None = None,
                               chunk_bytes: int = 16 * 1024**2, require_verified_cache=True):
     """Load owned experts and contiguous Engram rows; row owners default to EP."""
+    from safetensors import safe_open
+
     engram_rank = ep_rank if engram_rank is None else engram_rank
     engram_size = ep_size if engram_size is None else engram_size
     if (not 0 <= ep_rank < ep_size or not 0 <= engram_rank < engram_size

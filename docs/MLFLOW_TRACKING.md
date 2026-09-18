@@ -35,6 +35,9 @@ step or token axes for historical comparisons. Live updates use observation time
 
 Install `mlflow-skinny==3.16.0` in an isolated environment; it matches the deployed
 tracking service. Keep credentials and local service state outside version control.
+The optional `tracking` extra declares this client dependency. CPU CI installs it
+with `uv sync --locked --extra cpu --extra tracking --group dev` so the tracking
+tests run against the real SDK types without contacting a tracking server.
 The current deployment uses the ignored `.runtime/training-monitor/` directory,
 with its credentials file restricted to the owner.
 
