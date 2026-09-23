@@ -311,11 +311,18 @@ def _restore_local_weights(model, checkpoint, marker, *, rank, expected_device, 
     )
     from contextlib import closing
 
+    # Read the recently touched tail first on a restart. The checkpoint often
+    # exceeds host page-cache capacity; another forward scan would evict that
+    # hot tail before reaching it. Tensor inventory validation above remains in
+    # manifest order, and every payload is still checksum-verified before copy.
+    restore_pairs = list(zip(named, manifest["tensors"], strict=True))[::-1]
     with (
         torch.no_grad(),
-        closing(_ordered_weight_payloads(folder, manifest["tensors"], prefetch_chunks)) as payloads,
+        closing(_ordered_weight_payloads(
+            folder, [entry for _, entry in restore_pairs], prefetch_chunks
+        )) as payloads,
     ):
-        for (_, tensor), entry in zip(named, manifest["tensors"], strict=True):
+        for (_, tensor), entry in restore_pairs:
             local = local_tensor(tensor)
             flat, offset = local.view(-1), 0
             for _chunk in entry["chunks"]:
@@ -360,6 +367,7 @@ def _restore_local_weights(model, checkpoint, marker, *, rank, expected_device, 
         "rng_loaded": False,
         "cpu_weight_offload": False,
         "reader_prefetch_chunks": prefetch_chunks,
+        "tensor_read_order": "reverse-manifest-v1",
         "maximum_payloads_in_flight_including_current": prefetch_chunks + 1,
     }
 
