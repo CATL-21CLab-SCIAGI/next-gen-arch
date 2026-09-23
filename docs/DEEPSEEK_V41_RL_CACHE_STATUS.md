@@ -1,8 +1,13 @@
 # Resident RL cache status — 2026-09-23
 
-**Current status:** 16-rank native short and window-boundary cache checks have passed at
-the production 2,560-token replay canvas. Actual-parent admission is still required.
-The cache remains opt-in.
+**Current status:** rejected for production. Both actual step-4537 parents failed
+cache equivalence despite passing 16-rank tiny-model tests. Maximum all-vocabulary log-probability
+errors were 5.037 nats (normal) and 5.876 nats (simplicial), above the unchanged 0.02
+bound. Neither failed cached attempt applied an optimizer update. The cache remains
+experimental and disabled in the active retained-weight fallback.
+
+Real-model evidence: `production-{normal,simplicial}-cached-v1/rank-00-cache-equivalence.json`
+under `results/deepseek-v41-math-rl-shared-20260923/`.
 
 ## Restart candidate
 

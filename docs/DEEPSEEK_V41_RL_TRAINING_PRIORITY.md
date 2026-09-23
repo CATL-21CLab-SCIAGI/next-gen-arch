@@ -1,6 +1,11 @@
 # DeepSeek V4.1 training-first RL restart
 
 The scientific comparison is matched normal versus simplicial (three-body) attention.
+
+**Active fallback candidate:** `recipes/experiments/deepseek_v41_nemotron_rloo_retained.yaml`.
+It retains gathered weights during sampling, disables the rejected KV cache, and avoids
+unused full-vocabulary projections. No CPU offloading or concurrent general evaluation.
+Actual replay admission and real optimizer updates remain required.
 Concurrent general evaluation is deferred to a later phase. No extra GPUs are allocated.
 
 The initial uncached attempts were stopped before their first optimizer update after
