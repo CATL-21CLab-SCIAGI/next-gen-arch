@@ -1,13 +1,15 @@
 name: deepseek-v41-frozen-windowed-softmax-simplicial-math
-proposal_revision: 2
-status: tokenization-resumed-v4-training-not-yet-qualified
+proposal_revision: 4
+status: automodel-components-recipe-implemented-full-qualification-pending
+execution_recipe: recipes/experiments/deepseek_v41_simplicial_math_1b.yaml
+execution_guide: docs/DEEPSEEK_V41_TRAINING.md
 audit: docs/DEEPSEEK_V41_SIMPLICIAL_AUDIT.md
 reference_report_sha256: ba68e2e40408125ae6d2f63a9a241b61c73910691c74ec1a2a7023c851eac08d
 model:
   id: deepseek-ai/DeepSeek-V4.1-Flash
   revision: df42c109f1defefcbfcedbe7d905718a12266e40
   checkpoint: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
-  download_weights: deferred-by-user
+  download_weights: transferred-all-48-shards-structurally-verified
   freeze_existing_parameters: true
   freeze_existing_mutable_training_state: true
   frozen_state_exceptions: [per-request-caches, native-input-dependent-quantization]
@@ -25,7 +27,7 @@ model:
   speculative_decoding: disabled-until-adapter-aware-requalification
   bounded_replay: disabled-for-initial-training-and-evaluation
 adapter_proposal:
-  implemented: false
+  implemented: true
   insertion: after-original-attention-hc-post-before-original-ffn-mixes
   layers_1based: [5, 10, 15, 20, 25, 30, 35, 40]
   input_output_width: 5120
@@ -55,6 +57,9 @@ adapter_proposal:
   whole_model_linear_complexity_claim: false
   additive_kv_bias: disabled-explicitly-in-both-forward-and-backward
   workspace: tiled-online-softmax-no-materialized-N-cubed-scores
+  core_precision: float32
+  projection_precision: bfloat16
+  precision_reason: production-window-gradient-oracle-requires-FP32-internal-products
   parameters_per_adapter: 20977032
   total_trainable_parameters: 167816256
   initialization:
@@ -94,13 +99,17 @@ data_preparation:
   validation_group: normalized-problem-hash-across-all-variants
   loss_metadata: half-open-assistant-token-spans-before-next-token-shift
   ready_gate: DATA_READY.json-or-individually-checksummed-READY.json-parts
-  current_status: running-versioned-recovery-v4-not-data-complete
+  current_status: complete-versioned-recovery-v4
+  completed_conversations: 7085839
+  completed_tokens: 46215390550
+  completed_parts: 3545
+  completed_contract_sha256: 4cb2bfdd9289fcf1d426f6a06e7f16ca917e9ecc7aab5168ff26a5f3e822855d
   schema_version: 4
   assistant_message_policy: lossless-assistant-sequences-and-terminal-calls-v2
   unsafe_to_merge_adjacent_assistants: preserve-individually-with-official-native-encoder-and-flag
   terminal_assistant_tool_calls: preserve-and-flag-complete_answer-false-no-fabricated-results
   nonassistant_endings: preserve-native-no-extra-EOS-no-suffix-supervision-flag-incomplete
-  source_quality_training_selection: unresolved-review-retained-trajectory-flags-before-training
+  source_quality_training_selection: sealed-1b-pilot-retains-all-modes-tools-and-trajectory-flags
   repair_metadata: original-message-indices-reasoning-lengths-sha256-and-separator
   reused_parts: 215
   reused_conversations: 430000
@@ -114,15 +123,24 @@ training_proposal:
   baseline_training_jobs: 0
   loss: assistant-only-next-token-cross-entropy-including-reasoning
   exclude_loss_on: [user-prompts, system-prompts, tool-results, padding]
-  corpus_target: one-pass-complete-math-corpus
+  corpus_target: initial-1b-supervised-token-pilot-from-complete-math-corpus
+  target_supervised_tokens: 1000000000
+  token_budget_unit: nonignored-next-token-targets-including-assistant-reasoning
+  token_budget_scope: global-unique-data-not-summed-over-EP-replicas
+  token_budget_excludes: [validation, prompts, tool-results, padding, duplicated-model-parallel-work]
+  stop_policy: sealed-pilot-clips-last-selected-window-before-shuffle-exact-one-pass
+  report_counters: [processed-input-tokens, supervised-training-tokens, validation-target-tokens]
+  checkpoint_interval_supervised_tokens: 50000000
+  validation_interval_supervised_tokens: 10000000
+  checkpoint_at_budget_end: true
   production_context: target-16384-only-after-full-backbone-profile
-  long_document_policy: unresolved-requires-loss-coverage-and-context-semantics-manifest
+  long_document_policy: sealed-independent-contiguous-16k-windows-with-explicit-context-resets
   silent_truncation_or_long-example-discard: forbidden
   smoke_contexts: [128, 256, 512, 1024, 2048]
   conditional_profile_contexts: [4096, 8192, 16384]
   packing: disabled-first-then-document-isolated-only
   optimizer: headwise-Muon-QK-plus-matrix-Muon-plus-AdamW-nonmatrix
-  optimizer_implementation_status: not-yet-qualified-do-not-substitute-speedrun-NorMuon
+  optimizer_implementation_status: implemented-CPU-tested-full-model-qualification-pending
   muon:
     headwise: [Q, K1, K2]
     head_matrix_shape: [128, 5120]
@@ -160,22 +178,23 @@ training_proposal:
   schedule_after_warmup: cosine-to-0.1-times-peak-over-finalized-supervised-token-budget
   gradient_clip: 1.0
   micro_batch_per_rank: 1
-  global_batch_and_accumulation: determine-from-supervised-token-budget-and-profile
+  global_batch_and_accumulation: 32-unique-windows-no-accumulation-admitted-only-after-16k-profile
   checkpoint: adapters-optimizer-scheduler-RNG-data-cursor-base-revision
   validation: fixed-heldout-problems-plus-effort-tool-and-length-breakdowns
   evaluation: same-DeepSeek-checkpoint-adapter-disabled-vs-enabled
 parallelism_proposal:
   world_size: 32
-  weight_sharding: FSDP2
+  weight_sharding: native-EP-experts-and-Engram-rows-replicated-nonexpert-base
   expert_parallel_size: 8
   expert_parallel_scope: node-local
-  expert_fsdp_shards_across_nodes: 4
+  expert_fsdp_shards_across_nodes: 1
+  fsdp_base_wrapping: false
   tensor_parallel_size: 1
   pipeline_parallel_size: 1
   context_parallel_size: 1
   note: EP-overlays-the-32-rank-mesh-not-32-times-8-GPUs
   engram: retain-all-tables-with-explicit-row-sharding-audit
-  status: candidate-not-validated-for-V41
+  status: automodel-mesh-tested-full-model-and-32-rank-qualification-pending
 runtime:
   container: frozen-nemo-26.06
   container_python: env:ARCHLAB_CONTAINER_PYTHON
@@ -204,6 +223,6 @@ qualification:
     - base-router-biases-and-other-mutable-training-state-frozen
     - exact-prefill-decode-adapter-cache-parity-without-bounded-replay
     - document-boundaries-and-assistant-label-shift
-    - 32-rank-EP-FSDP-gradient-and-checkpoint-roundtrip
+    - 32-rank-DP-with-node-local-EP8-gradient-and-checkpoint-roundtrip
     - measured-GPU-memory-node-RSS-and-throughput
     - original-weights-unchanged-and-excluded-from-optimizer

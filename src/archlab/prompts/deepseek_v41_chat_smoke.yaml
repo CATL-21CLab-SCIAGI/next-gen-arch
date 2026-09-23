@@ -1,0 +1,12 @@
+schema_version: 1
+cases:
+  - id: arithmetic
+    messages:
+      - role: user
+        content: "What is 2 + 2? Reply with the answer only."
+    max_tokens: 16
+  - id: explanation
+    messages:
+      - role: user
+        content: "Explain why a negative number times a negative number is positive in two sentences."
+    max_tokens: 96

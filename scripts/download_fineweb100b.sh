@@ -51,7 +51,7 @@ import json
 import os
 from pathlib import Path
 from archlab.provenance import create_dataset_manifest, write_dataset_manifest
-from archlab.speedrun.dataloader import inspect_fineweb_dataset
+from archlab.fineweb import inspect_fineweb_dataset
 
 summary = inspect_fineweb_dataset(os.environ["NGA_DATA_ROOT"], expected_train_shards=1028)
 summary["dataset"] = os.environ["NGA_DATASET"]

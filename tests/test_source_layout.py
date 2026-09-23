@@ -5,12 +5,15 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "archlab"
 ARCH_ROOT = PACKAGE_ROOT / "architectures"
 
 
 def test_architecture_modules_do_not_depend_on_training_runtime() -> None:
     forbidden_prefixes = (
+        "megatron",
         "archlab.speedrun",
         "archlab.megatron",
         "archlab.optimizers",
@@ -29,6 +32,19 @@ def test_architecture_modules_do_not_depend_on_training_runtime() -> None:
                 (path.name, module) for module in modules if module.startswith(forbidden_prefixes)
             )
     assert violations == []
+
+
+@pytest.mark.parametrize("statement", [
+    "import megatron",
+    "import megatron.core.dist_checkpointing.mapping as mapping",
+    "from megatron.core.dist_checkpointing.mapping import ShardedTensor",
+    "from archlab.megatron.ple_checkpoint import DistributedPLE",
+])
+def test_architecture_guard_catches_method_local_runtime_imports(tmp_path, monkeypatch, statement):
+    (tmp_path / "model.py").write_text("def checkpoint():\n    " + statement + "\n")
+    monkeypatch.setitem(globals(), "ARCH_ROOT", tmp_path)
+    with pytest.raises(AssertionError):
+        test_architecture_modules_do_not_depend_on_training_runtime()
 
 
 def test_qwen_consumers_do_not_import_training_entrypoints() -> None:

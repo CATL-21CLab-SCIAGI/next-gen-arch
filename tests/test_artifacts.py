@@ -1,4 +1,5 @@
 import hashlib
+import importlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,6 +26,49 @@ def test_atomic_json_preserves_legacy_encoding(tmp_path, ascii_only):
     expected = json.dumps(payload, ensure_ascii=ascii_only, indent=2, sort_keys=True) + "\n"
     assert path.read_bytes() == expected.encode("utf-8")
     assert list(path.parent.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("ascii_only", [False, True])
+def test_atomic_json_can_preserve_insertion_order(tmp_path, ascii_only):
+    path = tmp_path / "state.json"
+    payload = {"z": {"第二": 2, "a": 1}, "a": "é"}
+    atomic_write_json(path, payload, sort_keys=False, ensure_ascii=ascii_only)
+    expected = json.dumps(payload, indent=2, sort_keys=False, ensure_ascii=ascii_only) + "\n"
+    assert path.read_bytes() == expected.encode("utf-8")
+
+
+LEGACY_WRITER_POLICIES = [
+    ("archlab.tracking.mlflow_sync", False),
+    ("archlab.tracking.mlflow_checkpoints", False),
+    ("archlab.tracking.rl_mlflow", False),
+    ("archlab.reporting.checkpoint_retention", True),
+    ("archlab.reporting.v41_matched_checkpoint_watch", True),
+]
+
+
+@pytest.mark.parametrize("module,allow_nan", LEGACY_WRITER_POLICIES)
+def test_metadata_writer_serialization_contract(tmp_path, module, allow_nan):
+    writer = importlib.import_module(module).atomic_json
+    path = tmp_path / "state.json"
+    payload = {"z": {"第二": 2, "a": 1}, "a": "é"}
+    writer(path, payload)
+    previous = (json.dumps(payload, indent=2, allow_nan=allow_nan) + "\n").encode("utf-8")
+    assert path.read_bytes() == previous
+
+    nonfinite = {"z": float("nan"), "a": float("inf"), "n": -float("inf")}
+    if allow_nan:
+        writer(path, nonfinite)
+        assert path.read_bytes() == (json.dumps(nonfinite, indent=2) + "\n").encode("utf-8")
+    else:
+        with pytest.raises(ValueError):
+            writer(path, nonfinite)
+        assert path.read_bytes() == previous
+    assert list(tmp_path.iterdir()) == [path]
+
+    missing = tmp_path / "does-not-exist" / "state.json"
+    with pytest.raises(FileNotFoundError):
+        writer(missing, {"value": 1})
+    assert not missing.parent.exists()
 
 
 def test_failed_write_leaves_previous_file_and_cleans_temp(tmp_path, monkeypatch):

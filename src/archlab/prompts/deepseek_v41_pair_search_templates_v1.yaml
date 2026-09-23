@@ -1,0 +1,13 @@
+schema_version: 1
+templates:
+  modular_pair: |
+    Each entry is an ordered pair of integers. Choose exactly one entry a from
+    A and one entry b from B. Is there a choice for which BOTH coordinates of
+    a + b equal T modulo {modulus}? The SAME a and b must satisfy both coordinates.
+    Modulo means the nonnegative remainder after division by {modulus}.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    B: {long_entries}
+    A: {recent_entries}
+    T: {target}
+    Answer:

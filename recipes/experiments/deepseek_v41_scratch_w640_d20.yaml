@@ -1,0 +1,53 @@
+format: archlab-v41-scratch-comparison-v1
+variants: [normal, simplicial]
+base_config: env:ARCHLAB_DEEPSEEK_V41_BASE_CONFIG
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+data: env:ARCHLAB_DEEPSEEK_V41_SCRATCH_DATA
+initialization:
+  random_seed: 42
+  pretrained_weights: false
+geometry:
+  hidden_size: 640
+  layers: 20
+  channel_scale: 0.125
+  depth_scale: 0.5
+  preserve_head_counts: true
+  preserve_expert_counts: true
+  preserve_engram_bucket_counts: true
+  vision: false
+  dspark: false
+adapters:
+  layers: [2, 4, 7, 9, 12, 14, 17, 19]
+  query_heads: 8
+  kv_heads: 2
+  head_dim: 16
+  short_window: 32
+  long_window: 512
+training:
+  gpus_per_variant: 8
+  expert_parallel: 8
+  cpu_offload: false
+  supervised_tokens: 10000000000
+  sequence_length: 2048
+  right_padding_masked_in_backbone: true
+  right_padding_excluded_from_router_and_indexer_objectives: true
+  micro_batch_size: 8
+  accumulation: 1
+  global_windows_per_update: 64
+  optimizer: FP32-factored-Adafactor-stochastic-BF16
+  peak_relative_learning_rate: 0.01
+  minimum_relative_learning_rate: 0.001
+  warmup_updates: 100
+  cosine_decay: supervised-token progress after warmup
+  weight_decay: 0
+  gradient_clip: 1.0
+  indexer_kl_coefficient: 0.01
+  router_bias_update: 0.01
+  router_bias_rule: centered proportional load error clipped to [-5, 1]
+  router_coverage_window_updates: 20
+  router_auxiliary_loss_coefficient_per_layer: 0.01
+  router_auxiliary_scaling: local-valid-targets/global-update-valid-targets
+  validation_tokens: 1000000
+  validation_interval_tokens: 100000000
+  checkpoint_interval_tokens: 500000000
+  first_checkpoint_update: 10

@@ -1,5 +1,9 @@
 # Results and interpretation
 
+For the September DeepSeek/Qwen comparisons, active runs, invalidated RF runs,
+and a cross-campaign evidence audit, see
+[Training conclusions — 2026-09-22](TRAINING_CONCLUSIONS_20260922.md).
+
 Historical scaling values in this document are frozen as of 2026-08-24 (UTC+8). The
 original matched 10M backend comparison completed on 2026-08-25; the B300 optimized
 follow-up, 100M three-node baseline comparison, and single-node native-parallelism
@@ -14,6 +18,11 @@ The repository records two training-budget regimes:
 2. `parameter-size-sweep-v1` and `parameter-scale-100m-1b-v1` train for approximately 12 tokens per parameter. The 1B-parameter model therefore sees about 12.08 billion tokens.
 
 Absolute BPB values across these regimes are not directly comparable. Paired deltas inside a row group are the intended comparison.
+
+The tokens-per-parameter regime also gives variants with more actual parameters
+more tokens within the same nominal scale. Its rankings are recipe outcomes,
+not equal-token or equal-compute mechanism effects. For example, the nominal
+100M Engram arm receives 12.2% more training tokens than its baseline.
 
 ## FineWeb 1M single-B300 compatibility screen
 
@@ -201,8 +210,8 @@ The table must not be called a final leaderboard. In particular, Qwen GDN was pe
 - **Parameters:** probed instantiated parameter count. Engram's retrieval tables are trainable parameters and are included.
 
 Historical scale values, seed validity, parameter counts, and statuses are in
-[`results/key-metrics.csv`](../results/key-metrics.csv). The original and optimized
-10M comparisons have separate [legacy artifacts](../results/backend-10m-comparison.csv)
+[`results/key-metrics.csv`](recorded-results/key-metrics.csv). The original and optimized
+10M comparisons have separate [legacy artifacts](recorded-results/backend-10m-comparison.csv)
 and [B300 safe-autotune artifacts](../results/megatron-10m-safe-autotune-b300/) so
 runtime provenance is not mixed into the older campaigns.
 

@@ -795,35 +795,13 @@ class OwnerShardedPLEEmbedding(nn.Module):
         output.index_copy_(0, send_order, returned)
         return output.view(*shape, self.embedding_dim)
 
-    def sharded_state_dict(
-        self,
-        prefix: str = "",
-        sharded_offsets: tuple[tuple[int, int, int], ...] = (),
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Expose owner partitions once, with explicit expert-DP replica identity."""
-        del metadata
-        from megatron.core.dist_checkpointing.mapping import ShardedTensor
-
-        state: dict[str, Any] = {}
-        global_key = f"{prefix}tables.weight"
-        for slot, (partition, parameter) in enumerate(
-            zip(self.global_partitions, self.tables, strict=True)
-        ):
-            local_key = f"{prefix}tables.{slot}"
-            state[local_key] = ShardedTensor.from_rank_offsets(
-                global_key,
-                parameter,
-                *sharded_offsets,
-                (len(sharded_offsets), partition, self.partitions),
-                prepend_axis_num=len(sharded_offsets),
-                replica_id=(0, 0, self.replica_rank),
-            )
-        return state
-
 
 class DistributedPLE(nn.Module):
     """Full Layer-2 PLE projection and injection over packed GR streams."""
+
+    # Execution adapters may specialize checkpoint serialization without
+    # replacing the table after initialization or changing parameter ordering.
+    _embedding_type = OwnerShardedPLEEmbedding
 
     def __init__(
         self,
@@ -839,7 +817,7 @@ class DistributedPLE(nn.Module):
         self.streams = config.residual_streams
         packed_size = self.hidden_size * self.streams
         self.hash = PLEHash(config)
-        self.embedding = OwnerShardedPLEEmbedding(
+        self.embedding = self._embedding_type(
             config,
             owner_rank=owner_rank,
             owner_world_size=owner_world_size,
@@ -889,27 +867,6 @@ class DistributedPLE(nn.Module):
         gated = (gate.sigmoid() * value.unsqueeze(-2)).flatten(-2)
         output = gated + self.conv(self.norm_conv(gated))
         return output.transpose(0, 1)
-
-    def sharded_state_dict(
-        self,
-        prefix: str = "",
-        sharded_offsets: tuple[tuple[int, int, int], ...] = (),
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Recurse explicitly so the owner-sharded table contract is retained."""
-        from megatron.core.transformer.utils import sharded_state_dict_default
-
-        state: dict[str, Any] = {}
-        for name, module in self.named_children():
-            state.update(
-                sharded_state_dict_default(
-                    module,
-                    f"{prefix}{name}.",
-                    sharded_offsets,
-                    metadata,
-                )
-            )
-        return state
 
 
 def parameter_count_contract(

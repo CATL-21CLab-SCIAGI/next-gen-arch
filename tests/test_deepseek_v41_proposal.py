@@ -71,12 +71,15 @@ def test_identity_initialization_and_frozen_state_are_explicit(proposal):
     assert init["effective_stream_write_coefficients"] == 1
 
 
-def test_not_a_launchable_or_data_complete_contract(proposal):
-    assert not proposal["adapter_proposal"]["implemented"]
+def test_assets_and_adapter_complete_but_full_launch_is_gated(proposal):
+    assert proposal["adapter_proposal"]["implemented"]
     assert not proposal["training_proposal"]["launch_now"]
     assert not proposal["qualification"]["exact_V41_training_backend_found"]
     data = proposal["data_preparation"]
-    assert data["current_status"] == "running-versioned-recovery-v4-not-data-complete"
+    assert data["current_status"] == "complete-versioned-recovery-v4"
+    assert data["completed_conversations"] == data["expected_conversations"] == 7085839
+    assert data["completed_tokens"] == 46215390550
+    assert data["completed_parts"] == 3545
     assert data["schema_version"] == 4
     assert data["assistant_message_policy"] == "lossless-assistant-sequences-and-terminal-calls-v2"
     assert "source-quality-selection-policy-including-terminal-calls" in proposal["qualification"]["gates"]
@@ -85,3 +88,14 @@ def test_not_a_launchable_or_data_complete_contract(proposal):
     assert proposal["runtime"]["subagents"] == "forbidden"
     assert proposal["parallelism_proposal"]["world_size"] == 32
     assert proposal["parallelism_proposal"]["expert_parallel_size"] == 8
+
+
+def test_initial_pilot_is_one_billion_supervised_tokens(proposal):
+    train = proposal["training_proposal"]
+    assert train["target_supervised_tokens"] == 1_000_000_000
+    assert train["token_budget_unit"] == "nonignored-next-token-targets-including-assistant-reasoning"
+    assert train["token_budget_scope"] == "global-unique-data-not-summed-over-EP-replicas"
+    assert train["stop_policy"] == "sealed-pilot-clips-last-selected-window-before-shuffle-exact-one-pass"
+    assert train["checkpoint_interval_supervised_tokens"] == 50_000_000
+    assert train["validation_interval_supervised_tokens"] == 10_000_000
+    assert train["checkpoint_at_budget_end"]

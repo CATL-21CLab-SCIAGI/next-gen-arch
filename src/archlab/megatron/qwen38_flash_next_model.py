@@ -9,11 +9,11 @@ import torch
 import torch.nn.functional as F
 
 from archlab.architectures.qwen38_flash_next_full import (
-    DistributedPLE,
     FourStreamGatedResidual,
     GatedDeltaNet,
     Qwen38FlashNextFullConfig,
 )
+from archlab.megatron.ple_checkpoint import DistributedPLE
 
 
 def _assert_dp_only_groups(groups) -> dict[str, int]:

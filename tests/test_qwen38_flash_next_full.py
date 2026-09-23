@@ -148,11 +148,12 @@ def test_billion_contract_rejects_shape_or_mtp_drift(overrides):
 
 def test_ple_checkpoint_replica_ids_identify_one_main_owner_per_shard():
     pytest.importorskip("megatron.core.dist_checkpointing.mapping")
+    from archlab.megatron.ple_checkpoint import OwnerShardedPLEEmbedding as CheckpointEmbedding
     config = Qwen38FlashNextFullConfig.tiny()
     main_shards = []
     for replica in range(4):
         for owner in range(8):
-            embedding = OwnerShardedPLEEmbedding(
+            embedding = CheckpointEmbedding(
                 config, owner_rank=owner, owner_world_size=8, replica_rank=replica
             )
             state = embedding.sharded_state_dict("ple.embedding.")

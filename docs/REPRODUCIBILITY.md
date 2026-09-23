@@ -180,7 +180,7 @@ Aggregate the output against the frozen historical speedrun rows:
 ```bash
 python -m archlab.speedrun.campaign_compare \
   --megatron-root /durable/path/megatron-10m \
-  --reference results/speedrun-10m-reference.csv \
+  --reference src/archlab/data/speedrun-10m-reference.csv \
   --output-dir /durable/path/backend-comparison
 ```
 
@@ -218,8 +218,8 @@ See [BACKEND_COMPARISON.md](BACKEND_COMPARISON.md) for the bug audit and interpr
 - frozen orchestration tree SHA-256: `2ffc3950ea4679e66e1f1105a0d5fe7eab238dc712109a6fa5393bfffc5ecf00`
 
 The historical scaling per-file hashes remain in
-[`results/parameter-scale-100m-1b-v1-manifest.json`](../results/parameter-scale-100m-1b-v1-manifest.json).
+[`results/parameter-scale-100m-1b-v1-manifest.json`](recorded-results/parameter-scale-100m-1b-v1-manifest.json).
 Every accepted optimized 10M row and its source/Megatron commit is in
-[`results/megatron-10m-safe-autotune-b300/runs.csv`](../results/megatron-10m-safe-autotune-b300/runs.csv);
+[`results/megatron-10m-safe-autotune-b300/runs.csv`](recorded-results/megatron-10m-safe-autotune-b300/runs.csv);
 the original comparison remains in
-[`results/backend-10m-runs.csv`](../results/backend-10m-runs.csv).
+[`results/backend-10m-runs.csv`](recorded-results/backend-10m-runs.csv).

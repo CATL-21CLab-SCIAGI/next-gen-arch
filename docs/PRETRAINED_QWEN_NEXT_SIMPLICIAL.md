@@ -1,10 +1,12 @@
 # Frozen pretrained Qwen Next with additive simplicial modules
 
-Status: the nonzero-init run was checkpointed and stopped at step 166. The
-user requested resuming the original `pretrained-simplicial-fineweb-20260907-v1`
-from its step-90 checkpoint because the nonzero run had not beaten its measured
-held-out result. The resume is running on the existing 32 GPUs; both runs'
-checkpoints, logs and source snapshots are retained.
+Status audited 2026-09-22: both runs are stopped. The nonzero-init run stopped
+at step 166 / 87,031,808 targets. The resumed original zero-init run stopped
+at step 8089 / 4,240,965,632 targets, before completing one data pass. Its last
+held-out evaluation was step 8000, CE 1.862896869; there is no separately trained
+ordinary-adapter control. Both runs' checkpoints, logs and snapshots are retained.
+The resume decisions below describe historical actions, not a currently running
+job. See the [cross-campaign audit](TRAINING_CONCLUSIONS_20260922.md).
 
 ## Agreed experiment
 
@@ -29,7 +31,7 @@ checkpoints, logs and source snapshots are retained.
   pretrained baseline.
 
 The repository recipe `recipes/proposals/qwen38_pretrained_simplicial_fineweb.yaml`
-records the nonzero experiment. The active resume intentionally uses the
+records the nonzero experiment. The historical resume intentionally used the
 original recipe and source from `results/pretrained-simplicial-source-20260907-v1`
 (commit `688f036`) to match the saved checkpoint's strict source/config contract.
 

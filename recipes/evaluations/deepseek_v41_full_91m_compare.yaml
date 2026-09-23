@@ -1,0 +1,46 @@
+schema_version: 1
+name: deepseek-v41-full-91m-paired-gpu-evaluation
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+weights: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
+simplicial_checkpoint: env:ARCHLAB_V41_EVAL_SIMP_CHECKPOINT
+normal_checkpoint: env:ARCHLAB_V41_EVAL_NORMAL_CHECKPOINT
+tiny_simplicial_checkpoint: env:ARCHLAB_V41_EVAL_TINY_SIMP_CHECKPOINT
+tiny_normal_checkpoint: env:ARCHLAB_V41_EVAL_TINY_NORMAL_CHECKPOINT
+data: env:ARCHLAB_V41_EVAL_DATA
+train_pilot: env:ARCHLAB_DEEPSEEK_V41_TRAIN_PILOT
+validation_pilot: env:ARCHLAB_DEEPSEEK_V41_VALIDATION_PILOT
+output: env:ARCHLAB_V41_EVAL_OUTPUT
+qualification: env:ARCHLAB_V41_EVAL_QUALIFICATION
+container_kernel_packages: env:ARCHLAB_CONTAINER_KERNEL_PACKAGES
+prompts: package:prompts/capability_regression.yaml
+world_size: 16
+ep_size: 8
+context: 16384
+cpu_weight_offload: false
+exclusive_gpu_allocation: true
+models_resident_together: true
+microbatch_size: 1
+checkpoint_tokens: 91035439
+validation_targets: 1000000
+multiple_choice:
+  mmlu_per_subject: 20
+  mmlu_total: 1140
+  arc_challenge: 128
+  piqa: 256
+  sample_seed: 20260915
+  protocol: zero-shot-plain-text-continuation-likelihood
+  primary_metrics: [accuracy, character_normalized_accuracy]
+heldout_math_metrics:
+  - cross_entropy
+  - perplexity
+  - top1_token_accuracy
+  - top5_token_accuracy
+  - mean_predictive_entropy
+  - simplicial_to_normal_kl
+  - normal_to_simplicial_kl
+  - token_argmax_agreement
+uncertainty:
+  math: paired-problem-cluster-bootstrap
+  multiple_choice: paired-Wilson-delta-interval-and-exact-McNemar
+checkpoint_restore: full-model-weights-only-with-every-payload-checksum
+forward_qualification: reproduce-next-training-batch-CE-with-absolute-error-at-most-1e-4

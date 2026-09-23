@@ -1,0 +1,21 @@
+format: archlab-full-eval-policy-v1
+checkpoint_interval_steps: 500
+evaluation_interval_steps: 500
+pin_steps: [4537]
+pinned_tokens:
+  "4537": 756364650
+persistent_chat: true
+# Retained for trainer-policy compatibility; the persistent service has no expiry.
+chat_window_seconds: 1800
+chat_context: 2048
+chat_max_tokens: 256
+chat_host: env:ARCHLAB_CHAT_PRIVATE_HOST
+chat_port: 28180
+chat_token_file: env:ARCHLAB_CHAT_TOKEN_FILE
+simplicial_checkpoints: env:ARCHLAB_SIMP_CHECKPOINTS
+source_registry: env:ARCHLAB_TRAINED_SOURCE_REGISTRY
+benchmark_data: env:ARCHLAB_V41_EVAL_DATA
+validation_pilot: env:ARCHLAB_DEEPSEEK_V41_VALIDATION_PILOT
+evaluation_output: env:ARCHLAB_EVAL_WINDOWS
+benchmark_results: env:ARCHLAB_BENCHMARK_RESULTS
+evaluation_requests: env:ARCHLAB_EVAL_REQUESTS

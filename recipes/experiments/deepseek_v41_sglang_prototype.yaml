@@ -1,0 +1,53 @@
+name: deepseek-v41-full-finetune-sglang-prototype
+status: component-prototype-not-deployed
+model:
+  variants: [normal, simplicial]
+  checkpoint_format: archlab-v41-full-sharded-v1
+  full_backbone_updates_required: true
+  adapter_layers: [4, 9, 14, 19, 24, 29, 34, 39]
+  short_window: 32
+  long_window: 512
+  checkpoint_paths:
+    normal: env:ARCHLAB_NORMAL_CHECKPOINT
+    simplicial: env:ARCHLAB_SIMPLICIAL_CHECKPOINT
+runtime:
+  preview_image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.6.0-deepseek-v4.1-flash-dev.1
+  preview_base: lmsysorg/sglang:dev-dsv41@sha256:e56358a68b06427362283c8c8a9d7d706448082ae53098ea1131b5d51aa1fd62
+  reviewed_sglang_source: e54009240a84bf52eb7a21ec532ea49f1b9dd941
+  # Reviewed main source is NOT asserted to be the source inside the preview image.
+  image_source_equivalence_verified: false
+target:
+  workers: 2
+  gpus_per_worker: 8
+  gpu: NVIDIA B300
+  tensor_parallel_size: 8
+  expert_parallel_size: 8
+  cpu_offload: false
+  engram_host_table: false
+precision:
+  checkpoint_dtypes: preserve
+  adapter_masters: float32
+  adapter_projection_compute: bfloat16
+  adapter_attention_arithmetic: float32
+  engram_table: bfloat16
+  requantization_allowed: false
+qualification:
+  initial_context: 2048
+  initial_concurrency: 1
+  speculative_decoding: false
+  prefix_sharing: false
+  cuda_graphs: false
+  required_before_endpoint_switch:
+    - complete_backbone_and_adapter_export_with_verified_tensor_coverage
+    - exact_runtime_image_and_package_identity
+    - bf16_engram_integration_and_distributed_lookup_parity
+    - adapter_insertion_before_ffn_coefficient_prediction
+    - per_request_cache_lifecycle_and_eviction
+    - native_prompt_rendering_parity
+    - full_model_prefill_and_decode_logit_parity
+    - held_out_loss_parity_under_original_precision_policy
+    - per_node_memory_fit_without_cpu_offload
+    - latency_and_concurrent_throughput_measurements
+mlflow:
+  retain_existing_gateway_and_playground: true
+  switch_endpoints_only_after_qualification: true

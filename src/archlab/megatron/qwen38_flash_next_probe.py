@@ -12,14 +12,13 @@ import torch
 import torch.distributed as dist
 
 from archlab.architectures.qwen38_flash_next_full import (
-    DistributedPLE,
     FourStreamGatedResidual,
     GatedDeltaNet,
-    OwnerShardedPLEEmbedding,
     Qwen38FlashNextFullConfig,
     ple_partition_ownership,
 )
 from archlab.artifacts import atomic_write_json as _atomic_json
+from archlab.megatron.ple_checkpoint import DistributedPLE, OwnerShardedPLEEmbedding
 
 
 def _require_finite_gradients(module: torch.nn.Module) -> int:

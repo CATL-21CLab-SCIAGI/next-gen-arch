@@ -64,12 +64,12 @@ eval = [
 packages = ["src/archlab"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"results/parameter-scale-100m-1b-v1-manifest.json" = "src/archlab/data/parameter-scale-100m-1b-v1-manifest.json"
-"results/key-metrics.csv" = "src/archlab/data/key-metrics.csv"
-"results/speedrun-10m-reference.csv" = "src/archlab/data/speedrun-10m-reference.csv"
-"results/backend-10m-comparison.csv" = "src/archlab/data/backend-10m-comparison.csv"
-"results/backend-10m-runs.csv" = "src/archlab/data/backend-10m-runs.csv"
-"results/backend-10m-comparison.json" = "src/archlab/data/backend-10m-comparison.json"
+"src/archlab/data/parameter-scale-100m-1b-v1-manifest.json" = "src/archlab/data/parameter-scale-100m-1b-v1-manifest.json"
+"src/archlab/data/key-metrics.csv" = "src/archlab/data/key-metrics.csv"
+"src/archlab/data/speedrun-10m-reference.csv" = "src/archlab/data/speedrun-10m-reference.csv"
+"src/archlab/data/backend-10m-comparison.csv" = "src/archlab/data/backend-10m-comparison.csv"
+"src/archlab/data/backend-10m-runs.csv" = "src/archlab/data/backend-10m-runs.csv"
+"src/archlab/data/backend-10m-comparison.json" = "src/archlab/data/backend-10m-comparison.json"
 
 [tool.hatch.build.targets.sdist]
 exclude = [

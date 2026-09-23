@@ -43,7 +43,7 @@ if [[ "$RANK" = "0" && ! -e "$ready_marker" ]]; then
     deadline="$((SECONDS + NGA_DATA_WAIT_SECONDS))"
     until NGA_DATA_ROOT="$NGA_DATA_ROOT" "$NGA_PYTHON" -c '
 import os
-from archlab.speedrun.dataloader import inspect_fineweb_dataset
+from archlab.fineweb import inspect_fineweb_dataset
 inspect_fineweb_dataset(
     os.environ["NGA_DATA_ROOT"],
     expected_train_shards=1028,
