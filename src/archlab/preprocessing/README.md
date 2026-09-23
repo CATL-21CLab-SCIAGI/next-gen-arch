@@ -1,100 +1,64 @@
-# Nemotron-Math-v2 indexing
+# Nemotron Math preprocessing
 
-For DeepSeek V4.1 use `--tokenizer-format deepseek-v41 --reasoning-effort 75`
-and the pinned checkpoint's tokenizer plus `encoding/encoding.py` assets. This
-mode uses the official Python encoder (there is no Jinja template), preserves
-all thinking, attaches tool schemas to the system message, and records half-open
-`assistant_token_spans` in each metadata record. It uses the fixed numeric budget,
-not the Qwen effort-name mapping below. See
-`docs/DEEPSEEK_V41_GLOBAL_SIMPLICIAL_MATH.md` for the experiment contract and launch.
-The default `--tokenizer-format qwen` retains the original behavior described below.
+**Entry:** `python -m archlab.preprocessing.nemotron_math --help`.
+**Scope:** CPU conversion into verified indexed documents; training supervision remains a recipe decision.
 
-DeepSeek schema 4 joins consecutive assistant messages **only when every prefix
-is a nonempty reasoning-only fragment**, without an answer, tool call, or other
-meaningful fields. Reasoning characters are preserved with a recorded `\n\n`
-separator; the final answer/call and following tool results are unchanged.
-`message_repairs` records the original message indices, reasoning lengths and
-SHA256 hashes. Other adjacent assistant messages, including completed answers and
-unresolved tool calls, are **never merged**: the official encoder preserves them
-individually in their original order, with a metadata event recording that choice.
-Terminal assistant tool calls are retained and explicitly marked
-`complete_answer: false`. No result or final answer is fabricated. “Complete
-conversation” means the entire supplied source record, not a guarantee that its
-teacher finished the problem. Training must review these quality flags before
-choosing which targets to supervise. Unsupported roles/internal tasks and invalid
-token boundaries still fail closed, with rendering errors identifying the row.
-Non-assistant endings (tool/user/system) are also retained exactly as the native
-encoder emits them, including any trailing assistant header. No extra EOS is
-appended, and that suffix is not supervised. These endings carry a metadata event
-with the original terminal role and `complete_answer: false`.
+## Rendering modes
 
-For the pinned reviewed v1/schema-2 and v3/schema-3 outputs only,
-`--reuse-completed-from OLD_OUTPUT` imports
-completed parts into **new, separate** stage/output directories. It checks the
-pinned old implementation, identical source/tokenizer/split/runtime contracts,
-coverage, READY markers and every payload checksum. Payloads are copied, not
-hardlinked; the new READY records embed the original manifest and provenance.
-Old output, manifests and code snapshots are never rewritten. Previously accepted
-examples keep identical rendering and supervision; previously rejected assistant
-sequences and unfinished endings are added without deleting source messages. Progress
-separates reused from newly tokenized
-documents. Resume the new dataset with its same snapshotted code and arguments.
+| Mode | Contract |
+| --- | --- |
+| Qwen (default) | Native chat template; source high effort maps to xhigh |
+| DeepSeek V4.1 | `--tokenizer-format deepseek-v41 --reasoning-effort 75`; pinned Python encoder and tokenizer |
 
-`python -m archlab.preprocessing.nemotron_math --help` describes the standalone,
-CPU-only entry point. Supply source, tokenizer, output and staging directories
-explicitly. The existing NeMo AutoModel checkout must be on `PYTHONPATH`; no
-runtime packages are installed or modified. Staging and output must be distinct.
+DeepSeek has no Jinja chat template. Preserve native reasoning, tool schema and message boundaries; render tool arguments without executing them.
 
-The converter reads all Parquet shards, **not** their duplicate JSONL mirror.
-It uses the checkpoint's native chat template, preserves reasoning and tool
-traces, decodes JSON tool-call arguments without executing them, and checks fast
-tokenization against native Transformers tokenization for each observed variant
-in every worker. Source `high` maps to the template's native `xhigh` setting.
-It applies no truncation, deduplication, extra EOD token, or loss masking.
+## Source and split
 
-Each source conversation is one int32 indexed sequence and one document. Its
-native message-end token and trailing template whitespace are preserved exactly.
-Assistant-only supervision, packing, sequence lengths, blending and shuffling
-are decisions for the future training recipe, not this conversion.
+- Read Parquet sources, excluding duplicate JSONL mirrors.
+- Keep each supplied conversation as one int32 sequence/document.
+- Apply no truncation, extra EOD or trajectory deduplication.
+- Default validation split: 1% of normalized problem-hash buckets.
+- Normalization affects only the split key; variants of a problem stay together.
+- Exact grouping does not detect near duplicates.
 
-The default validation fraction is 1% of problem-hash buckets. NFC normalization
-and collapsed whitespace are used **only for the split key**, not for tokenized
-content. Identical normalized problems stay together across reasoning effort,
-tool use and source shards. Near-duplicate problems are not detected.
+## DeepSeek schema 4
 
-Output layout:
+| Source condition | Handling |
+| --- | --- |
+| Consecutive reasoning-only assistant prefixes | Join only eligible fragments; preserve characters and record indices/hashes/separators |
+| Completed adjacent answers or unresolved calls | Render individually in source order |
+| Terminal assistant tool call | Preserve; mark `complete_answer: false` |
+| Tool/user/system ending | Preserve native suffix; no invented answer/EOS or supervised trailing header |
+
+`assistant_token_spans` are half-open indices in the unshifted sequence. The trainer shifts labels exactly once. Review incomplete-trajectory flags before selecting SFT targets.
+
+## Output
 
 ```text
-manifest.json                 # immutable source/format/runtime contract
-tokenizer/                    # exact tokenizer assets, no model weights
-SOURCE_README.md               # upstream provenance and licensing
-progress.json                 # published-part progress and active work
+manifest.json                 immutable source/format/runtime contract
+tokenizer/                    exact tokenizer assets
+SOURCE_README.md               attribution and license
+progress.json                  published-part progress
 parts/<source-and-row-groups>/
   <split>-<tools>_text_document.bin
   <split>-<tools>_text_document.idx
   <split>-<tools>_text_document.metadata.jsonl.gz
-  READY.json                  # source coverage and verified file checksums
-DATA_READY.json                # full corpus completion and grouped prefix lists
+  READY.json                  verified part coverage and checksums
+DATA_READY.json                complete corpus and grouped prefix lists
 ```
 
-Metadata preserves original source row numbers, problem hashes, attribution and
-answer fields. Full source rows remain available in the untouched input corpus.
-`DATA_READY.json` lists dataset prefixes relative to the output root, grouped by
-reasoning effort, split and tool availability. `length_bins` in each part's
-partition summary are disjoint upper-inclusive token-length bins, not cumulative.
+Only verified ready parts are training inputs. Staging and output must be distinct. A single-writer lock protects publication.
 
-Incomplete files are not ready for training. Every part is built and checked on
-NAS, copied to the destination, read back for checksum verification, and only
-then marked ready. Rerun the same command to resume: completed parts are verified
-and reused; incomplete parts are rebuilt. A staging lock prevents two writers.
-Do not change source, tokenizer, conversion code or format arguments mid-run;
-the recorded contract rejects mismatches. Worker count and tokenization batch
-size can change on resume without changing the data contract.
+## Recovery and testing
 
-`--smoke-rows N` limits each source file to its first N rows in the first part;
-use separate temporary directories. It emits `SMOKE_READY.json`, never the full
-corpus completion marker. The host-native standard-library test runner works:
+The same command verifies completed parts and rebuilds incomplete ones. Source, tokenizer, format and implementation identities must match; worker count and tokenization batch size may change.
 
-```sh
+`--reuse-completed-from` admits only the reviewed older schemas into new output/staging directories. It copies verified bytes and embeds original provenance; old outputs remain immutable.
+
+`--smoke-rows N` writes `SMOKE_READY.json`, not a complete-corpus marker.
+
+```bash
 PYTHONPATH=src python -m unittest discover -s tests -p test_nemotron_math_preprocessing.py
 ```
+
+[Data/provenance guide](../../../docs/wiki/Data-and-Provenance.md) · [DeepSeek design record](../../../docs/DEEPSEEK_V41_GLOBAL_SIMPLICIAL_MATH.md)

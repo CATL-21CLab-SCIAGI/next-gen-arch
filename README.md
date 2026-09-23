@@ -1,109 +1,46 @@
 # Next-Gen Architecture Lab
 
-[简体中文](README.zh-CN.md) · [Results](docs/RESULTS.md) · [Experiment contracts](docs/EXPERIMENT_CONTRACTS.md) · [Provenance](docs/PROVENANCE.md) · [Operations](docs/OPERATIONS.md) · [Runtimes](docs/RUNTIMES.md) · [Architectures](docs/ARCHITECTURES.md) · [Qwen3.8 training](docs/QWEN38_27B_TRAINING.md)
+**Architecture search for language models—from controlled component experiments to distributed pretraining, frontier-model adaptation, and reinforcement learning.**
 
-[![CI](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml/badge.svg)](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](pyproject.toml)
+[Documentation](docs/README.md) · [GitHub Wiki](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki) · [Results](docs/RESULTS.md) · [Recipes](recipes/) · [Contributing](CONTRIBUTING.md)
 
-A controlled architecture lab for small, rapid PyTorch screens and larger Megatron-LM scaling runs. The repository keeps architecture mechanisms, optimizer changes, data order, evaluation, and execution backends as separate experimental axes.
+## Research
 
-## Questions this repository can answer
+| Track | Scope |
+| --- | --- |
+| Components | Attention, recurrent mixers, memory, residual routing, positional encoding |
+| Models and scale | Dense and MoE Qwen families; DeepSeek scratch models |
+| Pretrained adaptation | Ordinary and simplicial architecture adapters; frozen-backbone and full-weight fine-tuning |
+| RL | Verifiable rewards, policy optimization, trajectory completion and generation efficiency |
 
-Every new run declares one comparison regime:
+We compare capability, stability, memory, and training/inference cost under explicit experiment contracts. Completed evidence and experimental proposals are labeled separately.
 
-| Regime | Held fixed | Question |
-| --- | --- | --- |
-| `controlled` | training tokens, seed, data order, optimizer, evaluation | does one component improve quality? |
-| `fixed_compute` | total algorithmic model FLOPs | does it improve quality per unit of compute? |
-| `scaling` | tokens per parameter | how does the architecture scale as a system? |
+## Execution
 
-Results from different regimes are never merged into one causal leaderboard. Parameter overhead, executed FLOPs, throughput, memory, failures, and seed variation remain visible.
+| Integration | Role |
+| --- | --- |
+| `archlab.speedrun` | Frozen small-model reference |
+| `archlab.megatron` | Distributed pretraining and scaling |
+| `archlab.automodel` | Pretrained-model integration and post-training |
+| `archlab.serving` | Inference and evaluation integration |
 
-## Backends
+GPU work uses the validated container's existing runtime packages. Backend support is qualified per model, mechanism, and topology.
 
-- **`speedrun`** is the frozen nanochat/modded-nanogpt-derived comparison backend. It preserves the published Muon, compilation, packing, and data-order behavior.
-- **`megatron`** uses the Megatron Core runtime supplied by the validated `nemo-26.06` container. It owns distributed execution and checkpoint lifecycle; this repository does not vendor or patch Megatron.
+Qwen integration is under `automodel/qwen/`; independent DeepSeek diagnostics are under `automodel/deepseek_v41/qualification/`. Checkpoint-bound DeepSeek execution files retain their recorded paths. Dataset scoring lives in `evaluation/`, run analysis in `reporting/`, operational watchers in `tracking/`, and checkpoint retention in `storage/`. SGLang model registration uses `archlab.serving.sglang`.
 
-Architecture support is capability-gated. A speedrun implementation is not described as Megatron-native until construction, optimizer grouping, checkpointing, and distributed behavior have dedicated tests.
+## Explore
 
-## Evidence
-
-The repository contains paired three-seed controls, parameter-scaling campaigns, backend comparisons, numerical failures, and machine-readable learning curves. The important current conclusions are:
-
-- Qwen GDN gives strong quality at completed mature scales but has a large throughput cost.
-- Engram is the strongest observed quality/throughput trade-off at 100M and 300M.
-- KDA-family mechanisms often improve BPB but are substantially slower in the current implementation.
-- small improvements can change across backend or scale; combinations are promoted only after their components pass isolated controls.
-- mHC and relative-attention failures are retained as failures, not replaced by earlier favorable checkpoints.
-
-Exact tables, dates, caveats, and artifact locations are in [docs/RESULTS.md](docs/RESULTS.md). Frozen machine-readable evidence remains under [`results/`](results/).
-
-## Research-grade artifact contract
-
-A reportable new run records:
-
-- a clean source commit plus worktree hash;
-- a content-addressed dataset manifest and decoded-token vocabulary hash;
-- comparison regime, discrete token/FLOP budget, paired seed, and data-order identity;
-- shared-parameter initialization hash;
-- raw JSONL metrics, a stable run ID, and a unique attempt ID;
-- final model, optimizer, RNG, and reconstructable dataloader cursor;
-- cold-inclusive wall time and a predeclared steady-state throughput window;
-- an explicit failure category; only transient operational failures are retryable unchanged.
-
-FineWeb validation always replays the same fixed token window. FineWeb resume derives the exact distributed-microbatch cursor from the restored optimizer iteration.
-
-See [docs/EXPERIMENT_CONTRACTS.md](docs/EXPERIMENT_CONTRACTS.md) and [docs/PROVENANCE.md](docs/PROVENANCE.md).
-
-## Quick start
+From a prepared environment at the repository root:
 
 ```bash
-git clone https://github.com/CATL-21CLab-SCIAGI/next-gen-arch.git
-cd next-gen-arch
-uv sync --extra cpu --group dev
-uv run next-gen-arch verify
-uv run pytest -m "not slow" -q
+PYTHONPATH=src python -m archlab.cli verify
+PYTHONPATH=src python -m archlab.cli list
 ```
 
-Create and fully verify a content manifest:
+The CLI above inspects frozen campaign evidence. Model-specific entries and recipes are mapped in the [documentation index](docs/README.md).
 
-```bash
-uv run next-gen-arch data-manifest create \
-  --root /path/to/data \
-  --dataset owner/dataset \
-  --revision <immutable-revision> \
-  --pattern '*.bin' \
-  --output /path/to/dataset.manifest.json
+For paired training curves, use `python -m archlab.reporting.paired_curves --help` with explicit run directories. See the [cleanup and CLI migration record](docs/REPO_CLEANUP_20260923.md) for moved commands and retained historical paths.
 
-uv run next-gen-arch data-manifest verify \
-  --root /path/to/data \
-  --manifest /path/to/dataset.manifest.json \
-  --mode full
-```
+Compact evidence is versioned under `docs/recorded-results/` and `src/archlab/data/`. Large run artifacts and checkpoints stay outside Git.
 
-Inspect the frozen campaign or render a portable recipe:
-
-```bash
-uv run next-gen-arch list
-uv run next-gen-arch show --size 300m --variant engram --seed 42
-uv run next-gen-arch render \
-  --config recipes/experiments/speedrun_qwen_gdn_100m_seed42.yaml
-```
-
-GPU runs use the container-provided PyTorch, CUDA, Transformer Engine, NCCL, and Megatron packages. Run `next-gen-arch doctor --backend megatron` inside the target container before launch.
-
-## Repository layout
-
-```text
-src/archlab/architectures/  architecture mechanisms only
-src/archlab/optimizers/     local optimizer extensions and recipes
-src/archlab/megatron/       sole Megatron integration boundary
-src/archlab/speedrun/       frozen small-scale reference backend
-recipes/                    portable experiment specifications
-results/                    immutable machine-readable evidence
-docs/                       methods, operations, results, and historical context
-tests/                      unit, numerical, resume, and distributed regressions
-```
-
-The project is MIT licensed. Paper names and third-party mechanisms remain attributed in [NOTICE.md](NOTICE.md).
+[MIT license](LICENSE) · [Attribution](NOTICE.md) · [Citation](CITATION.cff)

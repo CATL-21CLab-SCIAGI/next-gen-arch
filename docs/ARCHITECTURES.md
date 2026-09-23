@@ -1,8 +1,8 @@
-# Architecture map
+# Architecture reference
 
-The implementations are compact research adaptations in `src/archlab/architectures`. They are not claimed to be the official code from the cited projects. A paper or project link explains the mechanism that motivated each controlled arm; it does not imply exact equivalence to the authors' full system.
+**Scope:** project research implementations. Paper links identify the motivating mechanism, not equivalence to an author's complete model.
 
-## Frozen 16-variant grid
+## Frozen component grid
 
 | Manifest ID | Family | Controlled change | Primary reference |
 | --- | --- | --- | --- |
@@ -23,43 +23,22 @@ The implementations are compact research adaptations in `src/archlab/architectur
 | `partial-rope-25` | `frontier_pool` | RoPE on one quarter of head dimensions | controlled partial-RoPE ablation |
 | `kimi-k3-kda-update` | `kimi_kda` | Kimi K3 update/gating recipe | [Kimi K3](https://arxiv.org/abs/2607.24653) |
 
-## Shared-backbone invariant
+## Later model-specific work
 
-The architecture families ultimately construct one `GPT` interface with shared token embedding, language-model head, loss evaluation, optimizer factory, data loader, and checkpoint manager. Variant-only parameters are initialized from a private RNG so adding a module does not perturb the shared backbone initialization for a matched seed.
+| Family | Mechanisms | Record |
+| --- | --- | --- |
+| Qwen Flash-Next | GDN/global attention, MoE, residual streams and PLE | [Backbone reference](QWEN38_NEXT_BACKBONE_VARIANTS.md) |
+| Simplicial attention | Joint softmax over causal key pairs; exact and linearized variants | [Qwen pilot](SIMPLICIAL_DSW_EXPERIMENTS.md), [DeepSeek design](DEEPSEEK_V41_GLOBAL_SIMPLICIAL_MATH.md) |
+| Pretrained adapters | Independent branches at explicit residual boundaries | [Qwen](PRETRAINED_QWEN_NEXT_SIMPLICIAL.md), [DeepSeek control](DEEPSEEK_V41_NORMAL_CONTROL.md) |
 
-Engram and mHC historically lived in separate campaign source trees. Their definitions are merged with the shared GPT primitives in `src/archlab/architectures/base.py`; construction and checkpoint compatibility live in `src/archlab/speedrun/models.py`. Megatron adapters are a separate capability boundary; a speedrun implementation is not automatically considered ported.
+## Implementation limits
 
-## Implementation caveats
+- The historical DSA quality arm uses top-k masking over dense SDPA; it does not demonstrate sparse-kernel speed.
+- Engram's trainable tables count toward parameters and scaling budgets.
+- mHC numerical failures remain part of the result.
+- Relative-attention results describe the tested implementation and short context.
+- Throughput compares recorded research implementations, not each mechanism's best possible kernel.
 
-### DSA
+Shared parameters retain matched initialization; variant-only initialization uses a private RNG. Backend construction, optimizer grouping, checkpointing and distributed behavior require their own gates.
 
-The current DSA backend computes selection scores and applies a top-k causal mask to dense scaled dot-product attention. This preserves functional semantics for a controlled quality experiment but cannot realize the systems benefit of a sparse gather/kernel implementation.
-
-### Relative attention
-
-The controlled relative-attention path is optimized neither for this short 2K context nor for production kernels. Its negative quality and throughput result is specific to this implementation and contract.
-
-### Engram
-
-Retrieval tables are trainable and included in parameter counts. Token-to-compressed-vocabulary mapping is configured from the campaign tokenizer. Injection layers scale with model geometry and are separately mapped for the trainer's smaller meta-reference model.
-
-### mHC
-
-mHC expands the residual stream, applies doubly stochastic routing derived through Sinkhorn iterations, and collapses the streams before the language-model head. It is numerically unstable in the current scaling recipe despite strong earlier fixed-token results.
-
-### Throughput
-
-No architecture-specific fused kernel was added solely to improve a result. Reported throughput therefore measures these research implementations, not the best achievable implementation of each method.
-
-## Adding a variant
-
-New variants should be small and explicit:
-
-1. isolate the mechanism in a dedicated module or a clearly named family branch;
-2. route configuration through `GPTConfig` and `model_factory.py`;
-3. preserve shared-backbone initialization under the same seed;
-4. add CPU forward/backward and parameter-group tests;
-5. register a frozen command before launching a sweep;
-6. publish baseline and all single-component controls with the same data order.
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for the result-reporting checklist.
+[Code map](wiki/Code-Map.md) · [Experiment design](EXPERIMENT_CONTRACTS.md)

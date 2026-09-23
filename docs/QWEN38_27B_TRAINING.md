@@ -1,33 +1,23 @@
-# Quartered Qwen3.8-27B training
+# Dense Qwen3.8 pretraining
 
-The dense quarter-scale Qwen3.8-27B path consumes the Muon optimizer shipped by
-the container-owned Megatron installation. It does not vendor Megatron, install a
-repository-local optimizer implementation, or monkeypatch Megatron optimizer
-classes.
+**Type:** native Megatron training reference.
 
-The launcher selects Megatron's registered `muon` optimizer. Megatron routes 2-D
-matrix parameters through `TensorParallelMuon` and routes embeddings, output
-weights, and non-matrix parameters through its built-in Adam fallback. The Qwen
-model tags only that routing boundary; it does not implement the optimizer.
+| Boundary | Contract |
+| --- | --- |
+| Optimizer | Container-registered Muon; native Adam fallback for embeddings, head and non-matrices |
+| Compute/state | BF16 model/activations; FP32 optimizer masters |
+| Muon matrix precision | `medium`; FP32 state retained |
+| Orthogonalization | Native Polar Express, eight Newton–Schulz steps |
+| LR | Peak 5e-5; minimum 5e-6 |
+| Distribution | Native distributed optimizer and communication overlap |
+| Optimizer CUDA graph | Disabled for this qualified path |
 
-The training contract uses:
+The model tags optimizer routing; it does not replace Megatron's optimizer implementation.
 
-- BF16 model and activation compute with FP32 optimizer master parameters;
-- `--muon-fp32-matmul-prec medium` for faster Muon state matrix products while
-  retaining FP32 optimizer state tensors;
-- native Polar Express coefficients with eight Newton-Schulz steps;
-- a peak learning rate of `5e-5`, with a `5e-6` minimum;
-- Megatron's distributed optimizer and gradient/parameter communication overlap;
-- no optimizer CUDA graph, because this path must not patch `ChainedOptimizer`.
+## Launch gate
 
-The DLC launcher first runs a 400-step production-shaped preflight at sequence
-length 2048, micro-batch size 4, and global batch size 512. This crosses the
-iteration at which the previous BF16-Muon run became non-finite. A successful
-preflight proceeds directly to the long FineWeb-Edu run. The persistent DLC
-controller remains alive after either training success or failure and does not
-restart the allocation.
+The recorded quarter-scale launcher runs a 400-step production-shaped preflight at context 2048, microbatch 4 and global batch 512. This crosses the earlier BF16-Muon failure point.
 
-The canonical local workspace is `/Users/evergreen/inf/speedrun/next-gen-arch`.
-The synchronized persistent checkout is `/mnt/nas/evergreen/next-gen-arch-repo`.
-Run artifacts stay under `/mnt/nas/evergreen/next-gen-arch/` and are not mixed
-with the source checkout.
+Use explicit source/data/output variables and the named launch recipe. The allocation/controller lifecycle is separate from trainer success.
+
+[PIQA and scale evidence](QWEN38_PIQA_AND_EARLY_CURVES_20260904.md) · [Runtime guide](RUNTIMES.md)

@@ -1,12 +1,10 @@
-# Qwen3.8 PIQA and early-learning snapshot (2026-09-04)
+# Qwen PIQA and early-learning results — 2026-09-04
 
-## Quartered-model PIQA curve
+**Type:** historical snapshot.
 
-The completed 0.95B-parameter quartered run was evaluated at every 10B-token
-checkpoint on all 1,838 PIQA validation examples. The scorer reproduces the
-zero-shot `lm-eval==0.4.13` prompt and character-length normalization. It loads
-the Megatron distributed checkpoints directly with the historical `0fdc753`
-architecture code, preserving the sigmoid attention gate used to train them.
+## Quartered-model PIQA
+
+0.95B parameters; all 1,838 validation examples; zero-shot `lm-eval==0.4.13` prompt and character normalization. Checkpoint scoring uses the historical `0fdc753` architecture.
 
 | Training tokens | Accuracy | Normalized accuracy |
 |---:|---:|---:|
@@ -21,48 +19,19 @@ architecture code, preserving the sigmoid attention gate used to train them.
 | 90B | 66.70% | 64.53% |
 | 100B | 66.92% | 65.07% |
 
-Raw accuracy gained 5.39 percentage points from 10B to 100B tokens. Normalized
-accuracy gained 3.26 points and peaked at 65.23% at 70B. Each point has about a
-1.1-point standard error, so the small checkpoint-to-checkpoint reversals should
-not be interpreted as regressions.
+Normalized accuracy gains 3.26 percentage points from 10B to 100B and peaks at 65.23% at 70B. Per-point standard error is about 1.1 points; small reversals are not established regressions.
 
-The 20B protocol check reproduced the reference sample likelihoods within
-`3.1e-5`. Native-BF16 fused-kernel batch-shape rounding changed one raw answer
-out of 1,838 and no normalized answers relative to the earlier reference run.
+The 20B protocol check matched sample likelihoods within 3.1e-5. Batch-shape rounding changed one raw answer and no normalized answers.
 
-Artifacts:
+## Early quarter/full comparison
 
-- `results/qwen38-quarter-piqa-curve-20260904.png`
-- `results/qwen38-quarter-piqa-curve-20260904.csv`
-- `results/qwen38-quarter-piqa-curve-20260904.json`
+| Measurement | Full 27.32B | Quartered 0.95B |
+| --- | ---: | ---: |
+| Last-20-step CE at 264.2M matched tokens | 8.743 | 11.205 |
+| Median update time | 7.92 s | 0.489 s |
+| CE at matched 33.1-minute wall time | 8.743 | 3.529 |
+| Tokens at that wall time | 264.2M | 4.29B |
 
-## Quartered versus full early learning
+This is not a pure parameter-scaling ablation: MTP layout, output-gate function and microbatch differ. Global batch and data-token schedule match.
 
-The comparison uses causal cross-entropy only; it excludes the weighted MTP
-contribution. Both runs use the same FineWeb-Edu data, seed, 512-sequence global
-batch, 2,048-token sequence length, 1,048,576 tokens per optimizer step, Muon
-recipe, and learning-rate schedule.
-
-At the live snapshot, the full run had completed 252 logged optimizer steps
-(264.2M tokens). Over the last 20 matched steps, causal cross-entropy was 8.743
-for the 27.32B full model and 11.205 for the 0.95B quartered model. The full
-model's 20-step-smoothed curve crossed below the quartered model at step 119
-(124.8M tokens) and remained below it through the snapshot.
-
-This token efficiency costs substantially more wall time. Median step time was
-7.92 seconds for the full model and 0.489 seconds for the quartered model, a
-16.21x ratio. During the same 33.1 minutes needed for the full model's 252
-steps, the quartered model completed 4,089 steps (4.29B tokens) and reached a
-20-step-smoothed cross-entropy of 3.529, versus 8.743 for the full model.
-
-The result is not a pure parameter-scaling ablation. The historical quartered
-run uses the `0fdc753` quarter MTP layout and sigmoid attention gate; the full
-run uses the `344e678` source-faithful full MTP and SiLU gate. Microbatch size
-also differs (4 quartered versus 1 full), although the global batch and tokens
-per step are identical.
-
-Artifacts:
-
-- `results/qwen38-quarter-vs-full-early-20260904.png`
-- `results/qwen38-quarter-vs-full-early-20260904.csv`
-- `results/qwen38-quarter-vs-full-early-20260904.json`
+[PIQA data](recorded-results/qwen38-quarter-piqa-curve-20260904.json) · [PIQA figure](recorded-results/qwen38-quarter-piqa-curve-20260904.png) · [Early comparison](recorded-results/qwen38-quarter-vs-full-early-20260904.json)

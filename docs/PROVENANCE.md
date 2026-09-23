@@ -1,78 +1,38 @@
-# Data and artifact provenance
+# Provenance reference
 
-## Dataset identity
+**Reader guide:** [Data and Provenance](wiki/Data-and-Provenance.md).
 
-Filename and byte-size inventories are insufficient: different content can have the same size. New campaigns use a content manifest containing:
+| Identity | Required contents |
+| --- | --- |
+| Dataset | Immutable revision; sorted relative paths, byte sizes and SHA-256 |
+| Tokenizer | Native assets, decoded vocabulary identity, logical/padded sizes |
+| Source | Commit, clean/dirty state and applicable implementation/worktree hashes |
+| Run | Scientific contract; stable identity across unchanged operational retries |
+| Attempt | Unique process-attempt identity |
+| Initialization | Shared/full parameter identity and variant-specific initialization |
+| Checkpoint | Final iteration, model/optimizer/RNG state and reconstructable cursor |
 
-- immutable upstream dataset revision;
-- sorted relative file paths;
-- byte size and SHA-256 for every file;
-- a canonical inventory identity.
+Research-policy speedrun and Megatron comparison runs reject dirty source. Other entries enforce their documented source and runtime contracts.
 
-Create and verify one with:
+## Manifest commands
 
 ```bash
-next-gen-arch data-manifest create \
-  --root /datasets/fineweb \
-  --dataset owner/dataset \
-  --revision <commit-or-object-version> \
-  --pattern 'fineweb_train_*.bin' \
-  --pattern 'fineweb_val_*.bin' \
-  --output /datasets/fineweb.manifest.json
+PYTHONPATH=src python -m archlab.cli data-manifest create \
+  --root /path/to/data --dataset owner/dataset --revision IMMUTABLE_REVISION \
+  --pattern '*.bin' --output /path/to/data.manifest.json
 
-next-gen-arch data-manifest verify \
-  --root /datasets/fineweb \
-  --manifest /datasets/fineweb.manifest.json \
-  --mode full
+PYTHONPATH=src python -m archlab.cli data-manifest verify \
+  --root /path/to/data --manifest /path/to/data.manifest.json --mode full
 ```
 
-`full` rehashes every byte. `metadata` checks the exact inventory and recorded sizes while trusting a previously verified transfer ledger. The result always records which mode was used. Existing GNU `sha256sum` ledgers are supported for the FineWeb100B relay.
+`full` rehashes content. `metadata` validates inventory and sizes against a trusted prior transfer ledger; record which was used.
 
-Tokenizer identity hashes every token's decoded bytes and includes both logical and padded vocabulary sizes. It does not rely on a tokenizer filename.
+## Continuation
 
-## Source identity
+For iteration-derived FineWeb loading, restored optimizer iteration `k` and `m` microbatches per global update imply cursor `k × m`. Other loaders restore their explicit packing/window/prompt cursor.
 
-Every research-policy speedrun and Megatron adapter run records:
-
-- Git commit;
-- clean/dirty state;
-- tracked binary diff hash;
-- untracked file names and aggregate content hash;
-- combined worktree hash.
-
-The patch itself is never embedded in the public result. Research-policy runs reject a dirty source tree.
-
-## Run and attempt identity
-
-`run_id` is a stable hash of the scientific contract: architecture, seed, budget, data, tokenizer, optimizer, source, topology, and batch. Repeating the same contract gives the same run ID.
-
-`attempt_id` is a UUID for one process attempt. Preemption or an operational retry creates a new attempt while retaining the run identity. Raw metric rows carry both IDs.
-
-## Initialization identity
-
-`--initialization-hash shared` hashes names, shapes, dtypes, and raw bytes for every parameter also present in the paired baseline. Variant-exclusive parameters do not perturb this identity. `full` includes all parameters.
-
-Research-policy runs require a shared or full initialization hash. Large runs should account for the one-time rank-0 CPU transfer in launch timing rather than steady-state throughput.
-
-## Checkpoint contract
-
-A reportable final checkpoint must contain:
-
-- the exact final optimizer iteration;
-- model, optimizer, and per-rank RNG payload;
-- the immutable run and data identities;
-- a reconstructable dataloader cursor.
-
-FineWeb uses an iteration-derived distributed-microbatch cursor. If the restored optimizer iteration is `k` and the global batch requires `m` microbatches, the loader resumes at microbatch `k × m`. Tests compare this path against uninterrupted loading.
-
-The speedrun backend writes model, optimizer, and RNG shards through temporary files and atomically publishes them. Rank 0 then rejects any bundle missing a model, metadata record, optimizer shard, or RNG shard before marking the attempt complete. Legacy checkpoints remain readable, but a research-policy resume requires the new complete bundle.
-
-Raw metrics are hashed at completion and retained beside `resolved_run.json`, `result.json`, and the terminal marker. A report row should link these files and the checkpoint rather than copying only the final scalar.
+Publish completion only after every required shard and payload is verified. Keep raw metrics beside the resolved contract and checkpoint reference.
 
 ## Storage
 
-- NAS stores active repositories, state, logs, and resumable checkpoints.
-- OSS stores immutable datasets and promoted model artifacts.
-- Local workspaces store Git history, manifests, reports, and deliberately mirrored artifacts.
-
-Never infer the owner of a shared NAS path from the path alone. The run manifest identifies both the storage namespace and compute attempt.
+Use run manifests to identify storage ownership. Versioned compact evidence belongs in `docs/recorded-results/`; large payloads remain in declared artifact storage. Local artifact paths require the matching mount or a verified mirror.

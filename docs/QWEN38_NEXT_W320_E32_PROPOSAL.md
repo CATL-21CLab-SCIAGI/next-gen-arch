@@ -1,19 +1,12 @@
-# Width-320 / 32-expert Qwen-Next proposal
+# Qwen W320/E32 contract
 
-**Selected for implementation and launch.** User-specified: width 320 and
-fewer routed experts. Selected expert count: **32**, half the preceding 64-expert
-proposal. This supersedes width 480. Historical model families and the frozen
-runtime are preserved. The implemented contract is
-`recipes/models/qwen38_flash_next_w320_e32.yaml`; deployment evidence is recorded
-separately from this design document.
+**Type:** selected model design; implementation evidence is recorded separately.
+**Factory:** `Qwen38FlashNextFullConfig.width320_e32_depth48_no_mtp()`.
+**Recipe:** `recipes/models/qwen38_flash_next_w320_e32.yaml`.
 
-Portable contract: `recipes/proposals/qwen38_next_width_scaled.yaml`, candidate
-`next-ratio-e32-w320`, profile `next_ratio_e32`. All common restoration rules and
-launch gates in that contract apply.
+## Geometry change
 
-## Corrected properties
-
-| Property | Current 1B run | Proposed |
+| Property | Earlier 1B configuration | W320/E32 |
 |---|---:|---:|
 | Model width H | 384 | 320 |
 | Layers | 48 | 48 |
@@ -34,20 +27,9 @@ launch gates in that contract apply.
 | PLE table parameters | 384,012,288 | 52,454,400 |
 | Total parameters | 1,006,441,440 | 387,680,960 (analytical) |
 
-The reduced model is **approximately 388M**, not 1B. No extra parameters are
-silently added to compensate for the requested width/expert-count reduction.
-Top-10 plus one shared expert preserves the source's aggregate active FFN/H
-ratio. It does **not** preserve original expert-pool sparsity: 10/32=31.25 percent
-of routed experts are selected, versus 10/512=1.953125 percent in the source.
+This is approximately 388M parameters. Historical 1B and width-480 families retain their separate identities.
 
-Depth, head counts and expert count are fixed topology constants; feature
-dimensions scale from H. Expert width 80 is intentionally H/4, matching the
-source individual-expert ratio rather than a dense-MLP 4H convention.
-
-## Principal weight shapes
-
-Linear weights use `[out,in]`. Expert shapes are per expert; attention packing
-and its logical slices describe the same parameters and must not be double-counted.
+## Weight shapes
 
 | Weight | Proposed shape |
 |---|---|
@@ -76,12 +58,7 @@ and its logical slices describe the same parameters and must not be double-count
 | PLE key/query/convolution RMSNorm, each | `[1280]` |
 | PLE convolution | `[1280,4]` |
 
-Implementation packing: the combined attention rows above are logical, not one
-physical parameter. The frozen native Muon splitter does not support gated QKV.
-The adapter therefore uses separate native TE parameters Q `[768,320]`, gate
-`[768,320]`, K `[64,320]`, V `[64,320]`, concatenating outputs in MCore's native
-per-KV-group order. Each is a separate Muon matrix; no installed runtime code
-is patched. Native SelfAttention still owns the sigmoid gate and Q/K TENorm.
+Shapes use [out, in]. Combined Q/gate/K/V rows describe logical packing; the native integration keeps separate projections for correct Muon grouping.
 
 ## Parameter allocation
 
@@ -98,23 +75,12 @@ is patched. Native SelfAttention still owns the sigmoid gate and Q/K TENorm.
 | PLE projections/norms/convolution | 520,960 |
 | **Total** | **387,680,960** |
 
-PLE uses the existing proposal rule: 16 successive primes >=512H, total rows
-padded to a multiple of 128, branch dimension H/16, 32 local physical partitions.
-The model retains source-style zero-centered normalization where specified in
-the common proposal, not merely the correct normalization tensor shapes.
+PLE uses 16 successive prime table sizes at least 512H, padded for 32 physical partitions.
 
-## Execution and validation
+## Execution and gates
 
-Retain 48 layers, MTP off, 2K dense attention (no QSA/indexer), no vision, and
-DP32 with TP=PP=EP=expert-TP=CP=1 in the frozen NeMo environment. No DLC restart.
-The previous microbatch 4 is only a starting candidate pending memory checks:
-restoring four residual streams and projected attention widths changes activation
-memory even though total parameters are lower.
+48 layers, 2K context, MTP/QSA/vision off. DP32 replicates the model and PLE partitions; all model-parallel groups have size one.
 
-The separate named variant is implemented. Native construction counts, attention
-gate execution, QK/GR/PLE normalization, numerical forward/backward oracles, DP
-gradient equivalence, native optimizer steps and checkpoint save/reload gates have
-passed. Actual native groups are DP32 with all model-parallel groups of size one.
-Detailed operational evidence is retained locally with the run artifacts.
-See `docs/QWEN38_NEXT_W320_REVIEW_GUIDE.md` for the source and test review map.
-No speedup or quality improvement is established by these counts or short probes.
+Require constructor/count checks, zero-centered norm semantics, GDN and gated-attention oracles, optimizer membership, DP gradients and native checkpoint continuation.
+
+[Source review](QWEN38_NEXT_W320_REVIEW_GUIDE.md) · [Historical width proposals](QWEN38_NEXT_WIDTH_SCALED_PROPOSALS.md)

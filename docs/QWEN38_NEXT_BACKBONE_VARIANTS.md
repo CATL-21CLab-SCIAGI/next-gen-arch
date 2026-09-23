@@ -1,48 +1,11 @@
-# Reviewing and varying the Qwen3.8-Next backbone
+# Qwen Flash-Next 1B backend reference
 
-The current experiment is a 1,006,441,440-parameter, 48-layer hybrid with MTP off.
-The DP-only execution contract puts a complete model, all 64 routed experts,
-and all 32 PLE table partitions on every GPU. TP, PP, EP, expert TP, and CP are
-all 1; DP is 32. Native Muon distributes optimizer work/state across DP replicas;
-this is not model/expert sharding. No DLC node or vendor runtime restart is needed.
+**Type:** named-model execution reference. **Geometry:** 1,006,441,440 parameters, 48 layers, MTP off.
+For the later W320/E32 family, use its [separate review map](QWEN38_NEXT_W320_REVIEW_GUIDE.md).
 
-The current run initializes fresh weights, optimizer, scheduler, and data cursor;
-the old step-671 checkpoint is retained separately. The adapter preserves native
-dense/routed optimizer-group labels, but full EP8-to-DP32 optimizer restore has
-not yet passed an end-to-end gate. The internal `allreduce=False` tag on routed
-weights and PLE selects the `expt_dp` gradient group; in this mode that group
-contains all 32 DP replicas, while EP itself is 1. It does not disable gradient
-reduction or distribute experts across GPUs. Actual group sizes are asserted.
+## Geometry and ownership
 
-## Files to review
-
-| File | Responsibility / controls |
-|---|---|
-| `scripts/run_qwen38_flash_next_full_dlc.sh` | Container paths, immutable-commit checks, collective preflight, four-node torchrun, and the 1B DP/fusion switches. |
-| `src/archlab/megatron/qwen38_flash_next_full_train.py` | Training entry: run contract and native training-loop orchestration. |
-| `src/archlab/megatron/qwen38_flash_next_model.py` | Shared native model construction for training, sampling and pilots. |
-| `src/archlab/megatron/qwen38_flash_next_config.py` | CLI controls and translation to frozen native trainer arguments. |
-| `src/archlab/megatron/token_batches.py` | Shared deterministic token iterator and DP ownership. |
-| `src/archlab/architectures/qwen38_flash_next_full.py` | Model configuration, GDN, gated residuals, PLE hashing/embedding/injection, and closed-form parameter counts. No trainer imports. |
-| `recipes/models/qwen38_flash_next_1b_depth48_no_mtp.yaml` | Human-readable pinned model, execution, optimizer, and data-budget contract. This is documentation/contract, **not a dynamically loaded model builder**. Editing it alone does not change training. |
-| `src/archlab/megatron/qwen38_flash_next_sample.py` | Load a native checkpoint as one complete replica and generate bounded continuations without optimizer updates. Uses the same `build_model` as training. |
-| `src/archlab/prompts/backbone_validation.yaml` | Versioned qualitative prompts; change/add prompts here, not inside evaluation code. |
-
-Historical pinned commits routed resident-controller compatibility handles by
-name. New launches require an explicit `NGA_LAUNCH_RECIPE`; output names no
-longer select architecture. See `docs/TRAINING_INFRASTRUCTURE.md`. Resident
-controllers are not patched or restarted by this refactor; their old allowlists
-may require using the dedicated launcher directly in the existing allocation.
-
-## Backbone controls
-
-Start at `Qwen38FlashNextFullConfig.billion_depth48_no_mtp()` and its validation
-in `__post_init__`. The named 1B family is deliberately shape-pinned: silently
-changing constants under the same family is rejected. For an intentional variant,
-add a named config/recipe and its parameter/shape tests, then expose the choice in
-the trainer and launcher. Use a fresh run directory for changed weight geometry.
-
-| Mechanism | Current values | Where it is implemented |
+| Mechanism | 1B recipe values | Where it is implemented |
 |---|---|---|
 | Depth / width | 48 / 384 | Config plus native transformer block construction |
 | Attention pattern | 3 GDN layers, then 1 global-attention layer | `full_attention_interval=4`; adapter `QwenFlashNextLayer` chooses per layer |
@@ -53,63 +16,38 @@ the trainer and launcher. Use a fresh run directory for changed weight geometry.
 | PLE | Layer 2, four hash heads, about 1M rows/head, branch width 96 | Architecture `PLEHash`, `OwnerShardedPLEEmbedding`, `DistributedPLE` |
 | MTP | Disabled | `mtp_num_layers=0`, no MTP spec or auxiliary objective |
 
-Expert count/top-k are architecture choices even in DP-only mode: EP=1 does not
-turn the MoE into a dense MLP. Attention implementation and FFN assembly live at
-the Megatron integration boundary; standalone mechanisms stay in `architectures`.
+The DP-only recipe has DP=32 and TP/PP/CP/EP/expert-TP=1. Every GPU holds all experts and PLE partitions; distributed Muon partitions optimizer work/state.
 
-## Training controls and comparison discipline
+The named Python factory is executable geometry. Editing the descriptive YAML alone does not rebuild the model.
 
-- Keep tokenizer/data order, sequence length, global batch, seed, token budget,
-  LR schedule, loss normalization, precision, and evaluation windows fixed when
-  comparing backbone variants. Compare CE at equal consumed tokens, and speed in
-  tokens/second rather than optimizer steps/second.
-- Native CLI controls include micro/global batch, LR/min-LR/warmup, clipping,
-  evaluation/logging intervals, resume/load directory, parallelism, and fusion
-  switches. The production launcher deliberately pins several of these values.
-- The DP-only 1B recipe keeps microbatch 4 and 32 accumulation rounds, with
-  global batch 4,096. Microbatch 16 was rejected by a host-OOM gate: these nodes
-  have 512 GiB host RAM, and the advertised GPU capacity alone does not bound
-  host-backed allocations. Do not size batches from `nvidia-smi` alone.
-  Regression coverage checks unchanged tokens/labels per optimizer step when
-  repartitioning the actual one-corpus-part-per-DP-rank layout; router balancing
-  statistics and floating-point accumulation are not bitwise invariant.
-- `--parallelism dp-only` requires a PP1 config and checks actual runtime groups.
-  `--fused-moe` enables permutation and router fusion. `--fused-cross-entropy`
-  selects **native** fusion; TE loss fusion is forbidden by this container's
-  stability guard. No vendor source or installed-package edits are necessary.
-- DP-only retains gradient-reduction overlap but disables parameter-gather
-  overlap. The frozen native grouped-expert/Muon path asserted when a forward
-  pre-hook revisited an already-started gather bucket. Native synchronous
-  parameter gathering after each optimizer step avoids that path without
-  patching Megatron or changing optimizer math.
-- The DP-only launcher sets `CUDA_DEVICE_MAX_CONNECTIONS=32` to allow independent
-  work queues for native TE expert GEMMs. Legacy TP/SP-capable launches retain 1.
-  This does not enable any additional form of model parallelism.
-- `RUN_CONTRACT.json` preserves the original run contract. `contracts/attempt-*`
-  and `LATEST_CONTRACT.json` record the current execution and runtime identity.
-  `PARALLELISM.json` records the actual initialized process-group sizes.
-- Live logs default to `/mnt/nas/evergreen/arch-live-logs/<run-name>/` and are
-  mirrored into the run's OSS logs. The separate NAS directory is intentional:
-  `/mnt/nas/evergreen/next-gen-arch` is an OSS compatibility symlink on this job.
-- Shape/attention/loss-normalization changes must not silently resume an
-  incompatible checkpoint. Execution-only changes still need numerical and
-  checkpoint save/load gates; optimizer state must never be silently discarded.
+## Code map
 
-## Validation entry points
+| Owner | Module |
+| --- | --- |
+| Definitions/counts | `architectures/qwen38_flash_next_full.py` |
+| Native model | `megatron/qwen38_flash_next_model.py` |
+| Arguments | `megatron/qwen38_flash_next_config.py` |
+| Training | `megatron/qwen38_flash_next_full_train.py` |
+| Data order | `megatron/token_batches.py` |
+| Sampling | `megatron/qwen38_flash_next_sample.py` |
+| Launcher | `scripts/run_qwen38_flash_next_full_dlc.sh` |
 
-Run tests in the existing NeMo container with its CUDA paths (including
-`TRITON_PTXAS_PATH=$CUDA_HOME/bin/ptxas`) and the checkout's `src` plus the
-container's Megatron checkout on `PYTHONPATH`:
+## Runtime decisions
 
-- `tests/test_qwen38_flash_next_full.py`: shapes, parameter allocation, PLE, GDN,
-  and residual mechanisms.
-- `tests/test_qwen38_flash_next_full_train.py`: loss/auxiliary scaling, construction
-  arguments, optimizer grouping, checkpoint staging, and DP-only guards.
-- `tests/test_qwen38_flash_next_fusions.py`: CUDA fused/unfused forward/backward
-  comparisons. Run under single-rank torchrun for the native loss collective.
-- A bounded distributed train/save/load run must also verify finite/nonzero
-  gradients, full parameter counts, DP replica equality, and resume continuity.
+| Setting | Reason |
+| --- | --- |
+| Microbatch 4, global batch 4096 | Microbatch 16 failed host-memory admission |
+| Native loss fusion | TE loss fusion rejected by this runtime's guard |
+| Synchronous parameter gather | Avoids the observed repeated-gather assertion |
+| Gradient reduction overlap | Retained |
+| Explicit launch recipe | Output names do not select architecture |
 
-Sampling recomputes the entire prefix for every generated token. It avoids
-assuming GDN/PLE have compatible incremental caches; the current sampler is not
-an inference throughput benchmark and does not apply an instruction/chat template.
+Changed geometry uses a new named family and fresh weights. EP8-to-DP32 optimizer migration was not established by the recorded adapter work.
+
+## Verification
+
+Check parameter counts/shapes, optimizer tags, GDN/attention gradients, DP agreement, and native checkpoint continuation. Run contracts record actual process groups and implementation hashes.
+
+Sampling is cache-free raw continuation. Its throughput is not a serving benchmark.
+
+[Infrastructure](TRAINING_INFRASTRUCTURE.md) · [Recipes](../recipes/models/)

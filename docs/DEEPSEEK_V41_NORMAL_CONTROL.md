@@ -1,38 +1,30 @@
-# DeepSeek V4.1 normal-attention control
+# DeepSeek ordinary-attention control
 
-The portable recipe is `recipes/experiments/deepseek_v41_normal_math_1b_official.yaml`.
-This is a fresh geometry-matched 1-simplicial run on the same frozen base and
-32 B300 GPUs as the paused simplicial baseline. NVML's L20D label is incorrect.
+**Type:** matched architecture control.
+**Recipe:** `recipes/experiments/deepseek_v41_normal_math_1b_official.yaml`.
 
-The only architectural change is the additive adapter's attention: replace
-joint softmax over short/long key pairs and product values with ordinary
-`softmax(q k^T / sqrt(128)) v` over the causal 512-token long window, including
-the current token. Q8/KV2/head128, eight insertion layers, stream read/write,
-RMS normalization, sigmoid output gate, and zero output initialization remain.
-Every retained initial tensor equals the baseline tensor exactly, with normal
-K/V drawn from baseline K2/V2. There is no rotary transform, dropout or bias.
-The short K1/V1 projections and K1 norm are absent: 146,843,712 parameters
-versus 167,816,256. This control matches geometry, not parameter count.
+## Controlled change
 
-The implementation uses the container-owned FlashAttention API with
-`deterministic=True`, causal masking, window `(511, 0)`, and BF16 Q/K/V with
-FP32 score/softmax accumulation. The qualified simplicial operator retains
-its FP32 ternary core. Thus throughput compares the qualified implementations,
-including their operator-appropriate arithmetic, not equal-precision isolated
-kernels. No backbone, library, optimizer, batching or communication optimization
-is introduced into the control.
+| Property | Ordinary control | Simplicial arm |
+| --- | --- | --- |
+| Attention | Softmax over Q·K | Joint softmax over Q·K1·K2 |
+| Value | V | V1·V2 |
+| Causal window | 512 tokens | 32×512 pairs |
+| Parameters | 146,843,712 | 167,816,256 |
+| Core | Container FlashAttention; BF16 projections, FP32 accumulation | Qualified FP32 ternary core |
 
-The model revision, weights, dense FSDP32/expert FSDP4/EP8/Engram32 layout,
-16K context, sealed train/validation manifests, seed2234 window order, 1B target
-budget, headwise Q/K Muon and matrix Muon, AdamW norms/scalars, learning-rate
-schedule, gradient clipping, validation and checkpoint cadence are unchanged.
-The control starts at step zero; the baseline checkpoint is preserved for
-resume and is not loaded into the architecturally different control.
+Both retain 8Q/2KV/head128, eight insertion sites, read/write maps, RMS norms, output gate and zero-output initialization. Shared tensors match byte-for-byte; ordinary K/V inherit K2/V2 initialization.
 
-Admission requires new source/runtime-bound 32-rank tiny-mesh receipts,
-independent full-backbone parity at 128/2048/16384, zero-adapter identity,
-two real updates with all adapter gradients active, exact checkpoint restore
-and numerical continuation replay, and a full 16K update. Qualification state
-is reset before the sealed training run. Measure throughput on identical
-training steps/data windows after initial compilation, report both supervised
-targets per second and seconds per update, and keep periodic validation separate.
+No extra RoPE, dropout or attention bias is added. The windows include self.
+
+## Matched axes
+
+Base revision, data/supervision, seed-2234 order, 16K context, optimizer grouping, LR schedule, validation and checkpoint cadence match. The original frozen-adapter phase uses FSDP32/EP8/Engram32.
+
+This is geometry-matched, not parameter-matched. Throughput compares the qualified implementations and their declared precision.
+
+## Admission and evidence
+
+Require fresh source-bound mesh receipts, base parity, zero-adapter identity, active adapter gradients, checkpoint continuation and a full-context update. Compare identical data windows and report both update time and supervised targets/s.
+
+[Official integration](DEEPSEEK_V41_OFFICIAL_TRAINING.md) · [Final matched results](TRAINING_CONCLUSIONS_20260922.md)
