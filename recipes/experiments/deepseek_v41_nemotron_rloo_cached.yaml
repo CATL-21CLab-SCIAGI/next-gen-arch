@@ -87,7 +87,7 @@ prompt_template: package:prompts/deepseek_v41_math_rl_v1.yaml
 prompts_per_rank: 1
 qualification_eval_count: 8
 qualification_evaluation: false
-qualification_max_new_tokens: 16
+qualification_max_new_tokens: 512
 replay_mode: sampled-prefix
 replay_prefixes: 8
 replay_tolerance: 0.02
