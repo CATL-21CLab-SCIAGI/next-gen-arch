@@ -1,5 +1,9 @@
 # Shared-GPU RL restart candidate — 2026-09-23
 
+**Superseded:** the user withdrew concurrent general evaluation as a requirement.
+See [the training-first restart](DEEPSEEK_V41_RL_TRAINING_PRIORITY.md).
+The failed candidates below are retained as experiment history.
+
 **Status (2026-09-23):** the 190 GiB and 198 GiB admission attempts failed at maximum-context backward before optimizer updates. Production has not been admitted. The completed v3 recovery checkpoints remain intact.
 **Recipe:** `recipes/experiments/deepseek_v41_nemotron_rloo_shared_gpu.yaml`.
 **Parents:** matched step-4537 SFT pair; fresh RL state because the scientific contract changes.
