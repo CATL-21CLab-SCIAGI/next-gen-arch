@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--freeze-router", action="store_true")
     parser.add_argument("--checkpoint-input-offload", action="store_true")
     parser.add_argument("--inplace-moe-accumulation", action="store_true")
+    parser.add_argument("--hc-activation-offload", action="store_true")
     parser.add_argument(
         "--loss-normalization",
         choices=("sequence_sum", "prompt_token_mean"),
@@ -89,11 +90,15 @@ def main():
 
         strategy = configure_rl_trainability(model, freeze_router=args.freeze_router)
         from archlab.automodel.deepseek_v41_rl_memory_policy import (
+            hc_offload_statistics,
+            install_hc_activation_offload,
             install_inplace_moe_accumulation,
         )
 
         if args.inplace_moe_accumulation:
             strategy["moe_accumulation"] = install_inplace_moe_accumulation(model)
+        if args.hc_activation_offload:
+            strategy["hc_activations"] = install_hc_activation_offload(model)
         if args.checkpoint_input_offload:
             strategy["checkpoint_inputs"] = install_checkpoint_input_offload(model)
         cache_equivalence = None
@@ -168,6 +173,9 @@ def main():
         if not audit.get("numerical_qualification_passed") or any(optimizer.state.values()):
             raise AssertionError("native gradient qualification failed or updated optimizer")
         offload_stats = input_offload_statistics(model)
+        hc_stats = hc_offload_statistics(model)
+        if args.hc_activation_offload and hc_stats["tensor_copies"] == 0:
+            raise AssertionError("requested HC activation offload was not exercised")
         if args.checkpoint_input_offload and offload_stats["tensor_copies"] == 0:
             raise AssertionError("requested checkpoint activation offload was not exercised")
         records = [None] * dist.get_world_size()
@@ -184,6 +192,7 @@ def main():
                 "same_sampled_actions": first.generated_ids == second.generated_ids,
                 "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
                 "input_offload": offload_stats,
+                "hc_offload": hc_stats,
             },
         )
         if rank == 0:

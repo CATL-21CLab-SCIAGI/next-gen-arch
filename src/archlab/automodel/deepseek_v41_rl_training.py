@@ -25,7 +25,8 @@ from pathlib import Path
 from archlab.artifacts import atomic_write_json, sha256_file
 
 SOURCE_FILES = (
-    "source_compatibility.py", "data/source-formatting-20260923.json",
+    "source_compatibility.py",
+    "data/source-formatting-20260923.json",
     "automodel/deepseek_v41_rl_training.py",
     "automodel/deepseek_v41_rl_model.py",
     "automodel/deepseek_v41_rl_head.py",
@@ -179,6 +180,7 @@ def validate_recipe(config):
     config.setdefault("freeze_router", False)
     config.setdefault("checkpoint_input_offload", False)
     config.setdefault("inplace_moe_accumulation", False)
+    config.setdefault("hc_activation_offload", False)
     config.setdefault("gpu_memory_budget_gib", None)
     config.setdefault("evaluation_reserve_gib", 0.0)
     config.setdefault("initial_evaluation", True)
@@ -194,6 +196,7 @@ def validate_recipe(config):
             "freeze_router",
             "checkpoint_input_offload",
             "inplace_moe_accumulation",
+            "hc_activation_offload",
             "initial_evaluation",
             "qualification_evaluation",
         )
@@ -1538,11 +1541,17 @@ def main():
             model, freeze_router=config["freeze_router"]
         )
         from archlab.automodel.deepseek_v41_rl_memory_policy import (
+            install_hc_activation_offload,
             install_inplace_moe_accumulation,
         )
 
         loading["rl_memory_policy"] = {
             "allocator": memory_budget,
+            "hc_activations": (
+                install_hc_activation_offload(model)
+                if config["hc_activation_offload"]
+                else {"enabled": False}
+            ),
             "moe_accumulation": (
                 install_inplace_moe_accumulation(model)
                 if config["inplace_moe_accumulation"]

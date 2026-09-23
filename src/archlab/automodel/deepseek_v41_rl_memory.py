@@ -130,6 +130,7 @@ def qualify_replay_memory(
 
     import torch.distributed as dist
 
+    from archlab.automodel.deepseek_v41_rl_memory_policy import hc_offload_statistics
     from archlab.automodel.deepseek_v41_rl_update import policy_gradient_step
     from archlab.rl.rollout import sample_rollouts
 
@@ -193,6 +194,7 @@ def qualify_replay_memory(
         "replay_max_abs_error": audit.get("replay_max_abs_error"),
         "optimizer_state_empty": not any(optimizer.state.values()),
         "input_offload": input_offload_statistics(model),
+        "hc_offload": hc_offload_statistics(model),
     }
     rows = [None] * dist.get_world_size()
     dist.all_gather_object(rows, local)
