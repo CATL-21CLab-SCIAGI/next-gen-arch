@@ -5,22 +5,22 @@
   "upstream_commit": "a4ce87c003f08b74d68684d3627f6e6048bc0140",
   "nodes": [
     {
-      "host": "22.0.243.22",
+      "host": "PRIVATE_NODE_IP",
       "node_rank": 0,
       "launcher_pid": 250367
     },
     {
-      "host": "22.0.254.34",
+      "host": "PRIVATE_NODE_IP",
       "node_rank": 1,
       "launcher_pid": 142949
     },
     {
-      "host": "22.0.241.50",
+      "host": "PRIVATE_NODE_IP",
       "node_rank": 2,
       "launcher_pid": 142432
     },
     {
-      "host": "22.0.241.128",
+      "host": "PRIVATE_NODE_IP",
       "node_rank": 3,
       "launcher_pid": 161133
     }

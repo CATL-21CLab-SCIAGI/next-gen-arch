@@ -36,8 +36,8 @@
   },
   "recovery": {
     "pid": 192780,
-    "host": "dlc1hig7iitpry5n-worker-0",
-    "ip": "22.0.254.34",
+    "host": "DLC_JOB_ID-worker-0",
+    "ip": "PRIVATE_NODE_IP",
     "python": "/opt/venv/bin/python",
     "entrypoint": "archlab.preprocessing.nemotron_math",
     "snapshot": "results/nemotron-math-v41-code-20260910-v3/src",
@@ -81,7 +81,7 @@
     "ruff": "passed"
   },
   "runtime": {
-    "container": "sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06",
+    "container": "PRIVATE_REGISTRY/dev/nemo:26.06",
     "torch": "2.12.0a0+0291f960b6.nv26.4.48445190",
     "transformers": "5.8.1",
     "tokenizers": "0.23.0rc0",

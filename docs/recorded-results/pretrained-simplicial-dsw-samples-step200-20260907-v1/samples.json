@@ -1,11 +1,11 @@
 {
   "adapter_parameters": 708412416,
   "adapters_fp32_sha256": "9fea007f4101376490153d759936363c4ce8f2df044663157484912f897373af",
-  "checkpoint": "/mnt/nas/evergreen/arch/results/pretrained-simplicial-fineweb-20260907-v1/checkpoints/step-00000200-96a408d584bc",
+  "checkpoint": "<PROJECT_ROOT>/results/pretrained-simplicial-fineweb-20260907-v1/checkpoints/step-00000200-96a408d584bc",
   "checkpoint_audit": {
     "backbone_keys": 1294,
     "cache_manifest_sha256": "d838c338936d21678513b0f0e90a5092543006723a2eae764171931e683c2273",
-    "checkpoint_path": "/mnt/nas/evergreen/arch/results/pretrained-cache-20260907/Qwen3.8-Flash-Next",
+    "checkpoint_path": "<PROJECT_ROOT>/results/pretrained-cache-20260907/Qwen3.8-Flash-Next",
     "inactive_mtp_keys": 31,
     "inactive_vision_keys": 333,
     "index_sha256": "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de",
@@ -121,7 +121,7 @@
     "gpu_parameter_bytes": 252904139800
   },
   "prompts_sha256": "e3053144fe4986d4442f535b1704c62e5f711d182867da4b8b58eaddd3cb3c58",
-  "python": "/mnt/nas/evergreen/env/venv/bin/python",
+  "python": "<WORKSPACE>/env/venv/bin/python",
   "python_version": "3.12.3 (main, Mar  3 2026, 12:15:18) [GCC 13.3.0]",
   "samples": [
     {
@@ -731,23 +731,23 @@
   "sampling_environment": "existing user-approved DSW venv; not the DLC training container",
   "source_checks": {
     "archlab.architectures.simplicial_adapter": {
-      "path": "/mnt/nas/evergreen/arch/results/pretrained-simplicial-source-20260907-v1/src/archlab/architectures/simplicial_adapter.py",
+      "path": "<PROJECT_ROOT>/results/pretrained-simplicial-source-20260907-v1/src/archlab/architectures/simplicial_adapter.py",
       "sha256": "7b230a3c93a7cca678ceceef72f895d2831408bd655f7ad2506be1fe355925cb"
     },
     "archlab.architectures.simplicial_attention": {
-      "path": "/mnt/nas/evergreen/arch/results/pretrained-simplicial-source-20260907-v1/src/archlab/architectures/simplicial_attention.py",
+      "path": "<PROJECT_ROOT>/results/pretrained-simplicial-source-20260907-v1/src/archlab/architectures/simplicial_attention.py",
       "sha256": "b3f9e469c55e547b39da10e0a8aea27238c54730746d5202c3991e7be0aac0fa"
     },
     "archlab.automodel.loading": {
-      "path": "/mnt/nas/evergreen/arch/results/pretrained-simplicial-source-20260907-v1/src/archlab/automodel/loading.py",
+      "path": "<PROJECT_ROOT>/results/pretrained-simplicial-source-20260907-v1/src/archlab/automodel/loading.py",
       "sha256": "74854730e46b8b3e306c633bd578d162bc3c527f65f999d0d3516a5b445d8977"
     },
     "archlab.automodel.simplicial": {
-      "path": "/mnt/nas/evergreen/arch/results/pretrained-simplicial-source-20260907-v1/src/archlab/automodel/simplicial.py",
+      "path": "<PROJECT_ROOT>/results/pretrained-simplicial-source-20260907-v1/src/archlab/automodel/simplicial.py",
       "sha256": "824dd67a044689e5afc6022c153e0cf1c3030c9e94bb612e3935d844b25cfb3d"
     }
   },
   "step": 200,
-  "training_container": "sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06",
+  "training_container": "PRIVATE_REGISTRY/dev/nemo:26.06",
   "upstream_commit": "a4ce87c003f08b74d68684d3627f6e6048bc0140"
 }

@@ -23,8 +23,8 @@
   },
   "tokenization": {
     "pid": 189474,
-    "host": "dlc1hig7iitpry5n-worker-0",
-    "ip": "22.0.254.34",
+    "host": "DLC_JOB_ID-worker-0",
+    "ip": "PRIVATE_NODE_IP",
     "entry": "archlab.preprocessing.nemotron_math",
     "code_snapshot": "results/nemotron-math-v41-code-20260910-v1/src",
     "python": "/opt/venv/bin/python",
@@ -58,7 +58,7 @@
   "recipe": "recipes/proposals/deepseek_v41_global_simplicial_math.yaml",
   "finetuning_launched": false,
   "finetuning_backend_qualified": false,
-  "container": "sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06",
+  "container": "PRIVATE_REGISTRY/dev/nemo:26.06",
   "packages_changed": false,
   "nodes_stopped_or_restarted": false,
   "subagents_used": false

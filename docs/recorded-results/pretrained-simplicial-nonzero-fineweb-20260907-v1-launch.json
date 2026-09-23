@@ -5,10 +5,10 @@
   "attempt": "d667fe6f7a51",
   "upstream_commit": "a4ce87c003f08b74d68684d3627f6e6048bc0140",
   "nodes": [
-    {"host": "22.0.243.22", "node_rank": 0, "launcher_pid": 253365},
-    {"host": "22.0.254.34", "node_rank": 1, "launcher_pid": 146010},
-    {"host": "22.0.241.50", "node_rank": 2, "launcher_pid": 145083},
-    {"host": "22.0.241.128", "node_rank": 3, "launcher_pid": 163391}
+    {"host": "PRIVATE_NODE_IP", "node_rank": 0, "launcher_pid": 253365},
+    {"host": "PRIVATE_NODE_IP", "node_rank": 1, "launcher_pid": 146010},
+    {"host": "PRIVATE_NODE_IP", "node_rank": 2, "launcher_pid": 145083},
+    {"host": "PRIVATE_NODE_IP", "node_rank": 3, "launcher_pid": 163391}
   ],
   "master_port": 29836,
   "world_size": 32,

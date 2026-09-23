@@ -32,12 +32,12 @@ from archlab.speedrun.models import build_model_config, instantiate_model
 PUBLISHED_RUNS = DEFAULT_REFERENCE.with_name("backend-10m-runs.csv")
 PUBLISHED_COMPARISON = DEFAULT_REFERENCE.with_name("backend-10m-comparison.json")
 OPTIMIZATION_RUNS = (
-    Path(__file__).resolve().parents[1] / "results" / "megatron-10m-optimization-runs-b300.csv"
+    Path(__file__).resolve().parents[1] / "docs" / "recorded-results" / "megatron-10m-optimization-runs-b300.csv"
 )
 SAFE_AUTOTUNE_RESULTS = (
-    Path(__file__).resolve().parents[1] / "results" / "megatron-10m-safe-autotune-b300"
+    Path(__file__).resolve().parents[1] / "docs" / "recorded-results" / "megatron-10m-safe-autotune-b300"
 )
-MULTINODE_100M_RESULTS = Path(__file__).resolve().parents[1] / "results" / "100m-multinode-b300"
+MULTINODE_100M_RESULTS = Path(__file__).resolve().parents[1] / "docs" / "recorded-results" / "100m-multinode-b300"
 
 
 def test_ten_m_grid_is_complete_and_parameter_counts_are_frozen():

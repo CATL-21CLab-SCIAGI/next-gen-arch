@@ -18,7 +18,7 @@
       "rows": 14042
     },
     "aime24": {
-      "path": "/mnt/nas/evergreen/arch/results/pretrained-capability-data-20260907-v1/downloads/aime24/aime_2024_problems.parquet",
+      "path": "<PROJECT_ROOT>/results/pretrained-capability-data-20260907-v1/downloads/aime24/aime_2024_problems.parquet",
       "repo": "Maxwell-Jia/AIME_2024",
       "revision": "8d88b2876a82a080e2f172cc9b25d0d9d2cb4792",
       "split": "train (published exam set)",
@@ -26,7 +26,7 @@
       "rows": 30
     },
     "aime25": {
-      "path": "/mnt/nas/evergreen/arch/results/pretrained-capability-data-20260907-v1/downloads/aime25/test.jsonl",
+      "path": "<PROJECT_ROOT>/results/pretrained-capability-data-20260907-v1/downloads/aime25/test.jsonl",
       "repo": "math-ai/aime25",
       "revision": "563bb8404243c5f09de6ec262f2db674fe5bce9b",
       "split": "test",
@@ -34,7 +34,7 @@
       "rows": 30
     },
     "arc_challenge": {
-      "path": "/mnt/nas/evergreen/arch/results/pretrained-capability-data-20260907-v1/downloads/arc_challenge/ARC-Challenge/test-00000-of-00001.parquet",
+      "path": "<PROJECT_ROOT>/results/pretrained-capability-data-20260907-v1/downloads/arc_challenge/ARC-Challenge/test-00000-of-00001.parquet",
       "repo": "allenai/ai2_arc",
       "revision": "210d026faf9955653af8916fad021475a3f00453",
       "split": "test",

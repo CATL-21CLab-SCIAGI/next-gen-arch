@@ -17,8 +17,8 @@
   },
   "recovery": {
     "pid": 193616,
-    "host": "dlc1hig7iitpry5n-worker-0",
-    "ip": "22.0.254.34",
+    "host": "DLC_JOB_ID-worker-0",
+    "ip": "PRIVATE_NODE_IP",
     "python": "/opt/venv/bin/python",
     "cpu_workers": 32,
     "batch_size": 16,
@@ -67,7 +67,7 @@
     "reuse.py": "c9e5032be719ea867ed406d73cd2f8edd93f3fc90a2950b052815481a1349313"
   },
   "runtime": {
-    "container": "sci-agi-zhongwei-registry-vpc.cn-zhongwei.cr.aliyuncs.com/dev/nemo:26.06",
+    "container": "PRIVATE_REGISTRY/dev/nemo:26.06",
     "torch": "2.12.0a0+0291f960b6.nv26.4.48445190",
     "transformers": "5.8.1",
     "tokenizers": "0.23.0rc0",

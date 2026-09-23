@@ -1,7 +1,7 @@
 {
   "hostname": "dsw-720471-7685778557-xz7cd",
   "operating_system": "Ubuntu 24.04.4 LTS",
-  "python": "/mnt/nas/evergreen/env/venv/bin/python",
+  "python": "<WORKSPACE>/env/venv/bin/python",
   "sampler_entry": "src/archlab/automodel/sample.py",
   "sampler_entry_sha256": "8aa13c4221ccf356b4920bac89b395392f9c3d6fa4c8fb04bccfdff73ac598de",
   "tests": [
