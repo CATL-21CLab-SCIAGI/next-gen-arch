@@ -3,6 +3,12 @@
 The scientific comparison is matched normal versus simplicial (three-body) attention.
 Concurrent general evaluation is deferred to a later phase. No extra GPUs are allocated.
 
+The initial uncached attempts were stopped before their first optimizer update after
+more than 40 minutes of generation. The successor candidate is
+`recipes/experiments/deepseek_v41_nemotron_rloo_cached.yaml`; see the
+[cache qualification record](DEEPSEEK_V41_RL_CACHE_STATUS.md). The execution contract
+below records the initial uncached attempt.
+
 ## Execution contract
 
 - Recipe: `recipes/experiments/deepseek_v41_nemotron_rloo_training_priority.yaml`.

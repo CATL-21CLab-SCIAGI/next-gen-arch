@@ -1,0 +1,108 @@
+# Cached training candidate: actual-parent cache/replay admission is mandatory.
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+cache_policy: true
+checkpoint_input_offload: false
+checkpoint_interval_updates: 16
+component_qualification: env:ARCHLAB_RL_COMPONENT_QUALIFICATION
+component_qualification_sha256: env:ARCHLAB_RL_COMPONENT_QUALIFICATION_SHA256
+container_kernel_packages: env:ARCHLAB_CONTAINER_KERNEL_PACKAGES
+context_limit: 2560
+data_manifest: env:ARCHLAB_NEMOTRON_RL_DATA_MANIFEST
+data_manifest_sha256: 588525114edeffcc57c6ff723a63d5ac55351ff2b403eb4514985c7109255a17
+eval_count: 64
+eval_interval_updates: 8
+eval_local_batch_size: 4
+evaluation_reserve_gib: 0
+family: full
+freeze_router: true
+gpu_memory_budget_gib: null
+group_size: 4
+head_chunk_size: 128
+initial_evaluation: false
+learning_rate: 1.0e-06
+length_penalty:
+  enabled: true
+  exponent: 1.0
+  maximum_deduction: 0.1
+  minimum_pass_rate: 0.25
+  reference_quantile: 0.5
+  saturation_excess: 1.0
+  tolerated_excess: 0.1
+loss_normalization: prompt_token_mean
+max_new_tokens: 2001
+max_rollout_updates: 128
+numerical_precision:
+  cuda_matmul_allow_bf16_reduced_precision_reduction: false
+  cuda_matmul_allow_tf32: false
+parents:
+  normal:
+    checkpoint: env:ARCHLAB_RL_PARENT_NORMAL
+    declared_source_changes:
+      automodel/deepseek_v41_full_indexer.py:
+        after_sha256: f16ae2eba973d8c75a5dc320fa4742eac6742654d2155b39571c75c5b34ccc37
+        before_sha256: a92e79c3203c323744b3f05ab86e691b752f847545c9763bd9d8e9b8dce00542
+        reason: right-padding-indexer-mask
+      automodel/deepseek_v41_full_training.py:
+        after_sha256: 625223b9e29e42d703b734da2e733a889010906567676b16b976253ac9860176
+        before_sha256: fbc1b74b02deb33f31496302f4e6717afe0deaeec4da83b15908623344a1a7be
+        reason: SFT-entrypoint-replaced-by-RL
+      automodel/deepseek_v41_official_adapter.py:
+        after_sha256: 535be34a52318c3ffbd70e06fd2cea1b3646128e5c5d2a5c2f949fb47e691c58
+        before_sha256: af8c37902deef17bb5b9c377a02ee31c17e38f617b49e4c07dddeb74ecc4bb85
+        reason: right-padding-and-additional-variants
+    marker_sha256: 3f946519f860a516345cd80cfff2764be6e1aa0095b791cddcc92aa3a06769fc
+  simplicial:
+    checkpoint: env:ARCHLAB_RL_PARENT_SIMPLICIAL
+    declared_source_changes:
+      automodel/deepseek_v41_control.py:
+        after_sha256: c4872bf2b5106254caea471253dca4ba2fe7622f6ae352dfdd2062ff9e291776
+        before_sha256: d85c8ea259d87feb873fd1a73bc37bc70dec950ba626e55de20dcd8f6d5db47f
+        reason: SFT-serving-control-not-used-by-RL
+      automodel/deepseek_v41_full_indexer.py:
+        after_sha256: f16ae2eba973d8c75a5dc320fa4742eac6742654d2155b39571c75c5b34ccc37
+        before_sha256: a92e79c3203c323744b3f05ab86e691b752f847545c9763bd9d8e9b8dce00542
+        reason: right-padding-indexer-mask
+      automodel/deepseek_v41_full_training.py:
+        after_sha256: 625223b9e29e42d703b734da2e733a889010906567676b16b976253ac9860176
+        before_sha256: ba85f0213444ada6da30a20b79dc3a191deb8b292fe370b897b9b923f1515b92
+        reason: SFT-entrypoint-replaced-by-RL
+      automodel/deepseek_v41_live_window.py:
+        after_sha256: 658566a76fb45bb4d7a12ffcdbb37477d01a0de70ac77d77ed06604fc3c89297
+        before_sha256: 3d9a6783f0c665ef82dd2dd00d4ffa3365f8b27a558c20e780d78ff5c2a9738c
+        reason: SFT-chat-control-changed-inference-head-preserved
+      automodel/deepseek_v41_official_adapter.py:
+        after_sha256: 535be34a52318c3ffbd70e06fd2cea1b3646128e5c5d2a5c2f949fb47e691c58
+        before_sha256: af8c37902deef17bb5b9c377a02ee31c17e38f617b49e4c07dddeb74ecc4bb85
+        reason: right-padding-and-additional-variants
+      serving/openai_chat.py:
+        after_sha256: d0f0b8d3bde773ab278fbe142926051e66286d7f52203dc2caa862ffe658a216
+        before_sha256: 820a3071abe2a1e525aba56e5e067bf72f1a7a1b588039546666e5b87280a7a7
+        reason: SFT-serving-control-not-used-by-RL
+    marker_sha256: b60da9ce92b75a163a3aef3bada010eb654870bf6c126267f661661e4ec336a9
+pilot_updates: 2
+profile_new_tokens: 4
+profile_rollouts: false
+prompt_order: length-bucketed-global-batches-shuffled-v1
+prompt_template: package:prompts/deepseek_v41_math_rl_v1.yaml
+prompts_per_rank: 1
+qualification_eval_count: 8
+qualification_evaluation: false
+qualification_max_new_tokens: 16
+replay_mode: sampled-prefix
+replay_prefixes: 8
+replay_tolerance: 0.02
+retain_weights: true
+schema_version: 1
+seed: 20260922
+temperature: 1.0
+top_p: 1.0
+weight_reserve_gib: 16
+weights: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
+world_size: 16
+
+# Exact project-owned memory reductions; no CPU offloading.
+inplace_moe_accumulation: true
+checkpoint_expert_activations: true
+serialize_backward_gathers: true
+unshard_on_compute_stream: true
+hc_activation_offload: false

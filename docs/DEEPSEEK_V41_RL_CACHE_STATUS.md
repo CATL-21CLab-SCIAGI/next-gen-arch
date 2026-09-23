@@ -1,6 +1,29 @@
 # Resident RL cache status — 2026-09-23
 
-**Status:** experimental and disabled by default. **Production admission:** not passed.
+**Current status:** 16-rank native short and window-boundary cache checks have passed at
+the production 2,560-token replay canvas. Actual-parent admission is still required.
+The cache remains opt-in.
+
+## Restart candidate
+
+Recipe: `recipes/experiments/deepseek_v41_nemotron_rloo_cached.yaml`.
+No CPU offloading or concurrent general evaluation. Gathered weights are retained
+during sampling, then reshared before gradient replay; the existing 16 GiB driver
+reserve guard remains.
+
+The fixed replay canvas preserves FP32 mixing and RMS reduction shapes. The cache
+retains the backbone state and each adapter’s last 512 input positions, executing
+the original normal or simplicial adapter forward. The experimental one-query
+adapter kernel is not used. Compressed-attention slot positions and indexer score
+widths match padded replay. Unused full-vocabulary logits are limited to one position
+through the container model’s existing `logits_to_keep` option; RL scores are computed
+separately by the qualified head.
+
+Evidence: `results/deepseek-v41-math-rl-shared-20260923/cache-qualified-v4/`.
+These tiny-model checks establish numerical behavior, not production throughput
+or real optimizer progress. The 0.02-nat and 0.001 relative-RMS cache gates are unchanged.
+
+## Historical prototype
 
 ## Implementation
 
