@@ -182,6 +182,7 @@ def validate_recipe(config):
     config.setdefault("checkpoint_input_offload", False)
     config.setdefault("inplace_moe_accumulation", False)
     config.setdefault("checkpoint_expert_activations", False)
+    config.setdefault("serialize_backward_gathers", False)
     config.setdefault("hc_activation_offload", False)
     config.setdefault("gpu_memory_budget_gib", None)
     config.setdefault("evaluation_reserve_gib", 0.0)
@@ -199,6 +200,7 @@ def validate_recipe(config):
             "checkpoint_input_offload",
             "inplace_moe_accumulation",
             "checkpoint_expert_activations",
+            "serialize_backward_gathers",
             "hc_activation_offload",
             "initial_evaluation",
             "qualification_evaluation",
@@ -1548,10 +1550,16 @@ def main():
         from archlab.automodel.deepseek_v41_rl_memory_policy import (
             install_hc_activation_offload,
             install_inplace_moe_accumulation,
+            serialize_backward_gathers,
         )
 
         loading["rl_memory_policy"] = {
             "allocator": memory_budget,
+            "backward_gathers": (
+                serialize_backward_gathers(model)
+                if config["serialize_backward_gathers"]
+                else {"enabled": False}
+            ),
             "hc_activations": (
                 install_hc_activation_offload(model)
                 if config["hc_activation_offload"]

@@ -14,6 +14,39 @@ import torch
 from torch.nn import functional as F
 
 
+def serialize_backward_gathers(model):
+    """Use the public explicit-prefetch API to bypass implicit next-group gathers."""
+    from torch.distributed.fsdp import FSDPModule
+
+    before = {name: id(parameter) for name, parameter in model.named_parameters()}
+    selected, seen = [], set()
+    for name, module in model.named_modules():
+        if not isinstance(module, FSDPModule):
+            continue
+        state = module._get_fsdp_state()
+        if id(state) in seen:
+            continue
+        seen.add(id(state))
+        # In this runtime [] restores implicit prefetch. A nonempty explicit
+        # target disables that path. The current group has already finished
+        # pre_backward/unshard/wait, so prefetching itself returns immediately.
+        module.set_modules_to_backward_prefetch([module])
+        if state._states_to_backward_prefetch != [state]:
+            raise RuntimeError("explicit FSDP backward-prefetch policy was not installed")
+        selected.append(name)
+    if not selected or before != {
+        name: id(parameter) for name, parameter in model.named_parameters()
+    }:
+        raise ValueError("backward gather policy needs existing FSDP ownership")
+    return {
+        "enabled": True,
+        "kind": "public-FSDP-current-group-prefetch-v1",
+        "modules": selected,
+        "implicit_next_group_prefetch": False,
+        "parameter_identity_preserved": True,
+    }
+
+
 def _unpack_hc_activation(saved):
     if isinstance(saved, torch.Tensor):
         return saved
