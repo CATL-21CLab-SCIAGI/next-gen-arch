@@ -245,7 +245,8 @@ def sample_rollouts(
                 else:
                     ids, mask = _inputs(sequences, length, pad_token_id, device)
                     hidden = model(
-                        input_ids=ids, attention_mask=mask, return_hidden_states=True
+                        input_ids=ids, attention_mask=mask, return_hidden_states=True,
+                        **getattr(model, "_archlab_rl_hidden_forward_kwargs", {}),
                     ).hidden_states
                     positions = torch.tensor([len(row) - 1 for row in sequences], device=device)
                     final_hidden = hidden[torch.arange(len(sequences), device=device), positions]

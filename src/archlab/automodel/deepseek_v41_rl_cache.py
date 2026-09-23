@@ -397,7 +397,8 @@ class V41PolicyCache:
 
                     hooks.append(adapter.register_forward_hook(capture_adapter))
             output = self.model(
-                input_ids=input_ids, attention_mask=attention_mask, return_hidden_states=True
+                input_ids=input_ids, attention_mask=attention_mask, return_hidden_states=True,
+                **getattr(self.model, "_archlab_rl_hidden_forward_kwargs", {}),
             )
             if any(
                 "local_kv" not in item
@@ -585,7 +586,8 @@ def qualify_resident_cache(
                 inputs = F.pad(ids, (0, canvas - ids.shape[1]), value=pad_token_id)
                 mask = torch.arange(canvas, device=device).expand_as(inputs) < ids.shape[1]
                 all_hidden = model(
-                    input_ids=inputs, attention_mask=mask, return_hidden_states=True
+                    input_ids=inputs, attention_mask=mask, return_hidden_states=True,
+                    **getattr(model, "_archlab_rl_hidden_forward_kwargs", {}),
                 ).hidden_states
                 reference = all_hidden[:, ids.shape[1] - 1].clone()
                 del all_hidden

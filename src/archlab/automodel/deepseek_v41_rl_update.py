@@ -402,7 +402,8 @@ def policy_gradient_step(model, optimizer, indexers, rollout, rewards, *, lr, gr
                 else:
                     inputs, attention, positions, labels, active, recorded = reconstruct_prefix(rollout, step)
                 hidden = model(input_ids=inputs, attention_mask=attention,
-                               return_hidden_states=True).hidden_states
+                               return_hidden_states=True,
+                               **getattr(model, "_archlab_rl_hidden_forward_kwargs", {})).hidden_states
                 if positions is not None:
                     hidden = hidden[torch.arange(inputs.shape[0], device=device), positions].unsqueeze(1)
                 # Prefix targets are all valid (including inactive dummy rows),

@@ -76,6 +76,8 @@ def install_rl_head(model):
     Install once, before the first RL forward. Existing checkpoint tensor names,
     the ordinary ``lm_head.loss`` method, and parameter trainability are retained.
     """
+    import inspect
+
     from torch.distributed.fsdp import FSDPModule, register_fsdp_forward_method
 
     head = model.lm_head
@@ -86,5 +88,11 @@ def install_rl_head(model):
     head.rl_log_probs = MethodType(_head_log_probs, head)
     if isinstance(head, FSDPModule):
         register_fsdp_forward_method(head, "rl_log_probs")
+    # The resident NeMo wrapper computes logits even when hidden states are
+    # requested. RL projects its selected positions separately; retaining one
+    # unused position avoids a full [batch, context, vocabulary] allocation.
+    if hasattr(model, "forward") and "logits_to_keep" in inspect.signature(model.forward).parameters:
+        model._archlab_rl_hidden_forward_kwargs = {"logits_to_keep": 1}
     return {"method": "rl_log_probs", "dtype": "float32", "ignored_target": -100,
+            "hidden_forward_kwargs": dict(getattr(model, "_archlab_rl_hidden_forward_kwargs", {})),
             "vocabulary_memory": "bounded-chunks-recomputed-in-backward"}
