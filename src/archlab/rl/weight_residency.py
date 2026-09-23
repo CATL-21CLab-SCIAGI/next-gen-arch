@@ -42,8 +42,8 @@ def _unused_allocator_cache(device):
 
 
 def _release_unused_cache(device):
-    # Entry-only call, after no-gradient/fully-sharded admission. Remeasure
-    # driver free memory afterward; reserved-minus-allocated is not a guarantee.
+    # Only allocator-owned unused blocks are eligible. Remeasure driver free
+    # memory afterward; reserved-minus-allocated is not a guarantee.
     with torch.cuda.device(device):
         torch.cuda.empty_cache()
 
@@ -160,6 +160,8 @@ class WeightResidency:
             "entry_cache_release_attempted": False,
             "entry_cache_reclaimed_bytes": 0,
             "entry_driver_free_before_cache_release": None,
+            "gather_cache_release_count": 0,
+            "gather_cache_reclaimed_bytes": 0,
             "managed_modules": [
                 {
                     "name": item["name"],
@@ -171,7 +173,7 @@ class WeightResidency:
             "cleanup_verified": False,
         }
 
-    def _guard(self, *, allow_entry_cache_release=False):
+    def _guard(self, *, allow_entry_cache_release=False, allow_gather_cache_release=False):
         remaining = sum(
             item["extra_bytes"]
             for item in self.plan
@@ -181,15 +183,20 @@ class WeightResidency:
         try:
             free = _free_memory(self.device)
             if (
-                allow_entry_cache_release
+                (allow_entry_cache_release or allow_gather_cache_release)
                 and free - remaining < self.reserve
                 and _unused_allocator_cache(self.device) > 0
             ):
-                self.receipt["entry_cache_release_attempted"] = True
-                self.receipt["entry_driver_free_before_cache_release"] = free
+                if allow_entry_cache_release:
+                    self.receipt["entry_cache_release_attempted"] = True
+                    self.receipt["entry_driver_free_before_cache_release"] = free
                 _release_unused_cache(self.device)
                 after = _free_memory(self.device)
-                self.receipt["entry_cache_reclaimed_bytes"] = max(0, after - free)
+                if allow_entry_cache_release:
+                    self.receipt["entry_cache_reclaimed_bytes"] = max(0, after - free)
+                else:
+                    self.receipt["gather_cache_release_count"] += 1
+                    self.receipt["gather_cache_reclaimed_bytes"] += max(0, after - free)
                 free = after
             previous = self.receipt["minimum_observed_free_bytes"]
             self.receipt["minimum_observed_free_bytes"] = (
@@ -208,7 +215,7 @@ class WeightResidency:
             )
         state = module._get_fsdp_state()
         if any(group._sharded_state.name == "SHARDED" for group in state._fsdp_param_groups):
-            self._guard()
+            self._guard(allow_gather_cache_release=True)
 
     @contextmanager
     def inference_head(self, head):

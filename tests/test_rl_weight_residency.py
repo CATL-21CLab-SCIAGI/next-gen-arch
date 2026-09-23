@@ -140,6 +140,23 @@ class WeightResidencyTests(unittest.TestCase):
         empty.assert_called_once()
         self.assertEqual(self.model.body.events, [])
 
+    def test_first_gather_reclaims_unused_operator_buffers_without_relaxing_guard(self):
+        memory = {"free": 100 * GIB, "cache": 0}
+
+        def release(device):
+            memory["free"] += memory["cache"]
+            memory["cache"] = 0
+
+        with patch("archlab.rl.weight_residency._free_memory", side_effect=lambda device: memory["free"]), patch("archlab.rl.weight_residency._unused_allocator_cache", side_effect=lambda device: memory["cache"]), patch("archlab.rl.weight_residency._release_unused_cache", side_effect=release) as empty:
+            with retained_fsdp_weights(self.model) as residency:
+                memory.update(free=16 * GIB, cache=40 * GIB)
+                self.model.body(torch.ones(1, 3))
+            self.assertTrue(residency.receipt["cleanup_verified"])
+            self.assertFalse(residency.receipt["entry_cache_release_attempted"])
+            self.assertEqual(residency.receipt["gather_cache_release_count"], 1)
+            self.assertEqual(residency.receipt["gather_cache_reclaimed_bytes"], 40 * GIB)
+            empty.assert_called_once()
+
     def test_gradients_and_unsupported_policy_are_rejected(self):
         self.model.body.weight.grad = torch.ones_like(self.model.body.weight)
         with self.assertRaisesRegex(ValueError, "release all gradients"):
