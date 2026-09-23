@@ -228,6 +228,24 @@ def inplace_native_expert_function(*, checkpoint_activations=False):
     body[-3:] = ast.parse(
         "return _ordered_permutation_sum(output, ordered_positions, validate=False)"
     ).body
+    outputs = [
+        i for i, node in enumerate(body)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "output"
+    ]
+    if len(outputs) != 1 or ast.unparse(body[outputs[0]].value) != (
+        "torch._grouped_mm(torch.cat(activations), down, offs)"
+    ):
+        raise ValueError("native grouped down projection changed")
+    # CatBackward retains input metadata, not the input tensors. Drop the
+    # Python list before allocating the substantially larger down output.
+    i = outputs[0]
+    body[i:i + 1] = ast.parse(
+        "joined = torch.cat(activations)\ndel activations\n"
+        "output = torch._grouped_mm(joined, down, offs)"
+    ).body
     namespace = dict(_native_up_grouped_down.__globals__)
     namespace["_ordered_permutation_sum"] = ordered_permutation_sum
     if checkpoint_activations:
