@@ -185,6 +185,14 @@ def main():
             strategy["checkpoint_inputs"] = install_checkpoint_input_offload(model)
         if args.full_memory_audit:
             from archlab.automodel.deepseek_v41_rl_memory import qualify_replay_memory
+            from archlab.rl.weight_residency import _state_plan
+
+            if rank == 0:
+                loading["fsdp_gather_groups"] = [
+                    {"name": row["name"], "gather_buffer_gib": row["extra_bytes"] / 2**30}
+                    for row in _state_plan(model)
+                ]
+                atomic_write_json(args.output.with_suffix(".layout.json"), loading, allow_nan=False)
 
             model._archlab_rl_policy_version = "synthetic-full-geometry-memory-only"
             optimizer = ShardedAdafactor(
