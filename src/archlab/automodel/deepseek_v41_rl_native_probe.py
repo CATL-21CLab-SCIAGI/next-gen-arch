@@ -15,6 +15,9 @@ def main():
     parser.add_argument('--cache-policy', action='store_true')
     parser.add_argument('--new-tokens', type=int)
     parser.add_argument('--prompt-tokens', type=int)
+    parser.add_argument('--freeze-router', action='store_true')
+    parser.add_argument('--checkpoint-input-offload', action='store_true')
+    parser.add_argument('--loss-normalization', choices=('sequence_sum', 'prompt_token_mean'), default='sequence_sum')
     args = parser.parse_args()
     new_tokens = args.new_tokens if args.new_tokens is not None else (64 if args.cache_policy else 2)
     prompt_tokens = args.prompt_tokens if args.prompt_tokens is not None else (31 if args.cache_policy else 3)
@@ -52,6 +55,11 @@ def main():
             weights=Path(os.environ['ARCHLAB_DEEPSEEK_V41_CHECKPOINT']),
             declared_execution_changes=EXECUTION_CHANGES, resolved_kernel_packages=packages)
         install_rl_head(model)
+        from archlab.automodel.deepseek_v41_rl_model import configure_rl_trainability
+        from archlab.automodel.deepseek_v41_rl_memory import install_checkpoint_input_offload, input_offload_statistics
+        strategy = configure_rl_trainability(model, freeze_router=args.freeze_router)
+        if args.checkpoint_input_offload:
+            strategy['checkpoint_inputs'] = install_checkpoint_input_offload(model)
         cache_equivalence = None
         if args.cache_policy:
             from archlab.optimizers.sharded_adafactor import local_tensor
@@ -81,19 +89,22 @@ def main():
         if not second.receipt['weight_residency']['cleanup_verified']:
             raise AssertionError('native ownership cleanup failed')
         model._archlab_rl_policy_version = common['policy_version']
-        optimizer = ShardedAdafactor(model.parameters(), lr=1e-6)
+        optimizer = ShardedAdafactor((p for p in model.parameters() if p.requires_grad), lr=1e-6)
         audit = policy_gradient_step(model, optimizer, indexers, second,
             torch.tensor([[1., 0., 0., 0.]], device='cuda'), lr=1e-6, group_size=4,
             replay_mode='sampled-prefix', replay_prefixes=min(4, new_tokens), replay_seed=9,
-            audit_only=True, audit=True)
+            audit_only=True, audit=True, loss_normalization=args.loss_normalization)
         if not audit.get('numerical_qualification_passed') or any(optimizer.state.values()):
             raise AssertionError('native gradient qualification failed or updated optimizer')
+        offload_stats = input_offload_statistics(model)
+        if args.checkpoint_input_offload and offload_stats['tensor_copies'] == 0:
+            raise AssertionError('requested checkpoint activation offload was not exercised')
         records = [None] * dist.get_world_size()
         dist.all_gather_object(records, {'rank': rank, 'passed': True, 'audit': audit,
             'residency': second.receipt['weight_residency'], 'cache_equivalence': cache_equivalence,
             'uncached_rollout': first.receipt, 'candidate_rollout': second.receipt,
             'same_sampled_actions': first.generated_ids == second.generated_ids,
-            'peak_allocated_bytes': torch.cuda.max_memory_allocated()})
+            'peak_allocated_bytes': torch.cuda.max_memory_allocated(), 'input_offload': offload_stats})
         if rank == 0:
             if sources != {**source_identity(), 'automodel/deepseek_v41_rl_native_probe.py': sha256_file(__file__)}:
                 raise RuntimeError('probe source changed during qualification')
@@ -101,6 +112,7 @@ def main():
             args.output.write_text(json.dumps({'passed': True, 'world_size': dist.get_world_size(),
                 'scope': 'random tiny native V4.1; EP8/FSDP2; no optimizer update',
                 'variant': args.variant, 'cache_policy': args.cache_policy,
+                'strategy': strategy, 'loss_normalization': args.loss_normalization,
                 'implementation_sha256': sources, 'runtime': loading, 'ranks': records}, indent=2) + '\n')
             print(json.dumps({'passed': True, 'output': str(args.output)}), flush=True)
     finally:

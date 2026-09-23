@@ -120,6 +120,28 @@ def dense_oracle(model, rollout, *, denominator=2):
     return float(loss.detach()), gradients
 
 
+def test_prompt_token_mean_packed_and_all_prefixes_match_dense_gradient():
+    for mode in ('packed', 'sampled-prefix'):
+        torch.manual_seed(981)
+        actor = ToyActor()
+        rollout = make_rollout(actor)
+        rollout.receipt.update(forward_count=2, forward_shapes=[[2, 4], [2, 4]],
+                               pad_token_id=0, eos_token_ids=[4])
+        oracle_actor = copy.deepcopy(actor)
+        expected_loss, expected_gradients = dense_oracle(oracle_actor, rollout, denominator=3)
+        optimizer = RecordingSGD(actor.parameters())
+        metric = policy_gradient_step(actor, optimizer, [actor.selector], rollout,
+            torch.tensor([[1., 0.]]), lr=.001, group_size=2, max_grad_norm=1e6,
+            replay_mode=mode, replay_prefixes=2, loss_normalization='prompt_token_mean')
+        assert abs(metric['policy_loss'] - expected_loss) < 1e-6
+        assert metric['normalization'] == 'global-prompt-mean-of-group-token-means'
+        for observed, expected in zip(optimizer.gradients, expected_gradients):
+            if expected is None:
+                assert observed is None
+            else:
+                torch.testing.assert_close(observed, expected, rtol=1e-5, atol=1e-6)
+
+
 class BatchDependentActor(ToyActor):
     """Model the numerical dependence of compacted expert GEMMs on valid rows."""
 

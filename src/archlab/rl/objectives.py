@@ -113,6 +113,8 @@ def group_relative_policy_loss(
     with the score-function path this is the usual trajectory-level RLOO gradient.
     ``sequence`` averages tokens within each completion, then completions equally
     (a length-normalized variant). ``token`` averages all completion tokens.
+    ``prompt_token_mean`` divides each prompt group's token sum by that group's
+    total completion tokens, then averages prompts equally.
     Token log probabilities and masks must refer to the same next-token positions;
     the caller must shift logits/targets correctly before passing them here.
     KL uses the sampled-token k3 regularizer exp(ref-current)-(ref-current)-1,
@@ -136,8 +138,8 @@ def group_relative_policy_loss(
         raise ValueError("advantages must match prompt/sample shape and device")
     if not bool(torch.isfinite(advantages).all()):
         raise ValueError("advantages must be finite")
-    if normalization not in ("sequence_sum", "sequence", "token"):
-        raise ValueError("normalization must be sequence_sum, sequence or token")
+    if normalization not in ("sequence_sum", "sequence", "token", "prompt_token_mean"):
+        raise ValueError("normalization must be sequence_sum, sequence, token or prompt_token_mean")
     if not math.isfinite(kl_beta) or kl_beta < 0:
         raise ValueError("kl_beta must be finite and nonnegative")
     if kl_beta and reference_logprobs is None:
@@ -173,6 +175,8 @@ def group_relative_policy_loss(
             return masked.sum(dim=-1).mean()
         if normalization == "sequence":
             return (masked.sum(dim=-1) / lengths).mean()
+        if normalization == "prompt_token_mean":
+            return (masked.sum(dim=(-1, -2)) / lengths.sum(dim=-1)).mean()
         return masked.sum() / lengths.sum()
 
     current = scores(logprobs, "logprobs", detach=False)

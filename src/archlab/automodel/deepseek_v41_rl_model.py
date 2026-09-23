@@ -35,6 +35,23 @@ RUNTIME_FIELDS = ("container_image", "packages", "cuda", "nccl", "automodel_comm
                   "expert_fsdp_size", "engram_owners", "moe_precision", "hc_precision")
 
 
+def configure_rl_trainability(model, *, freeze_router=False):
+    """Declare the exact trainable set after parent restoration and before forward."""
+    if type(freeze_router) is not bool:
+        raise ValueError("freeze_router must be boolean")
+    frozen = []
+    for name, parameter in model.named_parameters():
+        freeze = freeze_router and ".ffn.gate." in name
+        parameter.requires_grad_(not freeze)
+        if freeze:
+            frozen.append(name)
+    if freeze_router and not frozen:
+        raise ValueError("router freeze requested but no V4.1 router parameters found")
+    model._archlab_rl_frozen_parameter_names = tuple(sorted(frozen))
+    return {"freeze_router": freeze_router, "frozen_parameter_names": sorted(frozen),
+            "all_other_text_parameters_trainable": True}
+
+
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

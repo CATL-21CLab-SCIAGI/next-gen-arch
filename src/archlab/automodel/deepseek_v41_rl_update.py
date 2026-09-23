@@ -79,7 +79,7 @@ def _pure_policy_forward(model, indexers):
 
 def _validate_rollout(model, rollout, rewards, group_size, lr, head_chunk_size,
                       max_grad_norm, replay_tolerance, audit_only,
-                      replay_mode, replay_prefixes, replay_seed):
+                      replay_mode, replay_prefixes, replay_seed, loss_normalization):
     errors = []
     rank, world = _world()
     try:
@@ -95,6 +95,8 @@ def _validate_rollout(model, rollout, rewards, group_size, lr, head_chunk_size,
             raise ValueError("replay_tolerance must lie in [0,.02]")
         if replay_mode not in ("packed", "sampled-prefix"):
             raise ValueError("replay_mode must be packed or sampled-prefix")
+        if loss_normalization not in ("sequence_sum", "prompt_token_mean"):
+            raise ValueError("unsupported RLOO loss normalization")
         if type(replay_prefixes) is not int or replay_prefixes < 1 or type(replay_seed) is not int:
             raise ValueError("replay_prefixes must be positive and replay_seed an integer")
         if getattr(rollout, "_archlab_rl_consumed", False):
@@ -168,8 +170,10 @@ def _validate_rollout(model, rollout, rewards, group_size, lr, head_chunk_size,
             raise ValueError("prompt tokens differ from the sampling receipt")
         if receipt.get("generated_tokens") != int(mask.sum()):
             raise ValueError("generated token count differs from the sampling receipt")
-        if any(not parameter.requires_grad for parameter in model.parameters()):
-            raise ValueError("the accepted full-actor experiment requires all weights trainable")
+        frozen = {name for name, parameter in model.named_parameters() if not parameter.requires_grad}
+        declared_frozen = set(getattr(model, "_archlab_rl_frozen_parameter_names", ()))
+        if frozen != declared_frozen or any(".ffn.gate." not in name for name in frozen):
+            raise ValueError("trainable parameters differ from the declared all-weights or frozen-router policy")
         for parameter in model.parameters():
             if local_tensor(parameter).device != ids.device:
                 raise ValueError("model and rollouts must share the resident device")
@@ -179,7 +183,7 @@ def _validate_rollout(model, rollout, rewards, group_size, lr, head_chunk_size,
                 for name, parameter in model.named_parameters()]
         configuration = (group_size, lr, head_chunk_size, max_grad_norm, replay_tolerance,
                          bool(audit_only), policy_version, tuple(ids.shape), replay_mode,
-                         replay_prefixes, replay_seed,
+                         replay_prefixes, replay_seed, loss_normalization, tuple(sorted(frozen)),
                          hashlib.sha256(json.dumps(plan).encode()).hexdigest())
     except (AttributeError, TypeError, ValueError, RuntimeError) as error:
         errors.append(str(error))
@@ -282,7 +286,7 @@ def reconstruct_prefix(rollout, step):
 def policy_gradient_step(model, optimizer, indexers, rollout, rewards, *, lr, group_size,
                          head_chunk_size=128, max_grad_norm=1., replay_tolerance=.02,
                          audit=False, audit_only=False, replay_mode="packed",
-                         replay_prefixes=4, replay_seed=0):
+                         replay_prefixes=4, replay_seed=0, loss_normalization="sequence_sum"):
     """Return JSON metrics after one global-trajectory-mean, pure RLOO update.
 
     ``rewards[B,G]`` groups contiguous rows of this rank's rollout. FSDP owns SUM
@@ -312,7 +316,7 @@ def policy_gradient_step(model, optimizer, indexers, rollout, rewards, *, lr, gr
     started = time.perf_counter()
     _validate_rollout(model, rollout, rewards, group_size, lr, head_chunk_size,
                       max_grad_norm, replay_tolerance, audit_only,
-                      replay_mode, replay_prefixes, replay_seed)
+                      replay_mode, replay_prefixes, replay_seed, loss_normalization)
     rank, world = _world()
     device = rollout.input_ids.device
     reward_errors = []
@@ -332,7 +336,8 @@ def policy_gradient_step(model, optimizer, indexers, rollout, rewards, *, lr, gr
     global_sequences, global_tokens = int(totals[0]), int(totals[1])
     mean = float(totals[4] / totals[0])
     metric = {
-        "algorithm": "RLOO", "normalization": "global-trajectory-mean-of-token-sums",
+        "algorithm": "RLOO", "normalization": ("global-trajectory-mean-of-token-sums"
+            if loss_normalization == "sequence_sum" else "global-prompt-mean-of-group-token-means"),
         "policy_version": rollout.receipt["policy_version"], "group_size": group_size,
         "global_sequences": global_sequences, "completion_tokens": global_tokens,
         "global_prompt_groups": int(totals[2]), "nonflat_prompt_groups": int(totals[3]),
@@ -346,7 +351,17 @@ def policy_gradient_step(model, optimizer, indexers, rollout, rewards, *, lr, gr
         "replay_tolerance": replay_tolerance, "replay_verified": False,
         "changed_local_elements": 0, "changed_elements_sum_across_ranks": 0,
         "replay_mode": replay_mode,
+        "frozen_router_tensors": len(getattr(model, "_archlab_rl_frozen_parameter_names", ())),
     }
+    lengths = rollout.response_mask.sum(-1).reshape_as(rewards)
+    token_mass = torch.stack(((advantages.clamp_min(0) * lengths).sum(),
+                             ((-advantages).clamp_min(0) * lengths).sum()))
+    _sum(token_mass)
+    metric.update(positive_token_advantage_mass=float(token_mass[0]),
+                  negative_token_advantage_mass=float(token_mass[1]))
+    coefficients = advantages.flatten() / global_sequences
+    if loss_normalization == "prompt_token_mean":
+        coefficients = (advantages / lengths.sum(-1, keepdim=True) / int(totals[2])).flatten()
 
     if replay_mode == "sampled-prefix":
         generation_steps, selected_times = _prefix_plan(rollout, replay_prefixes, replay_seed,
@@ -411,11 +426,15 @@ def policy_gradient_step(model, optimizer, indexers, rollout, rewards, *, lr, gr
                 if step is None:
                     loss = group_relative_policy_loss(
                         logp.reshape(*rewards.shape, -1), active.reshape(*rewards.shape, -1),
-                        advantages, normalization="sequence_sum",
+                        advantages, normalization=loss_normalization,
                     ).loss * (rewards.numel() / global_sequences)
                 else:
-                    loss = -(logp.squeeze(1) * active.squeeze(1) * advantages.flatten()).sum()
-                    loss = loss * (generation_steps / len(selected_times) / global_sequences)
+                    if loss_normalization == "sequence_sum":
+                        loss = -(logp.squeeze(1) * active.squeeze(1) * advantages.flatten()).sum()
+                        loss = loss * (generation_steps / len(selected_times) / global_sequences)
+                    else:
+                        loss = -(logp.squeeze(1) * active.squeeze(1) * coefficients).sum()
+                        loss = loss * (generation_steps / len(selected_times))
                 _check_collectively([] if bool(torch.isfinite(loss)) else ["nonfinite policy loss"])
                 loss_value += float(_sum(loss.detach().double()))
                 loss.backward()  # Locally inactive times still participate in every collective.
@@ -428,7 +447,7 @@ def policy_gradient_step(model, optimizer, indexers, rollout, rewards, *, lr, gr
 
     # Match the established full-training boundary: inspect the restored sharded
     # parameter objects after FSDP backward, not transient unsharded references.
-    parameters = list(model.named_parameters())
+    parameters = [(name, parameter) for name, parameter in model.named_parameters() if parameter.requires_grad]
     selector_ids = {id(parameter) for indexer in indexers for parameter in indexer.parameters()}
     presence = torch.tensor([parameter.grad is not None for _, parameter in parameters], device=device, dtype=torch.int64)
     _sum(presence)

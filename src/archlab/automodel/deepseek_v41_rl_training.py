@@ -32,6 +32,7 @@ SOURCE_FILES = (
     "rl/rollout.py", "rl/evaluation.py", "rl/rewards.py", "rl/objectives.py",
     "rl/nemotron_data.py", "rl/profiling.py", "rl/weight_residency.py",
     "automodel/deepseek_v41_rl_cache.py",
+    "automodel/deepseek_v41_rl_memory.py", "rl/regularization.py",
     "architectures/simplicial_decode.py",
     "preprocessing/deepseek_v41.py",
 )
@@ -60,11 +61,14 @@ def configure_numerical_precision():
 
 def replay_options(config, *, rollout_step, world, qualification=False):
     """Both actors select the same deterministic global replay-time RNG stream."""
-    return {
+    options = {
         "replay_mode": config["replay_mode"],
         "replay_prefixes": config["replay_prefixes"],
         "replay_seed": config["seed"] + (1000000 if qualification else rollout_step * world),
     }
+    if config.get("loss_normalization", "sequence_sum") != "sequence_sum":
+        options["loss_normalization"] = config["loss_normalization"]
+    return options
 
 
 def digest(value):
@@ -133,6 +137,32 @@ def validate_recipe(config):
     config.setdefault("retain_weights", True)
     config.setdefault("cache_policy", False)
     config.setdefault("weight_reserve_gib", 16)
+    config.setdefault("freeze_router", False)
+    config.setdefault("checkpoint_input_offload", False)
+    config.setdefault("gpu_memory_budget_gib", None)
+    config.setdefault("evaluation_reserve_gib", 0.)
+    config.setdefault("initial_evaluation", True)
+    config.setdefault("qualification_evaluation", True)
+    config.setdefault("loss_normalization", "sequence_sum")
+    from archlab.rl.regularization import DEFAULT_LENGTH_PENALTY, validate_length_penalty
+    config.setdefault("length_penalty", dict(DEFAULT_LENGTH_PENALTY))
+    validate_length_penalty(config["length_penalty"])
+    if any(type(config[key]) is not bool for key in ("freeze_router", "checkpoint_input_offload",
+                                                    "initial_evaluation", "qualification_evaluation")):
+        raise ValueError("router freeze and checkpoint input offload must be boolean")
+    if config["loss_normalization"] not in ("sequence_sum", "prompt_token_mean"):
+        raise ValueError("unsupported declared RL loss normalization")
+    budget = config["gpu_memory_budget_gib"]
+    if budget is not None and (isinstance(budget, bool) or not isinstance(budget, (int, float))
+                               or not math.isfinite(budget) or budget <= 0):
+        raise ValueError("GPU allocator budget must be finite positive GiB")
+    if budget is not None and config["retain_weights"]:
+        raise ValueError("shared-GPU memory-budget runs must reshard gathered weights after forward")
+    reserve = config["evaluation_reserve_gib"]
+    if isinstance(reserve, bool) or not isinstance(reserve, (int, float)) or not math.isfinite(reserve) or reserve < 0:
+        raise ValueError("evaluation reserve must be a finite nonnegative GiB value")
+    if reserve and budget is None:
+        raise ValueError("evaluation reserve requires a hard training allocator budget")
     if type(config['retain_weights']) is not bool or config['weight_reserve_gib'] < 16:
         raise ValueError('Weight residency requires an explicit flag and at least 16 GiB reserve')
     if type(config["cache_policy"]) is not bool or config["cache_policy"] and not config["retain_weights"]:
@@ -300,8 +330,10 @@ def make_contract(config, variant, loading, marker, tokenizer_provenance):
                                       "rev-parse", "HEAD"], text=True).strip()
     return json.loads(json.dumps({
         "format": "archlab-v41-online-rl-v1", "variant": variant, "world_size": 16,
-        "all_text_parameters_unfrozen": True, "cpu_offload": False,
-        "objective": "on-policy-REINFORCE-leave-one-out-sequence-sum-world-mean",
+        "all_text_parameters_unfrozen": not config.get("freeze_router", False), "cpu_offload": False,
+        "objective": ("on-policy-REINFORCE-leave-one-out-sequence-sum-world-mean"
+            if config.get("loss_normalization", "sequence_sum") == "sequence_sum" else
+            "on-policy-REINFORCE-leave-one-out-group-token-mean-prompt-mean"),
         "gradient_estimator": {
             "replay_mode": config["replay_mode"], "replay_prefixes": config["replay_prefixes"],
             "prefix_selection": "uniform-without-replacement-over-global-generation-times",
@@ -365,6 +397,13 @@ def admit_qualification(receipt, contract):
             or receipt.get("kind") != "online-policy-numerical-v1"
             or receipt.get("synthetic_optimizer_updates") != 0):
         raise ValueError("RL numerical qualification is missing, failed, or stale")
+    reserve = contract.get("recipe", {}).get("evaluation_reserve_gib", 0)
+    if reserve:
+        memory = receipt.get("memory_admission", {})
+        if (memory.get("passed") is not True or memory.get("required_evaluation_reserve_gib") != reserve
+                or memory.get("context_limit") != contract["recipe"]["context_limit"]
+                or memory.get("minimum_driver_free_gib", -1) < reserve):
+            raise ValueError("shared-GPU training requires its maximum-context replay memory admission")
     if contract.get("recipe", {}).get("cache_policy", False):
         ranks = receipt.get("ranks", [])
         if (len(ranks) != 16 or sorted(row.get("rank", -1) for row in ranks) != list(range(16))
@@ -465,6 +504,15 @@ def run_qualification(model, optimizer, indexers, encoded, tokenizer, config, co
                                       prompts_per_rank=config["prompts_per_rank"], group_size=config["group_size"])
         version = digest(contract) + ":numerical-qualification"
         model._archlab_rl_policy_version = version
+        memory_admission = None
+        if config.get("evaluation_reserve_gib", 0):
+            from archlab.automodel.deepseek_v41_rl_memory import qualify_replay_memory
+            memory_admission = qualify_replay_memory(model, optimizer, indexers, prompts,
+                config=config, policy_version=version, stops=stops, pad=pad)
+            if rank == 0:
+                atomic_write_json(output / "MEMORY_QUALIFICATION.json", memory_admission, allow_nan=False)
+            if not memory_admission["passed"]:
+                raise RuntimeError("maximum-context replay did not preserve the declared evaluation headroom")
         cache_equivalence = None
         if config.get("cache_policy", False):
             from archlab.automodel.deepseek_v41_rl_cache import qualify_resident_cache
@@ -515,11 +563,14 @@ def run_qualification(model, optimizer, indexers, encoded, tokenizer, config, co
                 or audit.get("replay_verified") is not True
                 or audit.get("gradient_norm_before_clip", 0) <= 0):
             raise RuntimeError("Numerical qualification must never apply synthetic optimizer updates")
-        evaluation, records = evaluate_policy(model, tokenizer, encoded["heldout"], policy_version=version,
-            max_new_tokens=config["max_new_tokens"], context_limit=config["context_limit"],
-            eos_token_ids=stops, pad_token_id=pad, eval_count=config["qualification_eval_count"],
-            local_batch_size=min(config["eval_local_batch_size"], max(1, math.ceil(config["qualification_eval_count"] / world))),
-            seed=config["seed"], **({"cache_policy": True} if config.get("cache_policy", False) else {}))
+        if config.get("qualification_evaluation", True):
+            evaluation, records = evaluate_policy(model, tokenizer, encoded["heldout"], policy_version=version,
+                max_new_tokens=config["max_new_tokens"], context_limit=config["context_limit"],
+                eos_token_ids=stops, pad_token_id=pad, eval_count=config["qualification_eval_count"],
+                local_batch_size=min(config["eval_local_batch_size"], max(1, math.ceil(config["qualification_eval_count"] / world))),
+                seed=config["seed"], **({"cache_policy": True} if config.get("cache_policy", False) else {}))
+        else:
+            evaluation, records = {"skipped": True, "reason": "evaluation-deferred-until-after-training-pilot"}, []
         local = {"rank": rank, "head_oracle": leaf, "policy_gradient_audit": audit,
                  "rollout_artifact": rollout_artifact}
         if cache_equivalence is not None:
@@ -533,6 +584,8 @@ def run_qualification(model, optimizer, indexers, encoded, tokenizer, config, co
                    "full_checkpoint_roundtrip_executed": False,
                    "checkpoint_evidence": "existing full-state writer/reader; bounded critical-state readback at first pilot checkpoint",
                    "ranks": receipts, "heldout_evaluation": evaluation}
+        if memory_admission is not None:
+            receipt["memory_admission"] = memory_admission
         if rank == 0:
             atomic_write_json(output / "QUALIFIED.json", receipt, allow_nan=False)
             atomic_write_json(output / "qualification-evaluation-records.json", records, allow_nan=False)
@@ -737,13 +790,16 @@ def run_training_loop(model, optimizer, indexers, encoded, tokenizer, config, co
         checkpoint_fn(output / "checkpoints" / f"step-{cursor['rollout_step']:06d}",
                       model, optimizer, cursor, contract)
 
-    evaluate()
+    if config.get("initial_evaluation", True):
+        evaluate()
     while cursor["rollout_step"] < step_limit:
         should_stop = any(gather(bool(stop_requested() or (output / "STOP_REQUEST").exists())))
         if should_stop:
             reason = "stop_request"
             break
         began = time.perf_counter()
+        if config.get("gpu_memory_budget_gib") is not None and device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         groups, prompts = rank_groups(encoded["train"], cursor["prompt_cursor"], rank=rank, world=world,
                                       prompts_per_rank=config["prompts_per_rank"], group_size=config["group_size"])
         model._archlab_rl_policy_version = version()
@@ -765,6 +821,11 @@ def run_training_loop(model, optimizer, indexers, encoded, tokenizer, config, co
                 "completion": completion, "verification": asdict(reward),
                 "finish_reason": rollout.finish_reasons[index]})
         rewards = torch.tensor(values, device=device).reshape(len(groups), config["group_size"])
+        length_regularization = {"eligible_groups": 0, "penalized_successes": 0, "total_deduction": 0.}
+        if config.get("length_penalty", {}).get("enabled", False):
+            from archlab.rl.regularization import successful_length_rewards
+            lengths = torch.tensor([len(row) for row in rollout.generated_ids], device=device).reshape_as(rewards)
+            rewards, length_regularization = successful_length_rewards(rewards, lengths, config["length_penalty"])
         update_start = time.perf_counter()
         activity_fn("policy_gradient", **cursor, policy_version=version())
         metrics = update_fn(model, optimizer, indexers, rollout, rewards,
@@ -780,6 +841,14 @@ def run_training_loop(model, optimizer, indexers, encoded, tokenizer, config, co
                   "valid_answers": sum(r["verification"]["canonical_answer"] is not None for r in local_records),
                   "truncated": sum(r["finish_reason"] == "length" for r in local_records),
                   "updated": bool(metrics.get("updated"))}
+        packet.update(training_reward_sum=float(rewards.sum()), **length_regularization)
+        if "mean_policy_entropy_nats" in rollout.receipt:
+            packet.update(policy_entropy_sum=rollout.receipt["mean_policy_entropy_nats"] * count,
+                          eos_probability_sum=rollout.receipt["mean_eos_probability"] * count)
+        if config.get("gpu_memory_budget_gib") is not None and device.type == "cuda":
+            packet.update(gpu_peak_allocated_bytes=torch.cuda.max_memory_allocated(device),
+                          gpu_peak_reserved_bytes=torch.cuda.max_memory_reserved(device),
+                          gpu_driver_free_bytes=torch.cuda.mem_get_info(device)[0])
         totals = gather(packet)
         if len({row["updated"] for row in totals}) != 1:
             raise RuntimeError("Ranks disagree on whether the policy updated")
@@ -806,6 +875,17 @@ def run_training_loop(model, optimizer, indexers, encoded, tokenizer, config, co
                        valid_answer_rate=sum(row["valid_answers"] for row in totals) / completions,
                        truncation_rate=sum(row["truncated"] for row in totals) / completions,
                        completions=completions, measured_mfu=None)
+        metrics.update(training_reward_mean=sum(row["training_reward_sum"] for row in totals) / completions,
+                       length_penalty_eligible_groups=sum(row["eligible_groups"] for row in totals),
+                       length_penalized_successes=sum(row["penalized_successes"] for row in totals),
+                       length_penalty_total_deduction=sum(row["total_deduction"] for row in totals))
+        if "gpu_peak_allocated_bytes" in packet:
+            metrics.update(gpu_peak_allocated_gib=max(row["gpu_peak_allocated_bytes"] for row in totals) / 2**30,
+                           gpu_peak_reserved_gib=max(row["gpu_peak_reserved_bytes"] for row in totals) / 2**30,
+                           gpu_min_driver_free_gib=min(row["gpu_driver_free_bytes"] for row in totals) / 2**30)
+        if "policy_entropy_sum" in packet:
+            metrics.update(mean_policy_entropy_nats=sum(row["policy_entropy_sum"] for row in totals) / generated_count,
+                           mean_eos_probability=sum(row["eos_probability_sum"] for row in totals) / generated_count)
         append_jsonl(output / f"rank-{rank:02d}-rollouts.jsonl", {"rollout_step": cursor["rollout_step"],
             "receipt": rollout.receipt, "records": local_records})
         if rank == 0:
@@ -871,6 +951,8 @@ def main():
     from archlab.preprocessing.deepseek_v41 import DeepSeekV41Renderer
 
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    from archlab.automodel.deepseek_v41_rl_memory import configure_gpu_budget, install_checkpoint_input_offload
+    memory_budget = configure_gpu_budget(config["gpu_memory_budget_gib"])
     torch.set_num_threads(4)
     dist.init_process_group("nccl", timeout=datetime.timedelta(minutes=90),
                             device_id=torch.device("cuda", int(os.environ["LOCAL_RANK"])))
@@ -933,10 +1015,15 @@ def main():
         if marker["cursor"]["step"] != 4537 or marker["cursor"]["supervised_tokens"] != 756364650:
             raise ValueError("RL must start from the selected matched step4537 pair")
         install_rl_head(model)
+        from archlab.automodel.deepseek_v41_rl_model import configure_rl_trainability
+        loading["rl_trainability"] = configure_rl_trainability(model, freeze_router=config["freeze_router"])
+        loading["rl_memory_policy"] = {"allocator": memory_budget,
+            "checkpoint_inputs": (install_checkpoint_input_offload(model) if config["checkpoint_input_offload"]
+                                   else {"enabled": False})}
         model._archlab_rl_retain_weights = config['retain_weights']
         model._archlab_rl_weight_reserve_gib = config['weight_reserve_gib']
         component_gate(config, loading)
-        optimizer = ShardedAdafactor(model.parameters(), lr=config["learning_rate"])
+        optimizer = ShardedAdafactor((p for p in model.parameters() if p.requires_grad), lr=config["learning_rate"])
         contract = make_contract(config, args.variant, loading, marker, provenance)
         if len(set(gather(digest(contract)))) != 1:
             raise ValueError("RL ranks disagree on the immutable experiment contract")

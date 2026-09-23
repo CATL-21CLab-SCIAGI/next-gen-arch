@@ -79,6 +79,8 @@ def test_length_truncation_has_no_invented_stop_and_seed_is_private():
     assert batch.receipt["generated_tokens"] == 16
     assert batch.receipt["cached"] is False
     assert batch.receipt["on_policy_sampling"] is True
+    assert abs(batch.receipt["mean_policy_entropy_nats"] - float(torch.log(torch.tensor(7.)))) < 1e-6
+    assert batch.receipt["mean_eos_probability"] == 0
     assert torch.allclose(batch.policy_log_probs[batch.response_mask], torch.full((16,), -torch.log(torch.tensor(7.)).item()))
 
 

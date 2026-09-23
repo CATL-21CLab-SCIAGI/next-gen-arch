@@ -167,6 +167,8 @@ def sample_rollouts(
     replay_shapes = []
     residency = None
     decode_cache = None
+    entropy_sum = torch.zeros((), device=device, dtype=torch.float64)
+    eos_probability_sum = torch.zeros_like(entropy_sum)
     started = time.perf_counter()
     try:
         model.eval()
@@ -203,6 +205,9 @@ def sample_rollouts(
                 if _maximum(int(not bool(logits.isfinite().all())), device):
                     raise FloatingPointError("nonfinite rollout logits on at least one rank")
                 raw_logp = logits.log_softmax(-1)
+                active_rows = torch.tensor(active, device=device, dtype=torch.bool)
+                entropy_sum += (-(raw_logp.exp() * raw_logp).sum(-1)[active_rows]).double().sum()
+                eos_probability_sum += raw_logp[:, sorted(stops)].exp().sum(-1)[active_rows].double().sum()
                 if temperature == 0:
                     choices = logits.argmax(-1, keepdim=True)
                     selected_behavior = [0.] * len(sequences)
@@ -267,6 +272,8 @@ def sample_rollouts(
         "prompt_group_ids": None if prompt_group_ids is None else list(prompt_group_ids),
         "forward_shapes": forward_shapes, "forward_count": len(forward_shapes),
         "generated_tokens": sum(map(len, generated)), "seconds": time.perf_counter() - started,
+        "mean_policy_entropy_nats": float(entropy_sum) / sum(map(len, generated)),
+        "mean_eos_probability": float(eos_probability_sum) / sum(map(len, generated)),
         "cached": cache_policy,
         "backend": ("resident-model-v41-cache" if cache_policy else
                     "resident-model-full-prefix-retained-weights" if retain else "resident-model-full-prefix"),
