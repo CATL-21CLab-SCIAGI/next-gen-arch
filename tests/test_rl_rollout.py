@@ -115,6 +115,57 @@ def test_temperature_zero_is_greedy_with_actual_policy_scores():
     assert first.receipt["on_policy_sampling"] is False
 
 
+def test_cached_sampling_preserves_scores_stops_and_full_prefix_replay(monkeypatch):
+    from archlab.automodel.deepseek_v41_rl_update import _prefix_plan, reconstruct_prefix
+
+    @contextmanager
+    def retained(actor, minimum_free_gib):
+        @contextmanager
+        def head_context(head):
+            yield head
+        yield SimpleNamespace(inference_head=head_context, receipt={})
+
+    class TokenCache:
+        def __init__(self, actor):
+            self.actor = actor
+
+        def prefill(self, ids):
+            return self.actor.embedding(ids)[:, -1]
+
+        def decode(self, ids):
+            return self.actor.embedding(ids)[:, 0]
+
+    monkeypatch.setattr("archlab.rl.weight_residency.retained_fsdp_weights", retained)
+    monkeypatch.setattr("archlab.automodel.deepseek_v41_rl_cache.V41PolicyCache", TokenCache)
+    model = ToyPolicy(flat=True)
+    with torch.no_grad():
+        model.lm_head.weight.zero_()  # Uniform random EOS creates unequal response lengths.
+    prompts = [[0, 4]] * 4
+    reference = sample(model, prompts, max_new_tokens=8)
+    actual = sample(model, prompts, max_new_tokens=8, cache_policy=True, retain_weights=True)
+    assert actual.generated_ids == reference.generated_ids
+    assert len(set(map(len, actual.generated_ids))) > 1
+    torch.testing.assert_close(actual.policy_log_probs, reference.policy_log_probs, rtol=0, atol=0)
+    steps, _ = _prefix_plan(actual, 4, 42, 8)
+    assert steps == max(map(len, actual.generated_ids))
+    assert actual.receipt["forward_shapes"] == [[4, 2], *[[4, 1]] * (steps - 1)]
+    assert actual.receipt["replay_shapes"] == reference.receipt["forward_shapes"]
+    for step in range(steps):
+        for observed, expected in zip(reconstruct_prefix(actual, step), reconstruct_prefix(reference, step)):
+            torch.testing.assert_close(observed, expected, rtol=0, atol=0)
+    actual.receipt["replay_shapes"][1][1] = 1
+    with pytest.raises(ValueError, match="canvas cannot contain"):
+        _prefix_plan(actual, 4, 42, 8)
+
+
+def test_cache_rejects_ragged_prompts_and_requires_weight_retention():
+    model = ToyPolicy()
+    with pytest.raises(ValueError, match="retained weights"):
+        sample(model, [[0, 4]], cache_policy=True)
+    with pytest.raises(ValueError, match="equal-length"):
+        sample(model, [[0, 4], [0, 0, 4]], cache_policy=True, retain_weights=True)
+
+
 def test_retention_is_scoped_uses_head_callback_and_preserves_sample_math(monkeypatch):
     model = ToyPolicy(flat=True)
     reference = sample(model, [[0, 4], [0, 4]])

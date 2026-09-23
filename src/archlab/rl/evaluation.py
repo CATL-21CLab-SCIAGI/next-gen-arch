@@ -39,6 +39,7 @@ def evaluate_policy(
     eval_count,
     local_batch_size,
     seed,
+    cache_policy=False,
 ):
     """Return ``(global_summary, records)`` for exactly the first eval_count rows.
 
@@ -81,7 +82,7 @@ def evaluate_policy(
                                      "expected_answer": row["expected_answer"]} for row in selected])
         configuration = (prompt_digest, reference_digest, policy_version, eval_count,
                          local_batch_size, max_new_tokens, context_limit,
-                         tuple(sorted(eos_token_ids)), pad_token_id, seed)
+                         tuple(sorted(eos_token_ids)), pad_token_id, seed, cache_policy)
     except (KeyError, TypeError, ValueError) as caught:
         error, configuration = str(caught), None
     packets = _gather((error, configuration))
@@ -110,6 +111,7 @@ def evaluate_policy(
                     max_new_tokens=max_new_tokens, context_limit=context_limit,
                     eos_token_ids=eos_token_ids, pad_token_id=pad_token_id, seed=seed + batch_index,
                     temperature=0., top_p=1.,
+                    cache_policy=cache_policy,
                     prompt_group_ids=[row["problem_id"] if index < eval_count else "__eval_dummy__"
                                       for row, index in zip(rows, indices, strict=True)],
                 )

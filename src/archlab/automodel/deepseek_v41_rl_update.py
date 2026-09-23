@@ -202,12 +202,21 @@ def _prefix_plan(rollout, count, seed, vocabulary_size):
     try:
         receipt = rollout.receipt
         steps = receipt["forward_count"]
-        shapes = receipt["forward_shapes"]
+        shapes = receipt["replay_shapes"] if receipt.get("cached") else receipt["forward_shapes"]
         pad = receipt["pad_token_id"]
         stops = receipt["eos_token_ids"]
         batch, final_canvas = rollout.input_ids.shape
         if type(steps) is not int or steps < 1 or len(shapes) != steps:
             raise ValueError("missing complete global sampling forward history")
+        if receipt.get("cached"):
+            executed = receipt["forward_shapes"]
+            if (receipt.get("backend") != "resident-model-v41-cache"
+                    or receipt.get("replay_inputs") != "equivalent-full-prefix-right-padded"
+                    or len(executed) != steps
+                    or len(set(rollout.prompt_lengths)) != 1
+                    or executed[0] != [batch, rollout.prompt_lengths[0]]
+                    or any(shape != [batch, 1] for shape in executed[1:])):
+                raise ValueError("invalid cached rollout execution or replay history")
         if (type(pad) is not int or not 0 <= pad < vocabulary_size or not stops
                 or any(type(token) is not int or not 0 <= token < vocabulary_size for token in stops)):
             raise ValueError("prefix replay needs recorded padding and stop tokens")
@@ -247,7 +256,9 @@ def reconstruct_prefix(rollout, step):
     Finished rows retain their EOS in the prefix and a valid dummy target keeps
     the vocabulary GEMM's row count equal to sampling. Their loss weight is zero.
     """
-    batch, canvas = rollout.receipt["forward_shapes"][step]
+    shapes = (rollout.receipt["replay_shapes"] if rollout.receipt.get("cached")
+              else rollout.receipt["forward_shapes"])
+    batch, canvas = shapes[step]
     device = rollout.input_ids.device
     pad = rollout.receipt["pad_token_id"]
     inputs = torch.full((batch, canvas), pad, device=device, dtype=torch.long)

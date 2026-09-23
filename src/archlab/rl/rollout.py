@@ -1,9 +1,9 @@
-"""Synchronous, uncached rollouts from the resident distributed training policy.
+"""Synchronous rollouts from the resident distributed training policy.
 
 Each rank owns independent prompt rows. All ranks execute the same number of
 model/head forwards and the same sequence-length bucket, including ranks whose
 rows already ended. This is a correctness-first online sampling primitive, not
-a cached serving engine. Callers supply tokenized native prompts and explicit
+a separate serving engine. Callers supply tokenized native prompts and explicit
 native EOS/turn-end IDs; no conversation template is guessed here.
 """
 
@@ -70,6 +70,7 @@ def sample_rollouts(
     prompt_group_ids: Sequence[str] | None = None,
     device=None,
     retain_weights: bool | None = None,
+    cache_policy: bool = False,
 ):
     """Sample current-policy continuations, returning next-token-aligned targets.
 
@@ -89,6 +90,9 @@ def sample_rollouts(
     False). True keeps existing FSDP-gathered weights for this call only; all
     ownership and policies are restored before returning. This does not add a KV
     cache or change sampling math. An explicit False overrides the model setting.
+    ``cache_policy=True`` selects the inference-only resident V4.1 cache and
+    requires equal-length prompt rows and retained FSDP weights. Its use in
+    production requires separate B300 replay qualification.
     """
     from archlab.automodel.deepseek_v41_live_window import inference_head
 
@@ -105,6 +109,8 @@ def sample_rollouts(
         reserve_gib = getattr(model, "_archlab_rl_weight_reserve_gib", 16.)
         if type(retain) is not bool:
             raise ValueError("retain_weights and its model default must be boolean")
+        if type(cache_policy) is not bool or cache_policy and not retain:
+            raise ValueError("cached rollouts require a boolean flag and retained weights")
         if retain and (not isinstance(reserve_gib, (int, float)) or not math.isfinite(reserve_gib) or reserve_gib < 16):
             raise ValueError("retained-weight reserve must be at least 16 GiB")
         for name, value in (("max_new_tokens", max_new_tokens), ("context_limit", context_limit),
@@ -122,6 +128,8 @@ def sample_rollouts(
             raise ValueError("each rank needs nonempty integer-token prompt rows")
         if any(len(row) + max_new_tokens > context_limit for row in sequences):
             raise ValueError("prompt plus generation budget exceeds context_limit")
+        if cache_policy and len({len(row) for row in sequences}) != 1:
+            raise ValueError("cached rollouts require equal-length local prompt rows")
         stops = set(eos_token_ids)
         if not stops or any(type(t) is not int or t < 0 for t in stops):
             raise ValueError("explicit nonnegative native stop token IDs are required")
@@ -133,7 +141,7 @@ def sample_rollouts(
             raise ValueError("prompt_group_ids must identify every local prompt row")
         configuration = (len(sequences), policy_version, max_new_tokens, context_limit,
                          tuple(sorted(stops)), pad_token_id, seed, temperature, top_p, bucket_multiple,
-                         retain, reserve_gib if retain else None)
+                         retain, reserve_gib if retain else None, cache_policy)
     except (TypeError, ValueError) as caught:
         error = str(caught)
         configuration = None
@@ -156,7 +164,9 @@ def sample_rollouts(
     modes = [(module, module.training) for module in model.modules()]
     generator = torch.Generator(device=device).manual_seed(seed + rank)
     forward_shapes = []
+    replay_shapes = []
     residency = None
+    decode_cache = None
     started = time.perf_counter()
     try:
         model.eval()
@@ -166,14 +176,28 @@ def sample_rollouts(
                 from archlab.rl.weight_residency import retained_fsdp_weights
                 residency = scope.enter_context(retained_fsdp_weights(model, minimum_free_gib=reserve_gib))
             head_context = residency.inference_head if residency is not None else inference_head
-            for _ in range(max_new_tokens):
+            if cache_policy:
+                from archlab.automodel.deepseek_v41_rl_cache import V41PolicyCache
+                decode_cache = V41PolicyCache(model)
+            for generation_step in range(max_new_tokens):
                 if not _maximum(int(any(active)), device):
                     break
                 length = _bucket(_maximum(max(map(len, sequences)), device), bucket_multiple, context_limit)
-                ids, mask = _inputs(sequences, length, pad_token_id, device)
-                hidden = model(input_ids=ids, attention_mask=mask, return_hidden_states=True).hidden_states
-                positions = torch.tensor([len(row) - 1 for row in sequences], device=device)
-                final_hidden = hidden[torch.arange(len(sequences), device=device), positions]
+                if cache_policy:
+                    replay_shapes.append([len(sequences), length])
+                    if generation_step == 0:
+                        prefill_ids, _ = _inputs(sequences, len(sequences[0]), pad_token_id, device)
+                        final_hidden = decode_cache.prefill(prefill_ids)
+                        forward_shapes.append([len(sequences), prefill_ids.shape[1]])
+                    else:
+                        next_ids = torch.tensor(selected, device=device, dtype=torch.long).unsqueeze(1)
+                        final_hidden = decode_cache.decode(next_ids)
+                        forward_shapes.append([len(sequences), 1])
+                else:
+                    ids, mask = _inputs(sequences, length, pad_token_id, device)
+                    hidden = model(input_ids=ids, attention_mask=mask, return_hidden_states=True).hidden_states
+                    positions = torch.tensor([len(row) - 1 for row in sequences], device=device)
+                    final_hidden = hidden[torch.arange(len(sequences), device=device), positions]
                 with head_context(model.lm_head) as head, torch.autocast(device.type, enabled=False):
                     logits = F.linear(final_hidden.float(), head.weight)
                 if _maximum(int(not bool(logits.isfinite().all())), device):
@@ -196,7 +220,8 @@ def sample_rollouts(
                     selected_behavior = behavior_logp.gather(1, choices).squeeze(1).tolist()
                 selected = choices.squeeze(1).tolist()
                 selected_policy = raw_logp.gather(1, choices).squeeze(1).tolist()
-                forward_shapes.append([len(sequences), length])
+                if not cache_policy:
+                    forward_shapes.append([len(sequences), length])
                 for row, token in enumerate(selected):
                     if active[row]:
                         sequences[row].append(token)
@@ -206,9 +231,15 @@ def sample_rollouts(
                         if token in stops:
                             active[row] = False
                             reasons[row] = "stop"
-                del hidden, final_hidden, logits, raw_logp
+                if not cache_policy:
+                    del hidden, final_hidden
+                del logits, raw_logp
                 if temperature:
                     del behavior_logits, behavior_logp
+            # Release cache activations before FSDP reshares weights and before
+            # the subsequent gradient replay allocates full-prefix activations.
+            if cache_policy:
+                del final_hidden, decode_cache
     finally:
         # Restore individually: wrappers may intentionally have mixed train/eval modes.
         for module, training in modes:
@@ -236,10 +267,14 @@ def sample_rollouts(
         "prompt_group_ids": None if prompt_group_ids is None else list(prompt_group_ids),
         "forward_shapes": forward_shapes, "forward_count": len(forward_shapes),
         "generated_tokens": sum(map(len, generated)), "seconds": time.perf_counter() - started,
-        "cached": False,
-        "backend": "resident-model-full-prefix-retained-weights" if retain else "resident-model-full-prefix",
+        "cached": cache_policy,
+        "backend": ("resident-model-v41-cache" if cache_policy else
+                    "resident-model-full-prefix-retained-weights" if retain else "resident-model-full-prefix"),
         "retained_weights": retain,
         "weight_residency": None if residency is None else residency.receipt,
     }
+    if cache_policy:
+        receipt["replay_shapes"] = replay_shapes
+        receipt["replay_inputs"] = "equivalent-full-prefix-right-padded"
     return RolloutBatch(ids, mask, labels, labels != -100, policy, behavior,
                         generated, lengths, reasons, receipt)

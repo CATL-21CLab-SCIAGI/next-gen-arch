@@ -31,6 +31,8 @@ SOURCE_FILES = (
     "automodel/deepseek_v41_full_checkpoint.py", "optimizers/sharded_adafactor.py",
     "rl/rollout.py", "rl/evaluation.py", "rl/rewards.py", "rl/objectives.py",
     "rl/nemotron_data.py", "rl/profiling.py", "rl/weight_residency.py",
+    "automodel/deepseek_v41_rl_cache.py",
+    "architectures/simplicial_decode.py",
     "preprocessing/deepseek_v41.py",
 )
 
@@ -129,9 +131,17 @@ def validate_recipe(config):
         raise ValueError("A fixed integer RL seed is required")
     config.setdefault("replay_tolerance", .02)
     config.setdefault("retain_weights", True)
+    config.setdefault("cache_policy", False)
     config.setdefault("weight_reserve_gib", 16)
     if type(config['retain_weights']) is not bool or config['weight_reserve_gib'] < 16:
         raise ValueError('Weight residency requires an explicit flag and at least 16 GiB reserve')
+    if type(config["cache_policy"]) is not bool or config["cache_policy"] and not config["retain_weights"]:
+        raise ValueError("resident cache requires an explicit boolean flag and retained weights")
+    if config["cache_policy"]:
+        if config["eval_local_batch_size"] != 1:
+            raise ValueError("cached evaluation requires one prompt per rank for uniform local lengths")
+        if config["qualification_max_new_tokens"] < min(512, config["max_new_tokens"]):
+            raise ValueError("cached policy qualification must replay a rollout of at least 512 tokens or the full shorter budget")
     if not 0 < config["replay_tolerance"] <= .02:
         raise ValueError("Replay tolerance may not exceed the reviewed 0.02 nats")
     config.setdefault("replay_mode", "sampled-prefix")
@@ -297,7 +307,8 @@ def make_contract(config, variant, loading, marker, tokenizer_provenance):
             "prefix_selection": "uniform-without-replacement-over-global-generation-times",
             "scale": "global_forward_count/selected_prefix_count",
             "replay_seed": "recipe.seed + rollout_step * world_size; qualification seed + 1000000",
-            "original_sampling_inputs_masks_and_head_batch": True,
+            "original_sampling_inputs_masks_and_head_batch": not config.get("cache_policy", False),
+            "cached_policy_full_prefix_equivalence": config.get("cache_policy", False),
         },
         "numerical_precision": config["numerical_precision"],
         "rollout_weight_residency": {"enabled": config['retain_weights'],
@@ -354,6 +365,11 @@ def admit_qualification(receipt, contract):
             or receipt.get("kind") != "online-policy-numerical-v1"
             or receipt.get("synthetic_optimizer_updates") != 0):
         raise ValueError("RL numerical qualification is missing, failed, or stale")
+    if contract.get("recipe", {}).get("cache_policy", False):
+        ranks = receipt.get("ranks", [])
+        if (len(ranks) != 16 or sorted(row.get("rank", -1) for row in ranks) != list(range(16))
+                or any(row.get("cache_equivalence", {}).get("passed") is not True for row in ranks)):
+            raise ValueError("cached RL requires all sixteen actual actors to pass prefix equivalence")
 
 
 def _snapshot_rng():
@@ -449,6 +465,16 @@ def run_qualification(model, optimizer, indexers, encoded, tokenizer, config, co
                                       prompts_per_rank=config["prompts_per_rank"], group_size=config["group_size"])
         version = digest(contract) + ":numerical-qualification"
         model._archlab_rl_policy_version = version
+        cache_equivalence = None
+        if config.get("cache_policy", False):
+            from archlab.automodel.deepseek_v41_rl_cache import qualify_resident_cache
+            cache_equivalence = qualify_resident_cache(model, prompts, pad_token_id=pad,
+                context_limit=config["context_limit"], tolerance=config["replay_tolerance"],
+                reserve_gib=config["weight_reserve_gib"])
+            atomic_write_json(output / f"rank-{rank:02d}-cache-equivalence.json", cache_equivalence,
+                              allow_nan=False)
+            if not cache_equivalence["passed"]:
+                raise RuntimeError("resident cache disagrees with the actual actor's padded full-prefix policy")
         if config.get("profile_rollouts", False):
             from archlab.rl.profiling import profile_rollout_batches
 
@@ -465,6 +491,7 @@ def run_qualification(model, optimizer, indexers, encoded, tokenizer, config, co
             max_new_tokens=min(config["qualification_max_new_tokens"], config["max_new_tokens"]),
             context_limit=config["context_limit"], eos_token_ids=stops, pad_token_id=pad,
             seed=config["seed"] + 1000000,
+            **({"cache_policy": True} if config.get("cache_policy", False) else {}),
             prompt_group_ids=[row["problem_id"] for row in groups for _ in range(config["group_size"])])
         replay = replay_options(config, rollout_step=0, world=world, qualification=True)
         rollout_artifact = save_qualification_rollout(rollout, output, rank=rank, replay=replay)
@@ -492,9 +519,11 @@ def run_qualification(model, optimizer, indexers, encoded, tokenizer, config, co
             max_new_tokens=config["max_new_tokens"], context_limit=config["context_limit"],
             eos_token_ids=stops, pad_token_id=pad, eval_count=config["qualification_eval_count"],
             local_batch_size=min(config["eval_local_batch_size"], max(1, math.ceil(config["qualification_eval_count"] / world))),
-            seed=config["seed"])
+            seed=config["seed"], **({"cache_policy": True} if config.get("cache_policy", False) else {}))
         local = {"rank": rank, "head_oracle": leaf, "policy_gradient_audit": audit,
                  "rollout_artifact": rollout_artifact}
+        if cache_equivalence is not None:
+            local["cache_equivalence"] = cache_equivalence
         atomic_write_json(output / f"rank-{rank:02d}-qualification.json", local, allow_nan=False)
         receipts = gather(local)
         receipt = {"passed": True, "kind": "online-policy-numerical-v1",
@@ -693,7 +722,8 @@ def run_training_loop(model, optimizer, indexers, encoded, tokenizer, config, co
         summary, records = evaluate_fn(model, tokenizer, encoded["heldout"], policy_version=version(),
             max_new_tokens=config["max_new_tokens"], context_limit=config["context_limit"],
             eos_token_ids=stops, pad_token_id=pad, eval_count=config["eval_count"],
-            local_batch_size=config["eval_local_batch_size"], seed=config["seed"])
+            local_batch_size=config["eval_local_batch_size"], seed=config["seed"],
+            **({"cache_policy": True} if config.get("cache_policy", False) else {}))
         summary.update(rollout_step=cursor["rollout_step"], optimizer_step=cursor["optimizer_step"],
                        update_step=cursor["rollout_step"], step=cursor["rollout_step"],
                        examples=summary["count"])
@@ -721,7 +751,8 @@ def run_training_loop(model, optimizer, indexers, encoded, tokenizer, config, co
         rollout = sample_fn(model, prompts, policy_version=version(), max_new_tokens=config["max_new_tokens"],
             context_limit=config["context_limit"], eos_token_ids=stops, pad_token_id=pad,
             seed=config["seed"] + cursor["rollout_step"] * world, temperature=1., top_p=1.,
-            prompt_group_ids=[row["problem_id"] for row in groups for _ in range(config["group_size"])])
+            prompt_group_ids=[row["problem_id"] for row in groups for _ in range(config["group_size"])],
+            **({"cache_policy": True} if config.get("cache_policy", False) else {}))
         sampling_seconds = time.perf_counter() - began
         local_records, values = [], []
         for index, generated in enumerate(rollout.generated_ids):
