@@ -6,7 +6,9 @@ import pytest
 import torch
 
 from archlab.automodel.deepseek_v41_official_sparse import (
-    _ordered_index_sum, deterministic_sparse_attention, install_official_deterministic_sparse,
+    _ordered_index_sum,
+    deterministic_sparse_attention,
+    install_official_deterministic_sparse,
 )
 
 
@@ -32,13 +34,18 @@ def test_shared_key_reduction_is_repeatable_and_handles_empty_input(device):
 
 
 def test_dispatch_binding_preserves_forward_code_globals_and_parameters():
+    pytest.importorskip("nemo_automodel", reason="requires the pinned container backend")
     from nemo_automodel.components.models.common import BackendConfig
     from nemo_automodel.components.models.deepseek_v41.attention import DeepseekV41Attention
+
     from archlab.automodel.deepseek_v41_official_execution import tiny_official_config
 
     with torch.device("meta"):
-        model = DeepseekV41Attention(tiny_official_config(Path("unused")).text_config, 0,
-                                     BackendConfig(attn="tilelang", linear="torch", rms_norm="torch_fp32"))
+        model = DeepseekV41Attention(
+            tiny_official_config(Path("unused")).text_config,
+            0,
+            BackendConfig(attn="tilelang", linear="torch", rms_norm="torch_fp32"),
+        )
     model.requires_grad_(False)
     original = model.forward.__func__
     dispatcher = original.__globals__["dsv4_sparse_attention"]
@@ -48,8 +55,13 @@ def test_dispatch_binding_preserves_forward_code_globals_and_parameters():
     assert model.forward.__func__.__code__ is original.__code__
     assert model.forward.__func__.__globals__ is not original.__globals__
     assert original.__globals__["dsv4_sparse_attention"] is dispatcher
-    assert model.forward.__func__.__globals__["dsv4_sparse_attention"] is deterministic_sparse_attention
-    assert all(dict(model.named_parameters())[name] is parameter for name, parameter in parameters.items())
+    assert (
+        model.forward.__func__.__globals__["dsv4_sparse_attention"]
+        is deterministic_sparse_attention
+    )
+    assert all(
+        dict(model.named_parameters())[name] is parameter for name, parameter in parameters.items()
+    )
     with pytest.raises(ValueError, match="once"):
         install_official_deterministic_sparse(model)
 
@@ -68,15 +80,20 @@ def test_sparse_native_forward_gradients_and_tail_mask_repeat_exactly():
     results = []
     for fn in (dsv4_sparse_attention, *[deterministic_sparse_attention] * 3):
         x, k = q.clone().requires_grad_(), kv.clone().requires_grad_()
-        y = fn(x, k, sinks, indices, 64 ** -.5, backend="tilelang", reference_rounding=True)
+        y = fn(x, k, sinks, indices, 64**-0.5, backend="tilelang", reference_rounding=True)
         y.backward(cotangent)
         results.append((y.detach(), x.grad, k.grad))
     assert torch.equal(results[0][0], results[1][0])
     for actual, expected in zip(results[1], results[0], strict=True):
         assert actual.isfinite().all()
-        relative = (actual.float() - expected.float()).norm() / expected.float().norm().clamp_min(1e-20)
-        assert relative < .01
+        relative = (actual.float() - expected.float()).norm() / expected.float().norm().clamp_min(
+            1e-20
+        )
+        assert relative < 0.01
     for repeated in results[2:]:
-        assert all(torch.equal(value, expected) for value, expected in zip(repeated, results[1], strict=True))
+        assert all(
+            torch.equal(value, expected)
+            for value, expected in zip(repeated, results[1], strict=True)
+        )
     assert not results[1][0][:, -1].count_nonzero()
     assert not results[1][1][:, -1].count_nonzero()

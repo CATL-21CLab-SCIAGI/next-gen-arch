@@ -54,6 +54,7 @@ dev = [
 
 [project.optional-dependencies]
 cpu = ["torch==2.9.1"]
+tracking = ["mlflow-skinny==3.16.0"]
 eval = [
     "lm-eval==0.4.13",
     "matplotlib>=3.10.0",
@@ -63,19 +64,11 @@ eval = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/archlab"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/archlab/data/parameter-scale-100m-1b-v1-manifest.json" = "src/archlab/data/parameter-scale-100m-1b-v1-manifest.json"
-"src/archlab/data/key-metrics.csv" = "src/archlab/data/key-metrics.csv"
-"src/archlab/data/speedrun-10m-reference.csv" = "src/archlab/data/speedrun-10m-reference.csv"
-"src/archlab/data/backend-10m-comparison.csv" = "src/archlab/data/backend-10m-comparison.csv"
-"src/archlab/data/backend-10m-runs.csv" = "src/archlab/data/backend-10m-runs.csv"
-"src/archlab/data/backend-10m-comparison.json" = "src/archlab/data/backend-10m-comparison.json"
-
 [tool.hatch.build.targets.sdist]
-exclude = [
-    "/.venv",
-    "/dist",
-    "/build",
+only-include = [
+    "src", "tests", "recipes", "docs", ".github",
+    "README.md", "CONTRIBUTING.md", "AGENTS.md", "LICENSE", "NOTICE.md",
+    "CITATION.cff", "SECURITY.md", "pyproject.toml", "uv.lock", "requirements-eval.txt",
 ]
 
 [tool.pytest.ini_options]

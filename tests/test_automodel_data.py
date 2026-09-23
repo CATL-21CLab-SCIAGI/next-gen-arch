@@ -14,7 +14,7 @@ class OnePassDataTests(unittest.TestCase):
             IndexedDatasetBuilder,
         )
 
-        from archlab.automodel.data import OnePassTokenWindows
+        from archlab.automodel.qwen.data import OnePassTokenWindows
 
         prefixes = []
         for part, values in enumerate((torch.arange(13), torch.arange(13, 38))):
@@ -47,8 +47,16 @@ class OnePassDataTests(unittest.TestCase):
                     torch.testing.assert_close(batch["input_ids"], replay["input_ids"])
                     targets.extend(batch["labels"].flatten().tolist())
             self.assertEqual(targets, list(range(1, 33)))
-            self.assertEqual(data.accounting(2, 2), {
-                "source_tokens": 38, "full_microbatches": 2, "consumed_target_tokens": 32,
-                "unused_final_target_tokens": 5, "initial_context_only_tokens": 1, "wrapped_tokens": 0})
+            self.assertEqual(
+                data.accounting(2, 2),
+                {
+                    "source_tokens": 38,
+                    "full_microbatches": 2,
+                    "consumed_target_tokens": 32,
+                    "unused_final_target_tokens": 5,
+                    "initial_context_only_tokens": 1,
+                    "wrapped_tokens": 0,
+                },
+            )
             with self.assertRaises(IndexError):
                 data.batch(2, rank=0, world_size=2, micro_batch=2)

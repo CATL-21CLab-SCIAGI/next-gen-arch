@@ -3,7 +3,9 @@ import json
 
 import pytest
 
-from archlab.automodel.deepseek_v41_official_prefix_probe import prepare_prefix_fixture
+from archlab.automodel.deepseek_v41.qualification.official_prefix_probe import (
+    prepare_prefix_fixture,
+)
 
 
 def _sources(tmp_path):
@@ -13,25 +15,53 @@ def _sources(tmp_path):
     (assets / "inference").mkdir()
     (assets / "inference/model.py").write_text("# unchanged released source\n")
     (assets / "tokenizer.json").write_text("{}")
-    (assets / "inference/config.json").write_text(json.dumps({"n_layers": 40, "compress_ratios": [0, 0, 2, 2]}))
-    (weights / "config.json").write_text(json.dumps({
-        "text_config": {"num_hidden_layers": 40, "compress_ratios": [0, 0, 2, 2], "engram_layer_ids": [1, 14]},
-        "vision_config": {"num_hidden_layers": 32}}))
-    source = {name: "original.safetensors" for name in (
-        "embed.weight", "head.weight", "norm.weight", "layers.0.attn.wq_a.weight",
-        "layers.1.engram.embed.weight", "layers.2.attn.wo_a.weight", "layers.2.attn.wo_a.scale",
-        "layers.3.attn.wq_a.weight", "vision.weight", "mtp.0.weight")}
+    (assets / "inference/config.json").write_text(
+        json.dumps({"n_layers": 40, "compress_ratios": [0, 0, 2, 2]})
+    )
+    (weights / "config.json").write_text(
+        json.dumps(
+            {
+                "text_config": {
+                    "num_hidden_layers": 40,
+                    "compress_ratios": [0, 0, 2, 2],
+                    "engram_layer_ids": [1, 14],
+                },
+                "vision_config": {"num_hidden_layers": 32},
+            }
+        )
+    )
+    source = {
+        name: "original.safetensors"
+        for name in (
+            "embed.weight",
+            "head.weight",
+            "norm.weight",
+            "layers.0.attn.wq_a.weight",
+            "layers.1.engram.embed.weight",
+            "layers.2.attn.wo_a.weight",
+            "layers.2.attn.wo_a.scale",
+            "layers.3.attn.wq_a.weight",
+            "vision.weight",
+            "mtp.0.weight",
+        )
+    }
     raw = json.dumps({"weight_map": source}).encode()
     (weights / "model.safetensors.index.json").write_bytes(raw)
     (weights / "original.safetensors").write_bytes(b"untouched fixture shard")
-    (weights / "ARCHLAB_VERIFIED_COPY.json").write_text(json.dumps(
-        {"source_index_sha256": hashlib.sha256(raw).hexdigest()}))
+    (weights / "ARCHLAB_VERIFIED_COPY.json").write_text(
+        json.dumps({"source_index_sha256": hashlib.sha256(raw).hexdigest()})
+    )
     return assets, weights
 
 
 def test_prefix_fixture_preserves_source_files_and_complete_schedules(tmp_path):
     assets, weights = _sources(tmp_path)
-    before = {path: path.read_bytes() for directory in (assets, weights) for path in directory.rglob("*") if path.is_file()}
+    before = {
+        path: path.read_bytes()
+        for directory in (assets, weights)
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
     output = tmp_path / "prefix"
     report = prepare_prefix_fixture(assets=assets, weights=weights, output=output)
     selected = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
@@ -68,7 +98,8 @@ def test_prefix_rejects_changed_original_verification(tmp_path):
 def test_observers_preserve_native_forward_and_remove_method_wrappers():
     import torch
     from torch import nn
-    from archlab.automodel.deepseek_v41_official_prefix_probe import capture_prefix
+
+    from archlab.automodel.deepseek_v41.qualification.official_prefix_probe import capture_prefix
 
     class Attention(nn.Module):
         def __init__(self):
@@ -104,7 +135,11 @@ def test_observers_preserve_native_forward_and_remove_method_wrappers():
 
         def hc_mixes(self, x):
             coefficients = torch.ones(*x.shape[:-1])
-            return coefficients, coefficients, coefficients.unsqueeze(-1).expand(*coefficients.shape, 4)
+            return (
+                coefficients,
+                coefficients,
+                coefficients.unsqueeze(-1).expand(*coefficients.shape, 4),
+            )
 
         def hc_pre(self, x, mix):
             return (x * mix.unsqueeze(-1)).mean(2)

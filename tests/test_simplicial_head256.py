@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from archlab.benchmarks.simplicial_attention import correctness_case
+from archlab.qualification.simplicial_attention import correctness_case
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "requires an unused GPU in the frozen container")

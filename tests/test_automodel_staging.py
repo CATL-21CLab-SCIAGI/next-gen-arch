@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from archlab.automodel.stage_checkpoint import stage_checkpoint
+from archlab.automodel.qwen.stage_checkpoint import stage_checkpoint
 
 
 def test_verified_copy_preserves_source_and_rejects_overwrite(tmp_path):
@@ -10,7 +10,9 @@ def test_verified_copy_preserves_source_and_rejects_overwrite(tmp_path):
     source.mkdir()
     (source / "weights.safetensors").write_bytes(b"test artifact, not a real tensor file")
     (source / "config.json").write_text('{"example": true}')
-    (source / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"w": "weights.safetensors"}}))
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "weights.safetensors"}})
+    )
     original = {p.name: p.read_bytes() for p in source.iterdir()}
     target = tmp_path / "cache"
     record = stage_checkpoint(source, target, workers=2)
@@ -40,7 +42,9 @@ def test_resume_repairs_only_known_unfinished_copy(tmp_path):
     source.mkdir()
     target.mkdir()
     (source / "weights.safetensors").write_bytes(b"complete test bytes")
-    (source / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"w": "weights.safetensors"}}))
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "weights.safetensors"}})
+    )
     (target / "weights.safetensors").write_bytes(b"partial")
     (target / "unrelated").write_bytes(b"preserve me")
     with pytest.raises(ValueError, match="unexpected"):

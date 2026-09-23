@@ -1,6 +1,6 @@
 name: qwen38-pretrained-frozen-additive-simplicial-fineweb-nonzero
 status: nonzero-entry-qualified-full-model-startup-gates-enabled
-entrypoint: archlab.automodel.train
+entrypoint: archlab.automodel.qwen.train
 training:
   world_size: 32
   ep_size: 8

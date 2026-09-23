@@ -9,14 +9,14 @@ problem/answer/identity columns are read from the remaining row groups.
 from __future__ import annotations
 
 import argparse
-from collections import Counter, defaultdict
 import gzip
 import hashlib
 import json
-from pathlib import Path
 import re
 import struct
 import unicodedata
+from collections import Counter, defaultdict
+from pathlib import Path
 
 
 def sha256_file(path: Path) -> str:
@@ -35,7 +35,9 @@ def problem_key(problem: str) -> str:
 
 
 def _json_digest(value) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
 
 
 def _verified_json(path: Path, expected: str | None = None):
@@ -66,12 +68,15 @@ def parquet_identity(path: Path) -> dict:
         footer_sha = hashlib.sha256(stream.read(length + 8)).hexdigest()
     parquet = pq.ParquetFile(path)
     return {
-        "path": str(path.resolve()), "bytes": stat.st_size,
-        "footer_sha256": footer_sha, "full_file_sha256": None,
+        "path": str(path.resolve()),
+        "bytes": stat.st_size,
+        "footer_sha256": footer_sha,
+        "full_file_sha256": None,
         "rows": parquet.metadata.num_rows,
         "row_groups": parquet.metadata.num_row_groups,
-        "row_group_rows": [parquet.metadata.row_group(i).num_rows
-                           for i in range(parquet.metadata.num_row_groups)],
+        "row_group_rows": [
+            parquet.metadata.row_group(i).num_rows for i in range(parquet.metadata.num_row_groups)
+        ],
         "schema_sha256": hashlib.sha256(str(parquet.schema_arrow).encode()).hexdigest(),
     }
 
@@ -92,14 +97,20 @@ def audit_exposure(pilot_paths: list[Path], extra_part_paths: list[Path] = ()) -
         source = Path(pilot["source"])
         ready_path = source / "DATA_READY.json"
         ready, ready_artifact = _verified_json(ready_path, pilot["source_ready_sha256"])
-        if ready["status"] != "complete" or ready["contract_sha256"] != pilot["source_contract_sha256"]:
+        if (
+            ready["status"] != "complete"
+            or ready["contract_sha256"] != pilot["source_contract_sha256"]
+        ):
             raise ValueError("Historical source is incomplete or has changed contract")
         artifacts.append(ready_artifact)
         source_manifest, source_artifact = _verified_json(source / "manifest.json")
         artifacts.append(source_artifact)
         for spec in source_manifest["sources"]:
             name = Path(spec["path"]).name
-            if name in sources and (sources[name]["bytes"], sources[name]["rows"]) != (spec["bytes"], spec["rows"]):
+            if name in sources and (sources[name]["bytes"], sources[name]["rows"]) != (
+                spec["bytes"],
+                spec["rows"],
+            ):
                 raise ValueError(f"Conflicting historical source identities: {name}")
             sources[name] = spec
         ready_parts = {part["id"]: part for part in ready["parts"]}
@@ -129,10 +140,15 @@ def audit_exposure(pilot_paths: list[Path], extra_part_paths: list[Path] = ()) -
                     raise ValueError("Historical window is absent from verified pilot parts")
                 selected_window_hashes.add(window["problem_sha256"])
         artifacts.append({"path": str(window_path.resolve()), "sha256": pilot["windows_sha256"]})
-        pilots.append({"path": str(pilot_path.resolve()), "split": pilot["split"],
-                       "supervised_tokens": pilot["supervised_tokens"],
-                       "selected_conversations": pilot["selected_conversations"],
-                       "referenced_parts": sorted(touched)})
+        pilots.append(
+            {
+                "path": str(pilot_path.resolve()),
+                "split": pilot["split"],
+                "supervised_tokens": pilot["supervised_tokens"],
+                "selected_conversations": pilot["selected_conversations"],
+                "referenced_parts": sorted(touched),
+            }
+        )
     for path in sorted(map(Path, extra_part_paths)):
         part, artifact = _verified_json(path)
         artifacts.append(artifact)
@@ -166,15 +182,27 @@ def audit_exposure(pilot_paths: list[Path], extra_part_paths: list[Path] = ()) -
     if not selected_window_hashes.issubset(hashes):
         raise ValueError("Historical selected problems are missing from sidecar exclusions")
     return {
-        "problem_hashes": hashes, "uuids": uuids, "row_groups": dict(groups),
-        "source_specs": sources, "pilots": pilots, "sidecars": sidecars,
+        "problem_hashes": hashes,
+        "uuids": uuids,
+        "row_groups": dict(groups),
+        "source_specs": sources,
+        "pilots": pilots,
+        "sidecars": sidecars,
         "artifacts": list({item["path"]: item for item in artifacts}.values()),
         "sidecar_rows": sidecar_rows,
     }
 
 
-def select_records(rows, exposure, *, train_size: int, heldout_size: int, seed: int,
-                   canonicalizer, max_problem_chars: int = 6000):
+def select_records(
+    rows,
+    exposure,
+    *,
+    train_size: int,
+    heldout_size: int,
+    seed: int,
+    canonicalizer,
+    max_problem_chars: int = 6000,
+):
     """Deduplicate before splitting; discard conflicting golds and UUID aliases."""
     if min(train_size, heldout_size) < 1:
         raise ValueError("Train and heldout sizes must be positive")
@@ -200,31 +228,52 @@ def select_records(rows, exposure, *, train_size: int, heldout_size: int, seed: 
         if canonical is None:
             counts["unsupported_gold"] += 1
             continue
-        record = {"id": key, "problem_sha256": key, "uuid": uuid,
-                  "prompt": [{"role": "user", "content": problem}],
-                  "expected_answer": expected, "canonical_answer": canonical,
-                  "source": row["_source"]}
+        record = {
+            "id": key,
+            "problem_sha256": key,
+            "uuid": uuid,
+            "prompt": [{"role": "user", "content": problem}],
+            "expected_answer": expected,
+            "canonical_answer": canonical,
+            "source": row["_source"],
+        }
         if key not in records or (record["source"]["parquet"], record["source"]["row"]) < (
-                records[key]["source"]["parquet"], records[key]["source"]["row"]):
+            records[key]["source"]["parquet"],
+            records[key]["source"]["row"],
+        ):
             records[key] = record
-    ambiguous = set().union(*(keys for keys in uuid_keys.values() if len(keys) > 1)) if uuid_keys else set()
+    ambiguous = (
+        set().union(*(keys for keys in uuid_keys.values() if len(keys) > 1)) if uuid_keys else set()
+    )
     # Duplicate texts can also carry several UUIDs; discard if any of those
     # UUIDs appeared with a second text, not just the chosen representative.
-    clean = [record for key, record in records.items()
-             if len(answers[key]) == 1 and key not in ambiguous]
+    clean = [
+        record for key, record in records.items() if len(answers[key]) == 1 and key not in ambiguous
+    ]
     counts["conflicting_or_aliased_problems"] = len(records) - len(clean)
     counts["eligible_unique_problems"] = len(clean)
     clean.sort(key=lambda row: hashlib.sha256(f"rl-nemotron:{seed}:{row['id']}".encode()).digest())
     if len(clean) < train_size + heldout_size:
-        raise ValueError(f"Only {len(clean)} eligible unique problems; need {train_size + heldout_size}; {dict(counts)}")
-    heldout, train = clean[:heldout_size], clean[heldout_size:heldout_size + train_size]
+        raise ValueError(
+            f"Only {len(clean)} eligible unique problems; need {train_size + heldout_size}; {dict(counts)}"
+        )
+    heldout, train = clean[:heldout_size], clean[heldout_size : heldout_size + train_size]
     return train, heldout, dict(counts)
 
 
-def prepare(source_root: Path, output: Path, pilot_paths: list[Path], *,
-            extra_part_paths: list[Path] = (), train_size: int = 8192,
-            heldout_size: int = 512, max_rows: int = 200000, seed: int = 20260922):
+def prepare(
+    source_root: Path,
+    output: Path,
+    pilot_paths: list[Path],
+    *,
+    extra_part_paths: list[Path] = (),
+    train_size: int = 8192,
+    heldout_size: int = 512,
+    max_rows: int = 200000,
+    seed: int = 20260922,
+):
     import pyarrow.parquet as pq
+
     from archlab.rl.rewards import canonical_math_answer
 
     if output.exists():
@@ -248,7 +297,11 @@ def prepare(source_root: Path, output: Path, pilot_paths: list[Path], *,
             if group not in exposure["row_groups"].get(path.name, ()):
                 tasks.append((path, group, offset, length))
             offset += length
-    tasks.sort(key=lambda task: hashlib.sha256(f"rl-nemotron-groups:{seed}:{task[0].name}:{task[1]}".encode()).digest())
+    tasks.sort(
+        key=lambda task: hashlib.sha256(
+            f"rl-nemotron-groups:{seed}:{task[0].name}:{task[1]}".encode()
+        ).digest()
+    )
     if max_rows < train_size + heldout_size:
         raise ValueError("Scan budget cannot fill requested split")
     scan_evidence, scanned = [], 0
@@ -259,20 +312,36 @@ def prepare(source_root: Path, output: Path, pilot_paths: list[Path], *,
             if scanned + length > max_rows:
                 break
             # No messages, solution, metadata traces, or tool outputs are read.
-            selected = pq.ParquetFile(path).read_row_group(
-                group, columns=["problem", "expected_answer", "uuid"], use_threads=False).to_pylist()
+            selected = (
+                pq.ParquetFile(path)
+                .read_row_group(
+                    group, columns=["problem", "expected_answer", "uuid"], use_threads=False
+                )
+                .to_pylist()
+            )
             if len(selected) != length:
                 raise ValueError("Source row count changed")
-            scan_evidence.append({"parquet": path.name, "row_group": group,
-                                  "rows": length, "selected_columns_sha256": _json_digest(selected)})
+            scan_evidence.append(
+                {
+                    "parquet": path.name,
+                    "row_group": group,
+                    "rows": length,
+                    "selected_columns_sha256": _json_digest(selected),
+                }
+            )
             for i, row in enumerate(selected):
                 row["_source"] = {"parquet": path.name, "row_group": group, "row": offset + i}
                 yield row
             scanned += length
 
-    train, heldout, counts = select_records(rows(), exposure, train_size=train_size,
-                                           heldout_size=heldout_size, seed=seed,
-                                           canonicalizer=canonical_math_answer)
+    train, heldout, counts = select_records(
+        rows(),
+        exposure,
+        train_size=train_size,
+        heldout_size=heldout_size,
+        seed=seed,
+        canonicalizer=canonical_math_answer,
+    )
     # Refuse source changes during preparation; footer hashes are explicitly
     # distinguished from full-file hashes and projected-column content hashes.
     for identity, path in zip(identities, parquet_paths, strict=True):
@@ -288,25 +357,49 @@ def prepare(source_root: Path, output: Path, pilot_paths: list[Path], *,
         with path.open("x") as stream:
             for record in records:
                 stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-        files[split] = {"path": str(path.resolve()), "rows": len(records), "sha256": sha256_file(path)}
+        files[split] = {
+            "path": str(path.resolve()),
+            "rows": len(records),
+            "sha256": sha256_file(path),
+        }
     exclusions_path = output / "excluded_problem_ids.json"
-    exclusions_path.write_text(json.dumps({"problem_sha256": sorted(exposure["problem_hashes"]),
-                                           "uuid": sorted(exposure["uuids"])}, sort_keys=True) + "\n")
+    exclusions_path.write_text(
+        json.dumps(
+            {
+                "problem_sha256": sorted(exposure["problem_hashes"]),
+                "uuid": sorted(exposure["uuids"]),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
     manifest = {
-        "format": "archlab-nemotron-unseen-problem-rl-v1", "seed": seed,
-        "status": "candidate_pending_source_shard_interpretation", "training_authorized": False,
+        "format": "archlab-nemotron-unseen-problem-rl-v1",
+        "seed": seed,
+        "status": "candidate_pending_source_shard_interpretation",
+        "training_authorized": False,
         "scope": "Unused prepared row groups and unexposed normalized problems, NOT untouched original Parquet files",
         "exclusion_policy": "All problems/UUIDs in both partitions of every sealed train/eval pilot part, plus explicit smoke parts",
         "normalization": "NFC then whitespace collapse; exact SHA256, no paraphrase deduplication",
         "policy_input": "Only prompt; expected_answer and canonical_answer are reward-only fields",
-        "solution_columns_read": [], "columns_read": ["problem", "expected_answer", "uuid"],
-        "source_root": str(source_root.resolve()), "source_files": identities,
-        "scan_budget_rows": max_rows, "scanned_groups": scan_evidence,
-        "statistics": counts, "files": files, "prior_pilots": exposure["pilots"],
-        "exclusion_sidecars": exposure["sidecars"], "provenance_artifacts": exposure["artifacts"],
+        "solution_columns_read": [],
+        "columns_read": ["problem", "expected_answer", "uuid"],
+        "source_root": str(source_root.resolve()),
+        "source_files": identities,
+        "scan_budget_rows": max_rows,
+        "scanned_groups": scan_evidence,
+        "statistics": counts,
+        "files": files,
+        "prior_pilots": exposure["pilots"],
+        "exclusion_sidecars": exposure["sidecars"],
+        "provenance_artifacts": exposure["artifacts"],
         "excluded_problem_hashes": len(exposure["problem_hashes"]),
-        "excluded_uuids": len(exposure["uuids"]), "excluded_sidecar_rows": exposure["sidecar_rows"],
-        "exclusion_index": {"path": str(exclusions_path.resolve()), "sha256": sha256_file(exclusions_path)},
+        "excluded_uuids": len(exposure["uuids"]),
+        "excluded_sidecar_rows": exposure["sidecar_rows"],
+        "exclusion_index": {
+            "path": str(exclusions_path.resolve()),
+            "sha256": sha256_file(exclusions_path),
+        },
         "implementation_sha256": sha256_file(Path(__file__)),
         "reward_implementation_sha256": reward_sha,
     }
@@ -325,11 +418,26 @@ def main():
     parser.add_argument("--max-rows", type=int, default=200000)
     parser.add_argument("--seed", type=int, default=20260922)
     args = parser.parse_args()
-    result = prepare(args.source_root, args.output, args.prior_pilot,
-                     extra_part_paths=args.extra_excluded_part, train_size=args.train_size,
-                     heldout_size=args.heldout_size, max_rows=args.max_rows, seed=args.seed)
-    print(json.dumps({"statistics": result["statistics"], "files": result["files"],
-                      "excluded_problem_hashes": result["excluded_problem_hashes"]}, indent=2))
+    result = prepare(
+        args.source_root,
+        args.output,
+        args.prior_pilot,
+        extra_part_paths=args.extra_excluded_part,
+        train_size=args.train_size,
+        heldout_size=args.heldout_size,
+        max_rows=args.max_rows,
+        seed=args.seed,
+    )
+    print(
+        json.dumps(
+            {
+                "statistics": result["statistics"],
+                "files": result["files"],
+                "excluded_problem_hashes": result["excluded_problem_hashes"],
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

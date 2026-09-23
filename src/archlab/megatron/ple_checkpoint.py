@@ -10,6 +10,8 @@ from typing import Any
 
 from archlab.architectures.qwen38_flash_next_full import (
     DistributedPLE as ArchitecturePLE,
+)
+from archlab.architectures.qwen38_flash_next_full import (
     OwnerShardedPLEEmbedding as ArchitecturePLEEmbedding,
 )
 

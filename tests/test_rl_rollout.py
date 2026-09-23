@@ -36,9 +36,15 @@ class ToyPolicy(torch.nn.Module):
 
 
 def sample(model, prompts, **kwargs):
-    options = dict(policy_version="checkpoint-sha:123/update:0", max_new_tokens=4,
-                   context_limit=16, eos_token_ids={1}, pad_token_id=2,
-                   seed=23, bucket_multiple=4)
+    options = dict(
+        policy_version="checkpoint-sha:123/update:0",
+        max_new_tokens=4,
+        context_limit=16,
+        eos_token_ids={1},
+        pad_token_id=2,
+        seed=23,
+        bucket_multiple=4,
+    )
     options.update(kwargs)
     return sample_rollouts(model, prompts, **options)
 
@@ -59,7 +65,9 @@ def test_variable_prompts_append_without_gaps_stop_and_align_scores():
     assert torch.count_nonzero(batch.policy_log_probs[~batch.response_mask]) == 0
     dense = model.lm_head(model.embedding(batch.input_ids)).log_softmax(-1)
     selected = dense.gather(-1, batch.labels.clamp_min(0).unsqueeze(-1)).squeeze(-1)
-    torch.testing.assert_close(batch.policy_log_probs[batch.response_mask], selected[batch.response_mask])
+    torch.testing.assert_close(
+        batch.policy_log_probs[batch.response_mask], selected[batch.response_mask]
+    )
     torch.testing.assert_close(batch.policy_log_probs, batch.behavior_log_probs)
     # On the next forward, new tokens immediately occupy old padding positions.
     assert model.calls[1][0][0, :3].tolist() == [0, 3, 1]
@@ -79,15 +87,19 @@ def test_length_truncation_has_no_invented_stop_and_seed_is_private():
     assert batch.receipt["generated_tokens"] == 16
     assert batch.receipt["cached"] is False
     assert batch.receipt["on_policy_sampling"] is True
-    assert abs(batch.receipt["mean_policy_entropy_nats"] - float(torch.log(torch.tensor(7.)))) < 1e-6
+    assert (
+        abs(batch.receipt["mean_policy_entropy_nats"] - float(torch.log(torch.tensor(7.0)))) < 1e-6
+    )
     assert batch.receipt["mean_eos_probability"] == 0
-    assert torch.allclose(batch.policy_log_probs[batch.response_mask], torch.full((16,), -torch.log(torch.tensor(7.)).item()))
+    assert torch.allclose(
+        batch.policy_log_probs[batch.response_mask],
+        torch.full((16,), -torch.log(torch.tensor(7.0)).item()),
+    )
 
 
 def test_top_p_and_temperature_record_actual_behavior_probability():
     model = ToyPolicy(flat=True)
-    batch = sample(model, [[0, 4]], temperature=.7,
-                   top_p=.1, max_new_tokens=2)
+    batch = sample(model, [[0, 4]], temperature=0.7, top_p=0.1, max_new_tokens=2)
     assert batch.receipt["on_policy_sampling"] is False
     torch.testing.assert_close(batch.behavior_log_probs[batch.response_mask], torch.zeros(2))
     assert (batch.policy_log_probs[batch.response_mask] < -1.9).all()
@@ -95,9 +107,17 @@ def test_top_p_and_temperature_record_actual_behavior_probability():
 
 def test_invalid_inputs_and_modes_restore_on_failure():
     model = ToyPolicy()
-    for overrides in [dict(max_new_tokens=0), dict(temperature=-1), dict(eos_token_ids=set()),
-                      dict(context_limit=4), dict(prompt_group_ids=[]), dict(policy_version=""),
-                      dict(eos_token_ids={999}), dict(pad_token_id=999), dict(temperature=0, top_p=.8)]:
+    for overrides in [
+        dict(max_new_tokens=0),
+        dict(temperature=-1),
+        dict(eos_token_ids=set()),
+        dict(context_limit=4),
+        dict(prompt_group_ids=[]),
+        dict(policy_version=""),
+        dict(eos_token_ids={999}),
+        dict(pad_token_id=999),
+        dict(temperature=0, top_p=0.8),
+    ]:
         with pytest.raises(ValueError):
             sample(model, [[0, 4]], **overrides)
     with torch.no_grad():
@@ -125,6 +145,7 @@ def test_cached_sampling_preserves_scores_stops_and_full_prefix_replay(monkeypat
         @contextmanager
         def head_context(head):
             yield head
+
         yield SimpleNamespace(inference_head=head_context, receipt={})
 
     class TokenCache:
@@ -151,10 +172,15 @@ def test_cached_sampling_preserves_scores_stops_and_full_prefix_replay(monkeypat
     torch.testing.assert_close(actual.policy_log_probs, reference.policy_log_probs, rtol=0, atol=0)
     steps, _ = _prefix_plan(actual, 4, 42, 8)
     assert steps == max(map(len, actual.generated_ids))
-    assert actual.receipt["forward_shapes"] == [reference.receipt["forward_shapes"][0], *[[4, 1]] * (steps - 1)]
+    assert actual.receipt["forward_shapes"] == [
+        reference.receipt["forward_shapes"][0],
+        *[[4, 1]] * (steps - 1),
+    ]
     assert actual.receipt["replay_shapes"] == reference.receipt["forward_shapes"]
     for step in range(steps):
-        for observed, expected in zip(reconstruct_prefix(actual, step), reconstruct_prefix(reference, step)):
+        for observed, expected in zip(
+            reconstruct_prefix(actual, step), reconstruct_prefix(reference, step)
+        , strict=False):
             torch.testing.assert_close(observed, expected, rtol=0, atol=0)
     actual.receipt["replay_shapes"][1][1] = 1
     with pytest.raises(ValueError, match="canvas cannot contain"):
@@ -196,7 +222,9 @@ def test_retention_is_scoped_uses_head_callback_and_preserves_sample_math(monkey
     actual = sample(model, [[0, 4], [0, 4]])
     assert actual.generated_ids == reference.generated_ids
     torch.testing.assert_close(actual.policy_log_probs, reference.policy_log_probs, rtol=0, atol=0)
-    torch.testing.assert_close(actual.behavior_log_probs, reference.behavior_log_probs, rtol=0, atol=0)
+    torch.testing.assert_close(
+        actual.behavior_log_probs, reference.behavior_log_probs, rtol=0, atol=0
+    )
     assert events == ["enter", *["head"] * actual.receipt["forward_count"], "exit"]
     assert actual.receipt["retained_weights"] is True
     assert actual.receipt["weight_residency"]["cleanup_verified"] is True
@@ -238,10 +266,16 @@ def _distributed_worker(rank, init_file, output_dir):
         model = ToyPolicy()
         prompt = [[0, 3]] if rank == 0 else [[0, 7, 7, 4]]
         batch = sample(model, prompt)
-        Path(output_dir, f"{rank}.json").write_text(json.dumps({
-            "shapes": batch.receipt["forward_shapes"], "generated": batch.generated_ids,
-            "receipt": batch.receipt, "mask": batch.attention_mask.tolist(),
-        }))
+        Path(output_dir, f"{rank}.json").write_text(
+            json.dumps(
+                {
+                    "shapes": batch.receipt["forward_shapes"],
+                    "generated": batch.generated_ids,
+                    "receipt": batch.receipt,
+                    "mask": batch.attention_mask.tolist(),
+                }
+            )
+        )
     finally:
         dist.destroy_process_group()
 

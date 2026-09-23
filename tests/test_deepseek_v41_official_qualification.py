@@ -6,7 +6,9 @@ import pytest
 import torch
 
 from archlab.automodel.deepseek_v41_official_qualification import (
-    batch_digest, tensor_digest, validate_prepared_reference,
+    batch_digest,
+    tensor_digest,
+    validate_prepared_reference,
 )
 
 
@@ -29,19 +31,38 @@ def test_batch_digest_binds_both_tokens_and_supervised_mask():
 
 
 def _prepared():
-    return {"rank": 9, "contexts": [128, 2048, 16384], "head_sha256": "verified-head-bytes",
-            "outputs": {128: {}, 2048: {}, 16384: {}},
-            "reference_loading": {"expert_owner_ranks": list(range(8, 16)),
-                                  "engram_owner_ranks": list(range(32))}}
+    return {
+        "rank": 9,
+        "contexts": [128, 2048, 16384],
+        "head_sha256": "verified-head-bytes",
+        "outputs": {128: {}, 2048: {}, 16384: {}},
+        "reference_loading": {
+            "expert_owner_ranks": list(range(8, 16)),
+            "engram_owner_ranks": list(range(32)),
+        },
+    }
 
 
 def test_reference_requires_same_rank_contexts_and_native_expert_batches():
     prepared = _prepared()
     validate_prepared_reference(prepared, rank=9, contexts=(128, 2048, 16384))
     changes = [
-        {"rank": 8}, {"contexts": [128]}, {"outputs": {128: {}}}, {"head_sha256": ""},
-        {"reference_loading": {"expert_owner_ranks": list(range(32)), "engram_owner_ranks": list(range(32))}},
-        {"reference_loading": {"expert_owner_ranks": list(range(8, 16)), "engram_owner_ranks": list(range(8))}},
+        {"rank": 8},
+        {"contexts": [128]},
+        {"outputs": {128: {}}},
+        {"head_sha256": ""},
+        {
+            "reference_loading": {
+                "expert_owner_ranks": list(range(32)),
+                "engram_owner_ranks": list(range(32)),
+            }
+        },
+        {
+            "reference_loading": {
+                "expert_owner_ranks": list(range(8, 16)),
+                "engram_owner_ranks": list(range(8)),
+            }
+        },
     ]
     for change in changes:
         candidate = deepcopy(prepared)

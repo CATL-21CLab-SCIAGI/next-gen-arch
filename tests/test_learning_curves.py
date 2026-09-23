@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from archlab.benchmarks.learning_curves import read_run, trailing_means
+from archlab.reporting.learning_curves import read_run, trailing_means
 
 
 class CurveTests(unittest.TestCase):
@@ -21,17 +21,30 @@ class CurveTests(unittest.TestCase):
                 return self
 
             def Tags(self):
-                return {"scalars": ["cross entropy", "cross entropy validation", "lm loss validation"]}
+                return {
+                    "scalars": ["cross entropy", "cross entropy validation", "lm loss validation"]
+                }
 
             def Scalars(self, tag):
                 if tag == "cross entropy":
                     # A missing step invalidates the second block, not the first.
-                    return [SimpleNamespace(step=i, value=float(i), wall_time=100 + i)
-                            for i in range(1, 17) if i != 12]
-                return [SimpleNamespace(step=8, value=3.0 if tag == "cross entropy validation" else 99.0)]
+                    return [
+                        SimpleNamespace(step=i, value=float(i), wall_time=100 + i)
+                        for i in range(1, 17)
+                        if i != 12
+                    ]
+                return [
+                    SimpleNamespace(
+                        step=8, value=3.0 if tag == "cross entropy validation" else 99.0
+                    )
+                ]
 
-        with tempfile.TemporaryDirectory() as directory, patch(
-            "tensorboard.backend.event_processing.event_accumulator.EventAccumulator", FakeAccumulator
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
+                "tensorboard.backend.event_processing.event_accumulator.EventAccumulator",
+                FakeAccumulator,
+            ),
         ):
             result = read_run("dense", directory, "cross entropy", 1, 8)
         self.assertEqual(len(result["points"]), 1)

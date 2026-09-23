@@ -16,6 +16,7 @@ from archlab.automodel.deepseek_v41_official_moe import install_official_fp32_mo
 
 def test_variable_gather_backward_never_modifies_an_incoming_gradient(monkeypatch):
     from types import SimpleNamespace
+
     from archlab.automodel.deepseek_v41_official_moe import _NonMutatingVarlenGather
 
     incoming = torch.arange(35, dtype=torch.float32).reshape(5, 7)
@@ -37,18 +38,33 @@ def _official_moe(*, device="cpu", **overrides):
     from nemo_automodel.components.moe.layers import MoE
 
     settings = dict(
-        n_routed_experts=4, n_shared_experts=1, n_activated_experts=2,
-        n_expert_groups=1, n_limited_groups=1, train_gate=False,
-        gate_bias_update_factor=0.0, aux_loss_coeff=0.0,
-        score_func="sqrtsoftplus", route_scale=1.5,
-        dim=32, inter_dim=32, moe_inter_dim=32, norm_topk_prob=True,
-        swiglu_limit=1.0, router_weights_fp32=True,
-        force_e_score_correction_bias=True, dtype=torch.bfloat16,
+        n_routed_experts=4,
+        n_shared_experts=1,
+        n_activated_experts=2,
+        n_expert_groups=1,
+        n_limited_groups=1,
+        train_gate=False,
+        gate_bias_update_factor=0.0,
+        aux_loss_coeff=0.0,
+        score_func="sqrtsoftplus",
+        route_scale=1.5,
+        dim=32,
+        inter_dim=32,
+        moe_inter_dim=32,
+        norm_topk_prob=True,
+        swiglu_limit=1.0,
+        router_weights_fp32=True,
+        force_e_score_correction_bias=True,
+        dtype=torch.bfloat16,
     )
     settings.update(overrides)
     backend = BackendConfig(
-        attn="eager", linear="torch", rms_norm="torch_fp32",
-        experts="torch_mm", dispatcher="torch", gate_precision=None,
+        attn="eager",
+        linear="torch",
+        rms_norm="torch_fp32",
+        experts="torch_mm",
+        dispatcher="torch",
+        gate_precision=None,
         enable_hf_state_dict_adapter=False,
     )
     model = MoE(MoEConfig(**settings), backend).to(device)
@@ -108,15 +124,18 @@ def test_install_rejects_missing_moe_reinstallation_and_unfrozen_base():
     assert "forward" not in model.experts.__dict__
 
 
-@pytest.mark.parametrize("overrides", [
-    {"apply_router_weight_after_down": True},
-    {"expert_bias": True},
-    {"expert_activation": "relu2"},
-    {"swiglu_limit": 0.0},
-    {"n_shared_experts": 0},
-    {"shared_expert_gate": True},
-    {"moe_latent_size": 16},
-])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"apply_router_weight_after_down": True},
+        {"expert_bias": True},
+        {"expert_activation": "relu2"},
+        {"swiglu_limit": 0.0},
+        {"n_shared_experts": 0},
+        {"shared_expert_gate": True},
+        {"moe_latent_size": 16},
+    ],
+)
 def test_unsupported_geometry_rejected_before_any_module_is_modified(overrides):
     model = nn.Sequential(_official_moe(), _official_moe(**overrides))
     with pytest.raises(ValueError, match="MoE geometry"):
@@ -145,7 +164,9 @@ def compute_device(request):
 
 @pytest.mark.parametrize("keyword_input", [False, True])
 def test_routed_fp32_sum_and_shared_add_match_captured_expert_oracle(
-    compute_device, keyword_input, monkeypatch,
+    compute_device,
+    keyword_input,
+    monkeypatch,
 ):
     torch.manual_seed(713)
     model = _official_moe(device=compute_device)
@@ -191,9 +212,7 @@ def test_routed_fp32_sum_and_shared_add_match_captured_expert_oracle(
     expected_routed = torch.zeros_like(x.reshape(-1, 32), dtype=torch.float32)
     cursor = 0
     for expert in range(4):
-        token_ids, _ = torch.where(
-            (captured["indices"] == expert) & (~padding).flatten()[:, None]
-        )
+        token_ids, _ = torch.where((captured["indices"] == expert) & (~padding).flatten()[:, None])
         assert token_ids.numel() == captured["expert_counts"][expert]
         for token in token_ids.tolist():
             expected_routed[token] += captured["expert_outputs"][cursor].float()
@@ -202,11 +221,13 @@ def test_routed_fp32_sum_and_shared_add_match_captured_expert_oracle(
     torch.testing.assert_close(captured["routed"], expected_routed, rtol=0, atol=0)
     expected = (expected_routed + captured["shared"].float()).to(x.dtype).reshape_as(x)
     torch.testing.assert_close(output, expected, rtol=0, atol=0)
-    prematurely_rounded = (
-        expected_routed.to(x.dtype) + captured["shared"]
-    ).reshape_as(x)
-    assert not torch.equal(output, prematurely_rounded), "fixture must expose the previous BF16 subtotal rounding"
-    torch.testing.assert_close(output[padding], captured["shared"].reshape_as(x)[padding], rtol=0, atol=0)
+    prematurely_rounded = (expected_routed.to(x.dtype) + captured["shared"]).reshape_as(x)
+    assert not torch.equal(output, prematurely_rounded), (
+        "fixture must expose the previous BF16 subtotal rounding"
+    )
+    torch.testing.assert_close(
+        output[padding], captured["shared"].reshape_as(x)[padding], rtol=0, atol=0
+    )
 
 
 def _explicit_moe(model, x, padding):
@@ -214,7 +235,11 @@ def _explicit_moe(model, x, padding):
     flat = x.reshape(-1, model.dim)
     config = model.experts.config
     scores = torch.sqrt(F.softplus(F.linear(flat, model.gate.weight).float()))
-    indices = (scores + model.gate.e_score_correction_bias).topk(config.n_activated_experts, dim=-1).indices
+    indices = (
+        (scores + model.gate.e_score_correction_bias)
+        .topk(config.n_activated_experts, dim=-1)
+        .indices
+    )
     weights = scores.gather(1, indices)
     weights = weights / (weights.sum(-1, keepdim=True) + 1e-20) * config.route_scale
     routed = torch.zeros_like(flat, dtype=torch.float32)
@@ -233,8 +258,13 @@ def _explicit_moe(model, x, padding):
         routed = routed.index_add(0, token_ids, expert_output.float())
     shared = model.shared_experts
     gate = F.linear(flat, shared.gate_proj.weight).float().clamp(max=config.swiglu_limit)
-    up = F.linear(flat, shared.up_proj.weight).float().clamp(
-        min=-config.swiglu_limit, max=config.swiglu_limit,
+    up = (
+        F.linear(flat, shared.up_proj.weight)
+        .float()
+        .clamp(
+            min=-config.swiglu_limit,
+            max=config.swiglu_limit,
+        )
     )
     shared_output = F.linear((F.silu(gate) * up).to(x.dtype), shared.down_proj.weight)
     return (routed + shared_output.float()).to(x.dtype).reshape_as(x)
@@ -261,7 +291,9 @@ def test_input_gradient_matches_native_equations_with_frozen_weights(compute_dev
     # Individual and grouped GEMMs may round differently, especially their
     # BF16 gradient accumulation. Bound aggregate error relative to the oracle.
     for value, reference in ((actual, expected), (x.grad, reference_x.grad)):
-        relative_l2 = (value.detach().float() - reference.detach().float()).norm() / reference.detach().float().norm()
+        relative_l2 = (
+            value.detach().float() - reference.detach().float()
+        ).norm() / reference.detach().float().norm()
         assert float(relative_l2) < 0.01, float(relative_l2)
     _assert_unchanged(model, parameters, values, state)
 
@@ -277,7 +309,10 @@ def _uneven_ep_worker(rank, directory):
     reference = _official_moe()
     reference.load_state_dict(model.state_dict(), strict=True)
     dist.init_process_group(
-        "gloo", init_method=f"file://{directory}/rendezvous", rank=rank, world_size=2,
+        "gloo",
+        init_method=f"file://{directory}/rendezvous",
+        rank=rank,
+        world_size=2,
         timeout=timedelta(seconds=60),
     )
     try:
@@ -288,7 +323,9 @@ def _uneven_ep_worker(rank, directory):
             setattr(model.experts, name, nn.Parameter(sharded, requires_grad=False))
         parameters = dict(model.named_parameters())
         install_official_fp32_moe(model)
-        assert all(dict(model.named_parameters())[name] is value for name, value in parameters.items())
+        assert all(
+            dict(model.named_parameters())[name] is value for name, value in parameters.items()
+        )
         captured = {}
         handle = model.experts.register_forward_hook(
             lambda module, args, output: captured.update(routed_dtype=str(output.dtype))
@@ -313,12 +350,22 @@ def _uneven_ep_worker(rank, directory):
             ("output_relative_l2", actual, expected),
             ("input_gradient_relative_l2", x.grad, reference_x.grad),
         ):
-            error = float((value.detach().float() - oracle.detach().float()).norm() / oracle.detach().float().norm())
+            error = float(
+                (value.detach().float() - oracle.detach().float()).norm()
+                / oracle.detach().float().norm()
+            )
             errors[name] = error
             assert error < 0.01, (rank, name, error)
-        Path(directory, f"rank-{rank}.json").write_text(json.dumps({
-            "rank": rank, "local_tokens": x.shape[1], "passed": True, **errors,
-        }))
+        Path(directory, f"rank-{rank}.json").write_text(
+            json.dumps(
+                {
+                    "rank": rank,
+                    "local_tokens": x.shape[1],
+                    "passed": True,
+                    **errors,
+                }
+            )
+        )
     finally:
         dist.destroy_process_group()
 
@@ -360,21 +407,30 @@ def test_install_after_one_rank_fsdp_preserves_state_and_input_gradients(tmp_pat
         pytest.skip("requires an isolated one-rank process group")
     torch.cuda.set_device(0)
     model = _official_moe(device="cuda")
-    dist.init_process_group("nccl", init_method=f"file://{tmp_path / 'rendezvous'}", rank=0, world_size=1)
+    dist.init_process_group(
+        "nccl", init_method=f"file://{tmp_path / 'rendezvous'}", rank=0, world_size=1
+    )
     try:
         model = nn.Sequential(model)
         mesh = init_device_mesh("cuda", (1,))
         fully_shard(
-            model, mesh=mesh, reshard_after_forward=False,
+            model,
+            mesh=mesh,
+            reshard_after_forward=False,
             mp_policy=MixedPrecisionPolicy(
-                param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
-                output_dtype=None, cast_forward_inputs=False,
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.float32,
+                output_dtype=None,
+                cast_forward_inputs=False,
             ),
         )
         parameters = dict(model.named_parameters())
         assert all(isinstance(parameter, DTensor) for parameter in parameters.values())
         install_official_fp32_moe(model)
-        assert all(dict(model.named_parameters())[name] is parameter for name, parameter in parameters.items())
+        assert all(
+            dict(model.named_parameters())[name] is parameter
+            for name, parameter in parameters.items()
+        )
         assert all(not parameter.requires_grad for parameter in model.parameters())
         for _ in range(2):
             x = torch.randn(1, 11, 32, device="cuda", dtype=torch.bfloat16, requires_grad=True)

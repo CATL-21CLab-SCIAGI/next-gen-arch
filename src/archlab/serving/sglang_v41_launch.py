@@ -44,7 +44,7 @@ def main():
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
     os.umask(0o077)
-    os.environ["SGLANG_EXTERNAL_MODEL_PACKAGE"] = "archlab.sglang_models"
+    os.environ["SGLANG_EXTERNAL_MODEL_PACKAGE"] = "archlab.serving.sglang"
     os.environ["ARCHLAB_SGLANG_MODEL_SHA256"] = args.model_source_sha256
     os.environ["SGLANG_DEFAULT_THINKING"] = "1"
     os.environ["SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE"] = "0"
@@ -80,7 +80,7 @@ def main():
     if actual != args.model_source_sha256:
         raise ValueError("runtime model implementation fingerprint differs")
     resolved, _ = ModelRegistry.resolve_model_cls(["DeepseekV4ForCausalLM"])
-    if resolved.__module__ != "archlab.sglang_models.deepseek_v41":
+    if resolved.__module__ != "archlab.serving.sglang.deepseek_v41":
         raise ValueError("the external full-checkpoint implementation was not registered")
     server_args = prepare_server_args(server_arguments(
         args.model, metadata["variant"], args.host, args.port))

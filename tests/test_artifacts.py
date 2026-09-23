@@ -21,7 +21,7 @@ def test_streaming_file_hash_preserves_bytes(tmp_path, chunk):
 @pytest.mark.parametrize("ascii_only", [False, True])
 def test_atomic_json_preserves_legacy_encoding(tmp_path, ascii_only):
     path = tmp_path / "nested" / "metadata.json"
-    payload = {"中文": [1, .5, "é"], "a": None}
+    payload = {"中文": [1, 0.5, "é"], "a": None}
     atomic_write_json(path, payload, ensure_ascii=ascii_only)
     expected = json.dumps(payload, ensure_ascii=ascii_only, indent=2, sort_keys=True) + "\n"
     assert path.read_bytes() == expected.encode("utf-8")
@@ -41,8 +41,8 @@ LEGACY_WRITER_POLICIES = [
     ("archlab.tracking.mlflow_sync", False),
     ("archlab.tracking.mlflow_checkpoints", False),
     ("archlab.tracking.rl_mlflow", False),
-    ("archlab.reporting.checkpoint_retention", True),
-    ("archlab.reporting.v41_matched_checkpoint_watch", True),
+    ("archlab.storage.checkpoint_retention", True),
+    ("archlab.tracking.v41_matched_checkpoint_watch", True),
 ]
 
 
@@ -94,7 +94,11 @@ def test_failed_write_leaves_previous_file_and_cleans_temp(tmp_path, monkeypatch
 def test_concurrent_writers_publish_complete_json(tmp_path):
     path = tmp_path / "state.json"
     with ThreadPoolExecutor(max_workers=8) as pool:
-        list(pool.map(lambda i: atomic_write_json(path, {"index": i, "content": str(i) * 1000}), range(32)))
+        list(
+            pool.map(
+                lambda i: atomic_write_json(path, {"index": i, "content": str(i) * 1000}), range(32)
+            )
+        )
     value = json.loads(path.read_text())
     assert value["content"] == str(value["index"]) * 1000
     assert list(tmp_path.iterdir()) == [path]
@@ -106,7 +110,11 @@ def test_unicode_identity_dialects_remain_distinct_and_unchanged():
     from archlab.provenance import stable_json_sha256
 
     payload = {"文本": "数学"}
-    escaped = hashlib.sha256(json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    utf8 = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    escaped = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    utf8 = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     assert piqa_hash(payload) == trainer_hash(payload) == escaped
     assert stable_json_sha256(payload) == utf8 != escaped

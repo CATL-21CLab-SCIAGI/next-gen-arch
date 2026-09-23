@@ -16,7 +16,8 @@ from torch.nn import functional as F
 from archlab.artifacts import atomic_write_json
 from archlab.automodel.deepseek_v41_official_execution import official_core_hashes
 from archlab.automodel.deepseek_v41_official_reference import (
-    build_matching_precision_reference, reference_hidden,
+    build_matching_precision_reference,
+    reference_hidden,
 )
 from archlab.automodel.deepseek_v41_official_training import frozen_head_unsharded
 from archlab.automodel.deepseek_v41_training import emit
@@ -47,10 +48,14 @@ def _compare_block_samples(expected, actual):
 
     if expected.keys() != actual.keys():
         raise ValueError("official and reference traces cover different blocks")
-    return [{"layer_0based": index,
-             "streams": _compare_tensors(expected[index][0], actual[index][0]),
-             "pre_mix": _compare_tensors(expected[index][1], actual[index][1])}
-            for index in expected]
+    return [
+        {
+            "layer_0based": index,
+            "streams": _compare_tensors(expected[index][0], actual[index][0]),
+            "pre_mix": _compare_tensors(expected[index][1], actual[index][1]),
+        }
+        for index in expected
+    ]
 
 
 def _collective_finite(tensor, label):
@@ -67,7 +72,9 @@ def compare_hidden(reference, actual, labels, head, *, chunk_size=128):
     totals = torch.zeros(7, dtype=torch.float64, device="cuda")
     for first in range(0, actual.shape[1], chunk_size):
         last = first + chunk_size
-        ref_logits = F.linear(reference[:, first:last].to(device="cuda", dtype=torch.float32), head.weight)
+        ref_logits = F.linear(
+            reference[:, first:last].to(device="cuda", dtype=torch.float32), head.weight
+        )
         logits = F.linear(actual[:, first:last].to(device="cuda", dtype=torch.float32), head.weight)
         targets = labels[:, first:last]
         valid = targets != -100
@@ -85,11 +92,16 @@ def compare_hidden(reference, actual, labels, head, *, chunk_size=128):
     if count < 1:
         raise ValueError("parity window contains no supervised target")
     reference_loss, loss = (totals[:2] / count).tolist()
-    result = {"reference_loss": reference_loss, "loss": loss, "delta_loss": loss - reference_loss,
-              "relative_logits_error": float((totals[2] / totals[3]).sqrt()),
-              "native_to_candidate_kl": float(totals[4] / labels.numel()),
-              "argmax_agreement": float(totals[5] / labels.numel()), "supervised_targets": count}
-    result["passed"] = result["native_to_candidate_kl"] < .02 and abs(result["delta_loss"]) < .05
+    result = {
+        "reference_loss": reference_loss,
+        "loss": loss,
+        "delta_loss": loss - reference_loss,
+        "relative_logits_error": float((totals[2] / totals[3]).sqrt()),
+        "native_to_candidate_kl": float(totals[4] / labels.numel()),
+        "argmax_agreement": float(totals[5] / labels.numel()),
+        "supervised_targets": count,
+    }
+    result["passed"] = result["native_to_candidate_kl"] < 0.02 and abs(result["delta_loss"]) < 0.05
     return result
 
 
@@ -107,16 +119,24 @@ def batch_digest(inputs, labels):
 
 
 def validate_prepared_reference(prepared, *, rank, contexts):
-    if (prepared["rank"] != rank or prepared["contexts"] != list(contexts)
-            or set(prepared["outputs"]) != set(contexts)
-            or prepared["reference_loading"]["expert_owner_ranks"] != list(range(rank // 8 * 8, rank // 8 * 8 + 8))
-            or prepared["reference_loading"]["engram_owner_ranks"] != list(range(32))
-            or not prepared["head_sha256"]):
-        raise ValueError("reference must cover this rank and all contexts with matching EP8/Engram32 ownership")
+    if (
+        prepared["rank"] != rank
+        or prepared["contexts"] != list(contexts)
+        or set(prepared["outputs"]) != set(contexts)
+        or prepared["reference_loading"]["expert_owner_ranks"]
+        != list(range(rank // 8 * 8, rank // 8 * 8 + 8))
+        or prepared["reference_loading"]["engram_owner_ranks"] != list(range(32))
+        or not prepared["head_sha256"]
+    ):
+        raise ValueError(
+            "reference must cover this rank and all contexts with matching EP8/Engram32 ownership"
+        )
 
 
 @torch.no_grad()
-def prepare_official_reference(*, assets, weights, pilot, output: Path, contexts=(128, 2048, 16384)):
+def prepare_official_reference(
+    *, assets, weights, pilot, output: Path, contexts=(128, 2048, 16384)
+):
     """Run the independent EP8 oracle before allocating the official backbone.
 
     Matching expert owners also matches the native per-expert GEMM batch shapes.
@@ -137,25 +157,44 @@ def prepare_official_reference(*, assets, weights, pilot, output: Path, contexts
     reference = native = None
     try:
         reference, native, loading = build_matching_precision_reference(
-            assets=assets, weights=weights, expert_group=group,
-            engram_group=dist.group.WORLD, context=max(contexts))
+            assets=assets,
+            weights=weights,
+            expert_group=group,
+            engram_group=dist.group.WORLD,
+            context=max(contexts),
+        )
         prepared["reference_loading"] = loading
         prepared["head_sha256"] = tensor_digest(native.head.weight)
         receipt = {key: value for key, value in prepared.items() if key != "outputs"}
         receipt["tests"] = []
         for context in contexts:
-            inputs, labels, _ = pilot.batch(rank, device="cuda", smoke_context=context, pad_to_full=True)
+            inputs, labels, _ = pilot.batch(
+                rank, device="cuda", smoke_context=context, pad_to_full=True
+            )
             with _block_samples(native.layers, context) as samples:
                 hidden = reference_hidden(native, inputs)
             _collective_finite(hidden, f"reference hidden at context {context}")
             identity = batch_digest(inputs, labels)
-            prepared["outputs"][context] = {"hidden": hidden.cpu().clone(), "blocks": samples,
-                                           "batch_sha256": identity}
-            receipt["tests"].append({"context": context, "finite": True, "batch_sha256": identity,
-                                      "hidden_sha256": tensor_digest(hidden)})
+            prepared["outputs"][context] = {
+                "hidden": hidden.cpu().clone(),
+                "blocks": samples,
+                "batch_sha256": identity,
+            }
+            receipt["tests"].append(
+                {
+                    "context": context,
+                    "finite": True,
+                    "batch_sha256": identity,
+                    "hidden_sha256": tensor_digest(hidden),
+                }
+            )
             atomic_write_json(output / f"reference-rank{rank}.json", receipt, allow_nan=False)
-            emit("official_native_reference_complete", context=context, hidden_shape=list(hidden.shape),
-                 local_allocated_gib=torch.cuda.memory_allocated() / 2**30)
+            emit(
+                "official_native_reference_complete",
+                context=context,
+                hidden_shape=list(hidden.shape),
+                local_allocated_gib=torch.cuda.memory_allocated() / 2**30,
+            )
             del hidden, inputs, labels
     finally:
         if reference is not None:
@@ -170,34 +209,47 @@ def prepare_official_reference(*, assets, weights, pilot, output: Path, contexts
 
 
 @torch.no_grad()
-def qualify_official_forward(model, setup, *, pilot, output: Path, prepared_reference,
-                             contexts=(128, 2048, 16384)):
+def qualify_official_forward(
+    model, setup, *, pilot, output: Path, prepared_reference, contexts=(128, 2048, 16384)
+):
     """Compare all ranks with the independently prepared matching-EP8 oracle."""
     rank = dist.get_rank()
     validate_prepared_reference(prepared_reference, rank=rank, contexts=contexts)
     output.mkdir(parents=True, exist_ok=True)
     model.eval()
-    report = {"kind": "official-v41-matched-precision-forward", "rank": rank,
-              "passed": False, "implementation_sha256": official_core_hashes(), "tests": [],
-              "reference_compute": "decoded-bf16-dense-experts-native-kv-index-rounding",
-              "reference_loading": prepared_reference["reference_loading"],
-              "reference_lifetime": "EP8-oracle-before-official-backbone-allocation",
-              "reference_head_sha256": prepared_reference["head_sha256"],
-              "thresholds": {"mean_kl": .02, "absolute_ce_delta": .05}}
+    report = {
+        "kind": "official-v41-matched-precision-forward",
+        "rank": rank,
+        "passed": False,
+        "implementation_sha256": official_core_hashes(),
+        "tests": [],
+        "reference_compute": "decoded-bf16-dense-experts-native-kv-index-rounding",
+        "reference_loading": prepared_reference["reference_loading"],
+        "reference_lifetime": "EP8-oracle-before-official-backbone-allocation",
+        "reference_head_sha256": prepared_reference["head_sha256"],
+        "thresholds": {"mean_kl": 0.02, "absolute_ce_delta": 0.05},
+    }
     baseline = None
     for context in contexts:
-        inputs, labels, _ = pilot.batch(rank, device="cuda", smoke_context=context, pad_to_full=True)
+        inputs, labels, _ = pilot.batch(
+            rank, device="cuda", smoke_context=context, pad_to_full=True
+        )
         expected = prepared_reference["outputs"][context]
         if batch_digest(inputs, labels) != expected["batch_sha256"]:
-            raise ValueError("official and reference must use the exact same input and supervised labels")
+            raise ValueError(
+                "official and reference must use the exact same input and supervised labels"
+            )
         with _block_samples(model.model.layers.values(), context) as samples:
             hidden = model(input_ids=inputs, return_hidden_states=True).hidden_states
         _collective_finite(hidden, f"official hidden at context {context}")
         emit("official_forward_complete", context=context, hidden_shape=list(hidden.shape))
         with frozen_head_unsharded(model.lm_head) as head:
             if context == contexts[0]:
-                decision = torch.tensor(int(tensor_digest(head.weight) == prepared_reference["head_sha256"]),
-                                        device="cuda", dtype=torch.int32)
+                decision = torch.tensor(
+                    int(tensor_digest(head.weight) == prepared_reference["head_sha256"]),
+                    device="cuda",
+                    dtype=torch.int32,
+                )
                 dist.all_reduce(decision, op=dist.ReduceOp.MIN)
                 if not decision.item():
                     raise ValueError("official and reference output-head weights differ")
@@ -206,15 +258,19 @@ def qualify_official_forward(model, setup, *, pilot, output: Path, prepared_refe
         metric["sampled_block_comparisons"] = _compare_block_samples(expected["blocks"], samples)
         report["tests"].append(metric)
         atomic_write_json(output / f"rank{rank}.json", report, allow_nan=False)
-        emit("official_reference_comparison", **{k: v for k, v in metric.items()
-                                                  if k != "sampled_block_comparisons"})
+        emit(
+            "official_reference_comparison",
+            **{k: v for k, v in metric.items() if k != "sampled_block_comparisons"},
+        )
         if context == 128:
             baseline = hidden.cpu().clone()
         del hidden, inputs, labels
         context_passed = torch.tensor(int(metric["passed"]), device="cuda", dtype=torch.int32)
         dist.all_reduce(context_passed, op=dist.ReduceOp.MIN)
         if not context_passed.item():
-            raise ValueError(f"official forward parity failed at {context}; preserving early traces")
+            raise ValueError(
+                f"official forward parity failed at {context}; preserving early traces"
+            )
     report["passed"] = True
     atomic_write_json(output / f"rank{rank}.json", report, allow_nan=False)
     torch.cuda.empty_cache()

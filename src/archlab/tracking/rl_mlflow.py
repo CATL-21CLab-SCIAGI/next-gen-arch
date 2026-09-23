@@ -10,10 +10,7 @@ Nothing changes system DNS, trainer state, or a parent supervised-training run.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-from datetime import datetime, timezone
 import fcntl
-from functools import partial
 import hashlib
 import ipaddress
 import json
@@ -21,6 +18,9 @@ import math
 import re
 import socket
 import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -52,18 +52,24 @@ def _step(row):
 def train_values(row):
     """Whitelist RL metrics; absent KL is not fabricated as zero."""
     aliases = {
-        "reward_mean": "rl/reward_mean", "reward_std": "rl/reward_std",
-        "policy_loss": "rl/policy_loss", "valid_answer_rate": "rl/valid_answer_rate",
+        "reward_mean": "rl/reward_mean",
+        "reward_std": "rl/reward_std",
+        "policy_loss": "rl/policy_loss",
+        "valid_answer_rate": "rl/valid_answer_rate",
         "truncation_rate": "rl/truncation_rate",
-        "nonflat_prompt_groups": "rl/nonflat_prompt_groups", "optimizer_step": "rl/optimizer_step",
-        "update_skipped": "rl/update_skipped", "skip_update": "rl/update_skipped",
+        "nonflat_prompt_groups": "rl/nonflat_prompt_groups",
+        "optimizer_step": "rl/optimizer_step",
+        "update_skipped": "rl/update_skipped",
+        "skip_update": "rl/update_skipped",
         "replay_max_abs_error": "numerical/replay_max_abs_error",
         "replay_mean_abs_error": "numerical/replay_mean_abs_error",
         "rollout_tokens_per_second": "perf/rollout_tokens_per_second",
         "generated_tokens_per_second": "perf/generated_tokens_per_second",
         "iteration_seconds": "perf/iteration_seconds",
-        "update_seconds": "perf/update_seconds", "rollout_seconds": "perf/rollout_seconds",
-        "gradient_norm": "optim/gradient_norm", "learning_rate": "optim/learning_rate",
+        "update_seconds": "perf/update_seconds",
+        "rollout_seconds": "perf/rollout_seconds",
+        "gradient_norm": "optim/gradient_norm",
+        "learning_rate": "optim/learning_rate",
     }
     values = {}
     for source, target in aliases.items():
@@ -83,7 +89,9 @@ def train_values(row):
         seconds = values.get("perf/rollout_seconds", 0)
         if seconds <= 0:
             raise ValueError("rollout throughput requires a positive rollout_seconds")
-        values["perf/rollout_tokens_per_second"] = _scalar(row["rollout_tokens"], "rollout_tokens") / seconds
+        values["perf/rollout_tokens_per_second"] = (
+            _scalar(row["rollout_tokens"], "rollout_tokens") / seconds
+        )
     for key in ("rl/valid_answer_rate", "rl/update_skipped", "rl/truncation_rate"):
         if key in values and not 0 <= values[key] <= 1:
             raise ValueError(f"{key} must lie in [0,1]")
@@ -125,8 +133,13 @@ def profile_values(profile):
     if profile.get("format") != "archlab-rl-rollout-throughput-v1":
         raise ValueError("unrecognized rollout profile format")
     values = {}
-    for name in ("batch4_over_batch1_throughput_ratio", "prompt_tokens", "max_new_tokens",
-                 "world_size", "retained_weights"):
+    for name in (
+        "batch4_over_batch1_throughput_ratio",
+        "prompt_tokens",
+        "max_new_tokens",
+        "world_size",
+        "retained_weights",
+    ):
         if profile.get(name) is not None:
             values["profile/" + name] = _scalar(profile[name], name)
     seen = set()
@@ -135,8 +148,13 @@ def profile_values(profile):
         if type(size) is not int or not 1 <= size <= 1024 or size in seen:
             raise ValueError("profile batch sizes must be distinct positive integers <=1024")
         seen.add(size)
-        for name in ("generated_tokens_per_second", "max_rank_seconds_sum",
-                     "actual_generated_tokens_global", "input_tokens_processed_global", "global_batch_size"):
+        for name in (
+            "generated_tokens_per_second",
+            "max_rank_seconds_sum",
+            "actual_generated_tokens_global",
+            "input_tokens_processed_global",
+            "global_batch_size",
+        ):
             if batch.get(name) is not None:
                 values[f"profile/batch_{size}/{name}"] = _scalar(batch[name], name)
     if not values or any(value < 0 for value in values.values()):
@@ -145,7 +163,9 @@ def profile_values(profile):
 
 
 def _digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
 
 
 def _metadata(spec, contract):
@@ -160,11 +180,14 @@ def _metadata(spec, contract):
     recipe = contract.get("recipe") or {}
     precision = recipe.get("numerical_precision") or {}
     metadata = {
-        "variant": spec["variant"], "phase": "online-rl",
+        "variant": spec["variant"],
+        "phase": "online-rl",
         "architecture": contract.get("architecture", spec.get("architecture", spec["variant"])),
         "source_commit": contract.get("project_commit", contract.get("source_commit")),
         "parent_checkpoint_path": parent.get("path", contract.get("parent_checkpoint_path")),
-        "parent_checkpoint_sha256": parent.get("sha256", parent.get("digest", contract.get("parent_checkpoint_sha256"))),
+        "parent_checkpoint_sha256": parent.get(
+            "sha256", parent.get("digest", contract.get("parent_checkpoint_sha256"))
+        ),
         "data_manifest_path": data.get("path", contract.get("data_manifest_path")),
         "data_manifest_sha256": data.get("sha256", contract.get("data_manifest_sha256")),
         "algorithm": contract.get("algorithm", algorithm.get("algorithm")),
@@ -172,8 +195,16 @@ def _metadata(spec, contract):
         "reward_backend": contract.get("reward_backend", algorithm.get("reward_backend")),
         "metric_timestamp_semantics": "record timestamp if supplied, otherwise stable ingestion origin plus record index",
     }
-    for key in ("max_new_tokens", "context_limit", "seed", "learning_rate", "replay_mode",
-                "replay_prefixes", "retain_weights", "weight_reserve_gib"):
+    for key in (
+        "max_new_tokens",
+        "context_limit",
+        "seed",
+        "learning_rate",
+        "replay_mode",
+        "replay_prefixes",
+        "retain_weights",
+        "weight_reserve_gib",
+    ):
         value = recipe.get(key)
         if value is not None:
             if not isinstance(value, (str, int, float, bool)):
@@ -187,8 +218,11 @@ def _metadata(spec, contract):
             if type(value) is not bool:
                 raise ValueError(f"numerical precision metadata must be boolean: {key}")
             metadata[key] = value
-    return {key: str(value).lower() if type(value) is bool else str(value)
-            for key, value in metadata.items() if value is not None}
+    return {
+        key: str(value).lower() if type(value) is bool else str(value)
+        for key, value in metadata.items()
+        if value is not None
+    }
 
 
 def _blank_cursor():
@@ -202,7 +236,11 @@ class RLMetricSync:
         self.client = client
         self.state_path = Path(state_path)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {"format": "archlab-rl-mlflow-v1", "runs": {}}
+        self.state = (
+            json.loads(self.state_path.read_text())
+            if self.state_path.exists()
+            else {"format": "archlab-rl-mlflow-v1", "runs": {}}
+        )
         if self.state.get("format") != "archlab-rl-mlflow-v1":
             raise ValueError("state belongs to a different synchronizer")
 
@@ -219,26 +257,49 @@ class RLMetricSync:
         local = self.state["runs"].get(spec["id"])
         if local:
             expected = (root, digest, spec["experiment"], spec["variant"])
-            if tuple(local[k] for k in ("source_path", "contract_sha256", "experiment", "variant")) != expected:
+            if (
+                tuple(local[k] for k in ("source_path", "contract_sha256", "experiment", "variant"))
+                != expected
+            ):
                 raise ValueError("immutable RL source contract or identity changed")
             return local
         experiment = self.client.get_experiment_by_name(spec["experiment"])
-        experiment_id = experiment.experiment_id if experiment else self.client.create_experiment(spec["experiment"], tags={"archlab.managed": "true"})
-        matches = self.client.search_runs([experiment_id], filter_string=f"tags.`archlab.rl_source_id` = '{spec['id']}'", max_results=2)
+        experiment_id = (
+            experiment.experiment_id
+            if experiment
+            else self.client.create_experiment(spec["experiment"], tags={"archlab.managed": "true"})
+        )
+        matches = self.client.search_runs(
+            [experiment_id],
+            filter_string=f"tags.`archlab.rl_source_id` = '{spec['id']}'",
+            max_results=2,
+        )
         if len(matches) > 1:
             raise ValueError("duplicate RL source identities in MLflow")
         origin = int(time.time() * 1000)
         tags = {
-            "archlab.rl_source_id": spec["id"], "archlab.phase": "online-rl",
-            "archlab.variant": spec["variant"], "archlab.rl_source_path": root,
-            "archlab.rl_contract_sha256": digest, "archlab.rl_ingestion_origin_ms": str(origin),
+            "archlab.rl_source_id": spec["id"],
+            "archlab.phase": "online-rl",
+            "archlab.variant": spec["variant"],
+            "archlab.rl_source_path": root,
+            "archlab.rl_contract_sha256": digest,
+            "archlab.rl_ingestion_origin_ms": str(origin),
         }
         if spec.get("parent_run_id"):
             tags["archlab.parent_run_id"] = str(spec["parent_run_id"])
-        run = matches[0] if matches else self.client.create_run(experiment_id, run_name=spec["name"], tags=tags)
+        run = (
+            matches[0]
+            if matches
+            else self.client.create_run(experiment_id, run_name=spec["name"], tags=tags)
+        )
         remote = run.data.tags
         if matches:
-            for key in ("archlab.phase", "archlab.variant", "archlab.rl_source_path", "archlab.rl_contract_sha256"):
+            for key in (
+                "archlab.phase",
+                "archlab.variant",
+                "archlab.rl_source_path",
+                "archlab.rl_contract_sha256",
+            ):
                 if remote.get(key) != tags[key]:
                     raise ValueError("existing run is not this immutable RL source")
             origin = int(remote["archlab.rl_ingestion_origin_ms"])
@@ -247,13 +308,22 @@ class RLMetricSync:
             marker = remote.get(f"archlab.rl_cursor.{name}")
             streams[name] = json.loads(marker) if marker else _blank_cursor()
         local = {
-            "run_id": run.info.run_id, "experiment_id": experiment_id,
-            "experiment": spec["experiment"], "variant": spec["variant"],
-            "source_path": root, "contract_sha256": digest,
-            "origin_ms": origin, "streams": streams, "recovered": bool(matches),
+            "run_id": run.info.run_id,
+            "experiment_id": experiment_id,
+            "experiment": spec["experiment"],
+            "variant": spec["variant"],
+            "source_path": root,
+            "contract_sha256": digest,
+            "origin_ms": origin,
+            "streams": streams,
+            "recovered": bool(matches),
             "profile": json.loads(remote[_PROFILE_TAG]) if remote.get(_PROFILE_TAG) else None,
         }
-        self.client.log_batch(run.info.run_id, params=[Param(k, v) for k, v in _metadata(spec, contract).items()], tags=[RunTag(k, v) for k, v in tags.items() if k != "archlab.rl_ingestion_origin_ms"])
+        self.client.log_batch(
+            run.info.run_id,
+            params=[Param(k, v) for k, v in _metadata(spec, contract).items()],
+            tags=[RunTag(k, v) for k, v in tags.items() if k != "archlab.rl_ingestion_origin_ms"],
+        )
         self.state["runs"][spec["id"]] = local
         self.save()
         return local
@@ -269,7 +339,13 @@ class RLMetricSync:
         timestamp = row.get("timestamp_ms", local["origin_ms"] + cursor["count"])
         if type(timestamp) is not int or timestamp < 0:
             raise ValueError("timestamp_ms must be a nonnegative integer")
-        pending = {"stream": name, "start": start, "end": end, "sha256": hashlib.sha256(raw).hexdigest(), "timestamp_ms": timestamp}
+        pending = {
+            "stream": name,
+            "start": start,
+            "end": end,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "timestamp_ms": timestamp,
+        }
         recovering = "pending" in local or local.get("recovered", False)
         if "pending" in local and local["pending"] != pending:
             raise ValueError("pending metric record changed before acknowledgement")
@@ -280,15 +356,27 @@ class RLMetricSync:
             missing = []
             for metric in metrics:
                 history = self.client.get_metric_history(local["run_id"], metric.key)
-                if not any(item.step == metric.step and item.timestamp == metric.timestamp and item.value == metric.value for item in history):
+                if not any(
+                    item.step == metric.step
+                    and item.timestamp == metric.timestamp
+                    and item.value == metric.value
+                    for item in history
+                ):
                     missing.append(metric)
             metrics = missing
         if metrics:
             self.client.log_batch(local["run_id"], metrics=metrics, synchronous=True)
-        committed = {"offset": end, "count": cursor["count"] + 1, "prefix_sha256": prefix_digest, "last_step": step}
+        committed = {
+            "offset": end,
+            "count": cursor["count"] + 1,
+            "prefix_sha256": prefix_digest,
+            "last_step": step,
+        }
         tags = [RunTag(f"archlab.rl_cursor.{name}", json.dumps(committed, sort_keys=True))]
         if "policy_version" in row:
-            tags.append(RunTag(f"archlab.rl_last_{name}_policy_version", str(row["policy_version"])))
+            tags.append(
+                RunTag(f"archlab.rl_last_{name}_policy_version", str(row["policy_version"]))
+            )
         # Publish remote cursor only after acknowledged metric writes.
         self.client.log_batch(local["run_id"], tags=tags, synchronous=True)
         local["streams"][name] = committed
@@ -351,7 +439,11 @@ class RLMetricSync:
             return 0
         profile = json.loads(raw)
         values = profile_values(profile)
-        marker = {"sha256": source_sha, "timestamp_ms": local["origin_ms"], "metric_count": len(values)}
+        marker = {
+            "sha256": source_sha,
+            "timestamp_ms": local["origin_ms"],
+            "metric_count": len(values),
+        }
         recovering = bool(local.get("pending_profile") or recovered)
         if local.get("pending_profile") and local["pending_profile"] != marker:
             raise ValueError("pending rollout profile changed before acknowledgement")
@@ -359,17 +451,29 @@ class RLMetricSync:
         self.save()
         metrics = [Metric(key, value, marker["timestamp_ms"], 0) for key, value in values.items()]
         if recovering:
-            metrics = [metric for metric in metrics if not any(
-                previous.step == metric.step and previous.timestamp == metric.timestamp
-                and previous.value == metric.value
-                for previous in self.client.get_metric_history(local["run_id"], metric.key))]
+            metrics = [
+                metric
+                for metric in metrics
+                if not any(
+                    previous.step == metric.step
+                    and previous.timestamp == metric.timestamp
+                    and previous.value == metric.value
+                    for previous in self.client.get_metric_history(local["run_id"], metric.key)
+                )
+            ]
         if metrics:
             self.client.log_batch(local["run_id"], metrics=metrics, synchronous=True)
-        tags = [RunTag(_PROFILE_TAG, json.dumps(marker, sort_keys=True)),
-                RunTag("archlab.rl_profile_scope", "rollout-throughput-profile-not-MFU")]
+        tags = [
+            RunTag(_PROFILE_TAG, json.dumps(marker, sort_keys=True)),
+            RunTag("archlab.rl_profile_scope", "rollout-throughput-profile-not-MFU"),
+        ]
         if type(profile.get("input_token_count_includes_padding")) is bool:
-            tags.append(RunTag("archlab.rl_profile_input_tokens_include_padding",
-                               str(profile["input_token_count_includes_padding"]).lower()))
+            tags.append(
+                RunTag(
+                    "archlab.rl_profile_input_tokens_include_padding",
+                    str(profile["input_token_count_includes_padding"]).lower(),
+                )
+            )
         self.client.log_batch(local["run_id"], tags=tags, synchronous=True)
         local["profile"] = marker
         local.pop("pending_profile", None)
@@ -380,7 +484,12 @@ class RLMetricSync:
         root = Path(spec["path"])
         contract_path = root / "RUN_CONTRACT.json"
         if not contract_path.exists():
-            return {"id": spec["id"], "state": "pending", "new_train_records": 0, "new_eval_records": 0}
+            return {
+                "id": spec["id"],
+                "state": "pending",
+                "new_train_records": 0,
+                "new_eval_records": 0,
+            }
         contract = json.loads(contract_path.read_text())
         local = self.ensure_run(spec, contract)
         profile_recovery = bool(local.get("recovered"))
@@ -392,7 +501,9 @@ class RLMetricSync:
             order.insert(0, pending_stream)
         for name in order:
             counts[name] = self._sync_stream(local, name, root / _STREAMS[name])
-        profile_metrics = self._sync_profile(local, root / "PROFILE.json", recovered=profile_recovery)
+        profile_metrics = self._sync_profile(
+            local, root / "PROFILE.json", recovered=profile_recovery
+        )
         active = sum(cursor["count"] for cursor in local["streams"].values()) > 0
         phase = "tracking" if active else "pending"
         terminal = None
@@ -404,11 +515,21 @@ class RLMetricSync:
             phase, terminal = "stopped", "FINISHED"
         if terminal and local.get("terminal_status") != terminal:
             from mlflow.entities import RunTag
+
             self.client.log_batch(local["run_id"], tags=[RunTag("archlab.rl_state", phase)])
             self.client.set_terminated(local["run_id"], status=terminal)
             local["terminal_status"] = terminal
             self.save()
-        return {"id": spec["id"], "run_id": local["run_id"], "experiment_id": local["experiment_id"], "state": phase, "new_train_records": counts["train"], "new_eval_records": counts["eval"], "new_profile_metrics": profile_metrics, "last_update_step": local["streams"]["train"]["last_step"]}
+        return {
+            "id": spec["id"],
+            "run_id": local["run_id"],
+            "experiment_id": local["experiment_id"],
+            "state": phase,
+            "new_train_records": counts["train"],
+            "new_eval_records": counts["eval"],
+            "new_profile_metrics": profile_metrics,
+            "last_update_step": local["streams"]["train"]["last_step"],
+        }
 
 
 @contextmanager
@@ -449,11 +570,15 @@ def main(argv=None):
         credentials = json.loads(args.credentials.read_text())
         use_browser = args.use_browser_uri or config.get("use_browser_uri", False)
         uri = credentials["browser_uri" if use_browser else "tracking_uri"]
-        with args.state.with_suffix(".lock").open("w") as lock, bootstrap_dns(config.get("bootstrap_dns"), uri):
+        with (
+            args.state.with_suffix(".lock").open("w") as lock,
+            bootstrap_dns(config.get("bootstrap_dns"), uri),
+        ):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             client = configure_client(args.credentials)
             if use_browser:
                 from mlflow import MlflowClient
+
                 client = MlflowClient(tracking_uri=uri)
             sync = RLMetricSync(client, args.state)
             while True:
@@ -465,7 +590,9 @@ def main(argv=None):
                         print(json.dumps(result), flush=True)
                     except Exception as error:
                         # HTTP exception messages may contain headers/tokens: log class only.
-                        summary["errors"].append({"id": spec.get("id"), "type": type(error).__name__})
+                        summary["errors"].append(
+                            {"id": spec.get("id"), "type": type(error).__name__}
+                        )
                 atomic_json(args.state.parent / "RL_SYNC_STATUS.json", summary)
                 if not args.watch:
                     return int(bool(summary["errors"]))

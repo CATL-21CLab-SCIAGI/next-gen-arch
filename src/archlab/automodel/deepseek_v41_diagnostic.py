@@ -59,18 +59,35 @@ def _snapshot(tensor, *, sample_rows=32, chunk_rows=256):
         chunk = value.narrow(axis, first, min(chunk_rows, rows - first)).double()
         finite = chunk.isfinite()
         clean = torch.where(finite, chunk, 0)
-        totals += torch.stack((finite.sum(), chunk.isnan().sum(), chunk.isposinf().sum(),
-                               chunk.isneginf().sum(), clean.sum(), clean.square().sum()))
+        totals += torch.stack(
+            (
+                finite.sum(),
+                chunk.isnan().sum(),
+                chunk.isposinf().sum(),
+                chunk.isneginf().sum(),
+                clean.sum(),
+                clean.square().sum(),
+            )
+        )
         minimum = torch.minimum(minimum, chunk.masked_fill(~finite, torch.inf).amin())
         maximum = torch.maximum(maximum, chunk.masked_fill(~finite, -torch.inf).amax())
     finite, nan, posinf, neginf, total, squared = totals.cpu().tolist()
-    statistics = {"shape": list(value.shape), "dtype": str(value.dtype), "numel": value.numel(),
-                  "finite": int(finite) == value.numel(), "finite_count": int(finite),
-                  "nan_count": int(nan), "positive_inf_count": int(posinf),
-                  "negative_inf_count": int(neginf), "finite_sum": total,
-                  "finite_l2": math.sqrt(squared), "finite_min": float(minimum.cpu()),
-                  "finite_max": float(maximum.cpu()), "sample_axis": axis,
-                  "sample_rows": positions}
+    statistics = {
+        "shape": list(value.shape),
+        "dtype": str(value.dtype),
+        "numel": value.numel(),
+        "finite": int(finite) == value.numel(),
+        "finite_count": int(finite),
+        "nan_count": int(nan),
+        "positive_inf_count": int(posinf),
+        "negative_inf_count": int(neginf),
+        "finite_sum": total,
+        "finite_l2": math.sqrt(squared),
+        "finite_min": float(minimum.cpu()),
+        "finite_max": float(maximum.cpu()),
+        "sample_axis": axis,
+        "sample_rows": positions,
+    }
     return _json_safe(statistics), sample
 
 
@@ -85,22 +102,33 @@ def _compare_tensors(expected, actual, *, chunk_elements=262144):
     squared_error = squared_reference = max_abs = 0.0
     finite_pairs = 0
     for first in range(0, left.numel(), chunk_elements):
-        a, b = left[first:first + chunk_elements].double(), right[first:first + chunk_elements].double()
+        a, b = (
+            left[first : first + chunk_elements].double(),
+            right[first : first + chunk_elements].double(),
+        )
         equal &= torch.equal(a, b)
-        same_nonfinite &= (torch.equal(a.isnan(), b.isnan()) and
-                           torch.equal(a.isposinf(), b.isposinf()) and
-                           torch.equal(a.isneginf(), b.isneginf()))
+        same_nonfinite &= (
+            torch.equal(a.isnan(), b.isnan())
+            and torch.equal(a.isposinf(), b.isposinf())
+            and torch.equal(a.isneginf(), b.isneginf())
+        )
         valid = a.isfinite() & b.isfinite()
         difference = torch.where(valid, b - a, 0)
         squared_error += float(difference.square().sum())
         squared_reference += float(torch.where(valid, a, 0).square().sum())
         max_abs = max(max_abs, float(difference.abs().max()))
         finite_pairs += int(valid.sum())
-    return _json_safe({"same_shape_dtype": True, "equal": equal,
-                       "same_nonfinite_pattern": same_nonfinite,
-                       "finite_pair_count": finite_pairs, "numel": left.numel(),
-                       "finite_pair_max_abs": max_abs,
-                       "finite_pair_relative_l2": math.sqrt(squared_error / max(squared_reference, 1e-40))})
+    return _json_safe(
+        {
+            "same_shape_dtype": True,
+            "equal": equal,
+            "same_nonfinite_pattern": same_nonfinite,
+            "finite_pair_count": finite_pairs,
+            "numel": left.numel(),
+            "finite_pair_max_abs": max_abs,
+            "finite_pair_relative_l2": math.sqrt(squared_error / max(squared_reference, 1e-40)),
+        }
+    )
 
 
 def _observed_modules(model):
@@ -120,15 +148,30 @@ def _observed_modules(model):
     yield "norm", model.norm
 
 
-def _capture(model, forward, *, context, stage, emit, sample_rows, reference=None,
-             divergence_relative_l2=1e-3):
+def _capture(
+    model,
+    forward,
+    *,
+    context,
+    stage,
+    emit,
+    sample_rows,
+    reference=None,
+    divergence_relative_l2=1e-3,
+):
     import torch
 
     captures, handles, final_hidden = {}, [], []
-    outcome = {"context": context, "stage": stage, "first_nonfinite": None,
-               "first_block_nonfinite": None,
-               "first_unequal_sample": None, "first_sampled_divergence": None,
-               "first_block_unequal_sample": None, "first_block_sampled_divergence": None}
+    outcome = {
+        "context": context,
+        "stage": stage,
+        "first_nonfinite": None,
+        "first_block_nonfinite": None,
+        "first_unequal_sample": None,
+        "first_sampled_divergence": None,
+        "first_block_unequal_sample": None,
+        "first_block_sampled_divergence": None,
+    }
 
     def observe(name, tensor):
         statistics, sample = _snapshot(tensor, sample_rows=sample_rows)
@@ -144,12 +187,17 @@ def _capture(model, forward, *, context, stage, emit, sample_rows, reference=Non
             record["sample_comparison"] = comparison
             unequal = not comparison["equal"]
             relative = comparison.get("finite_pair_relative_l2")
-            drift = (not comparison.get("same_nonfinite_pattern", False) or
-                     relative is None or relative > divergence_relative_l2)
-            for condition, key in ((unequal, "first_unequal_sample"),
-                                   (drift, "first_sampled_divergence"),
-                                   (block and unequal, "first_block_unequal_sample"),
-                                   (block and drift, "first_block_sampled_divergence")):
+            drift = (
+                not comparison.get("same_nonfinite_pattern", False)
+                or relative is None
+                or relative > divergence_relative_l2
+            )
+            for condition, key in (
+                (unequal, "first_unequal_sample"),
+                (drift, "first_sampled_divergence"),
+                (block and unequal, "first_block_unequal_sample"),
+                (block and drift, "first_block_sampled_divergence"),
+            ):
                 if condition and outcome[key] is None:
                     outcome[key] = name
         emit("boundary", **record)
@@ -195,28 +243,41 @@ def run(args):
     from archlab.automodel.deepseek_v41_data import MathPilot
     from archlab.automodel.deepseek_v41_execution import build_replica, node_local_expert_group
     from archlab.automodel.deepseek_v41_pytorch import dequantize_base_once, install_pytorch_leaves
-    from archlab.automodel.deepseek_v41_runtime import implementation_hashes, select_container_kernel_packages
+    from archlab.automodel.deepseek_v41_runtime import (
+        implementation_hashes,
+        select_container_kernel_packages,
+    )
 
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     torch.set_num_threads(4)
-    dist.init_process_group("nccl", timeout=datetime.timedelta(minutes=90),
-                            device_id=torch.device("cuda", int(os.environ["LOCAL_RANK"])))
+    dist.init_process_group(
+        "nccl",
+        timeout=datetime.timedelta(minutes=90),
+        device_id=torch.device("cuda", int(os.environ["LOCAL_RANK"])),
+    )
     rank = dist.get_rank()
     if rank == 0:
         args.output.mkdir(parents=True, exist_ok=False)
     dist.barrier()
-    report = {"kind": "full-pretrained-forward-diagnostic", "rank": rank,
-              "training_launched": False, "qualification_receipt": False,
-              "container_image": os.environ.get("NGA_CONTAINER_DIGEST"),
-              "torch": str(torch.__version__), "cuda": torch.version.cuda,
-              "nccl": list(torch.cuda.nccl.version()),
-              "implementation_sha256": implementation_hashes(),
-              "diagnostic_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-              "matmul": {"allow_tf32": torch.backends.cuda.matmul.allow_tf32,
-                         "allow_bf16_reduced_precision_reduction":
-                             torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction},
-              "layer_comparisons": "bounded token-row samples; finite counts/norms cover all elements",
-              "final_hidden_comparisons": "all elements", "tests": []}
+    report = {
+        "kind": "full-pretrained-forward-diagnostic",
+        "rank": rank,
+        "training_launched": False,
+        "qualification_receipt": False,
+        "container_image": os.environ.get("NGA_CONTAINER_DIGEST"),
+        "torch": str(torch.__version__),
+        "cuda": torch.version.cuda,
+        "nccl": list(torch.cuda.nccl.version()),
+        "implementation_sha256": implementation_hashes(),
+        "diagnostic_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "matmul": {
+            "allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+            "allow_bf16_reduced_precision_reduction": torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction,
+        },
+        "layer_comparisons": "bounded token-row samples; finite counts/norms cover all elements",
+        "final_hidden_comparisons": "all elements",
+        "tests": [],
+    }
     stream = (args.output / f"rank{rank}.jsonl").open("x")
 
     def emit(event, **values):
@@ -231,31 +292,47 @@ def run(args):
         emit("construct_and_load_start", weights=str(args.weights))
         group = node_local_expert_group(args.ep_size)
         reference, model, report["load"] = build_replica(
-            assets=args.assets, weights=args.weights, group=group, context=max(args.contexts))
+            assets=args.assets, weights=args.weights, group=group, context=max(args.contexts)
+        )
         data = MathPilot(args.pilot, expected_split="train", expected_budget=1_000_000_000)
         oracles = {}
-        capture_args = {"model": model, "emit": emit, "sample_rows": args.sample_rows,
-                        "divergence_relative_l2": args.divergence_relative_l2}
+        capture_args = {
+            "model": model,
+            "emit": emit,
+            "sample_rows": args.sample_rows,
+            "divergence_relative_l2": args.divergence_relative_l2,
+        }
         for context in sorted(set(args.contexts)):
             inputs, _, _ = data.batch(rank, device="cuda", smoke_context=context, pad_to_full=True)
             first, hidden, original = _capture(
-                forward=lambda: model(inputs), context=context, stage="native_first", **capture_args)
+                forward=lambda inputs=inputs: model(inputs), context=context, stage="native_first", **capture_args
+            )
             repeat, repeated_hidden, repeated = _capture(
-                forward=lambda: model(inputs), context=context, stage="native_repeat",
-                reference=first, **capture_args)
+                forward=lambda inputs=inputs: model(inputs),
+                context=context,
+                stage="native_repeat",
+                reference=first,
+                **capture_args,
+            )
             repeated["full_hidden_comparison"] = _compare_tensors(hidden, repeated_hidden)
             emit("native_repeat_comparison", **repeated)
             report["tests"].extend((original, repeated))
             oracles[context] = first, hidden
             del repeat, repeated_hidden
         report["conversion"] = dequantize_base_once(model)
-        emit("bf16_conversion_complete", converted_modules=report["conversion"]["converted_modules"])
+        emit(
+            "bf16_conversion_complete", converted_modules=report["conversion"]["converted_modules"]
+        )
         install_pytorch_leaves(reference, query_chunk=args.query_chunk, activation_mode="native")
         for context, (first, hidden) in oracles.items():
             inputs, _, _ = data.batch(rank, device="cuda", smoke_context=context, pad_to_full=True)
             candidate, candidate_hidden, outcome = _capture(
-                forward=lambda: training_hidden(reference, model, inputs), context=context,
-                stage="pytorch_native_rounding", reference=first, **capture_args)
+                forward=lambda inputs=inputs: training_hidden(reference, model, inputs),
+                context=context,
+                stage="pytorch_native_rounding",
+                reference=first,
+                **capture_args,
+            )
             outcome["full_hidden_comparison"] = _compare_tensors(hidden, candidate_hidden)
             emit("replacement_comparison", **outcome)
             report["tests"].append(outcome)
@@ -267,7 +344,9 @@ def run(args):
         raise
     finally:
         stream.close()
-        (args.output / f"rank{rank}.json").write_text(json.dumps(_json_safe(report), indent=2, allow_nan=False))
+        (args.output / f"rank{rank}.json").write_text(
+            json.dumps(_json_safe(report), indent=2, allow_nan=False)
+        )
     dist.barrier()
     dist.destroy_process_group()
 

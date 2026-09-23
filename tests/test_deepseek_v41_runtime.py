@@ -1,8 +1,8 @@
 """Verified native imports may share dependencies through fixture symlinks."""
 
 import hashlib
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import ModuleType
 
 import pytest
@@ -53,7 +53,9 @@ def test_native_import_accepts_symlink_identical_loaded_dependencies(reference_p
         sys.modules.pop(name, None)
 
 
-def test_native_import_rejects_distinct_loaded_dependency_path(reference_paths, tmp_path, monkeypatch):
+def test_native_import_rejects_distinct_loaded_dependency_path(
+    reference_paths, tmp_path, monkeypatch
+):
     original, fixture = reference_paths
     other = tmp_path / "other/kernel.py"
     other.parent.mkdir()

@@ -23,29 +23,60 @@ class AutoModelSimplicialTests(unittest.TestCase):
         from archlab.architectures.simplicial_adapter import SimplicialAdapterConfig
 
         text = Qwen3_8_FlashNextTextConfig(
-            vocab_size=64, hidden_size=32, num_hidden_layers=2,
-            num_attention_heads=2, num_key_value_heads=1, head_dim=16,
-            layer_types=["full_attention"] * 2, full_attention_interval=1,
-            moe_intermediate_size=16, shared_expert_intermediate_size=16,
-            num_experts=2, num_experts_per_tok=1, hc_count=4, hc_lowrank=8,
-            ple_layer_ids=[], indexer_budget=4, indexer_n_heads=2,
-            indexer_head_dim=16, indexer_compress_ratio=2,
-            max_position_embeddings=128, dtype="float32",
-            rope_parameters={"rope_type": "default", "rope_theta": 10000., "partial_rotary_factor": .25},
+            vocab_size=64,
+            hidden_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=16,
+            layer_types=["full_attention"] * 2,
+            full_attention_interval=1,
+            moe_intermediate_size=16,
+            shared_expert_intermediate_size=16,
+            num_experts=2,
+            num_experts_per_tok=1,
+            hc_count=4,
+            hc_lowrank=8,
+            ple_layer_ids=[],
+            indexer_budget=4,
+            indexer_n_heads=2,
+            indexer_head_dim=16,
+            indexer_compress_ratio=2,
+            max_position_embeddings=128,
+            dtype="float32",
+            rope_parameters={
+                "rope_type": "default",
+                "rope_theta": 10000.0,
+                "partial_rotary_factor": 0.25,
+            },
         )
         model = Qwen3_8_FlashNextForConditionalGeneration(
             Qwen3_8_FlashNextConfig(text_config=text, language_model_only=True),
-            backend=BackendConfig(attn="sdpa", linear="torch", rms_norm="torch_fp32",
-                                  experts="torch", dispatcher="torch", enable_hf_state_dict_adapter=False),
+            backend=BackendConfig(
+                attn="sdpa",
+                linear="torch",
+                rms_norm="torch_fp32",
+                experts="torch",
+                dispatcher="torch",
+                enable_hf_state_dict_adapter=False,
+            ),
         )
         model.initialize_weights(buffer_device=torch.device("cpu"), dtype=torch.float32)
-        adapter = SimplicialAdapterConfig(hidden_size=32, query_heads=2, kv_heads=1, head_dim=16,
-                                         residual_streams=4, residual_low_rank=8,
-                                         short_window=2, long_window=8, rope_theta=10000.)
+        adapter = SimplicialAdapterConfig(
+            hidden_size=32,
+            query_heads=2,
+            kv_heads=1,
+            head_dim=16,
+            residual_streams=4,
+            residual_low_rank=8,
+            short_window=2,
+            long_window=8,
+            rope_theta=10000.0,
+        )
         return model, adapter
 
     def test_identity_keys_gradients_and_roundtrip(self):
-        from archlab.automodel.simplicial import ADAPTER_MARKER, install_simplicial_modules
+        from archlab.automodel.qwen.simplicial import ADAPTER_MARKER, install_simplicial_modules
 
         torch.manual_seed(57)
         model, config = self.model_and_config()
@@ -63,7 +94,7 @@ class AutoModelSimplicialTests(unittest.TestCase):
             self.assertTrue(torch.equal(a, b))
         trainable = [p for p in model.parameters() if p.requires_grad]
         self.assertEqual(sum(p.numel() for p in trainable), 2 * config.parameter_count())
-        optimizer = torch.optim.AdamW(trainable, lr=.01)
+        optimizer = torch.optim.AdamW(trainable, lr=0.01)
         for step in range(2):
             optimizer.zero_grad(set_to_none=True)
             model(input_ids=tokens).logits.square().mean().backward()
@@ -81,29 +112,35 @@ class AutoModelSimplicialTests(unittest.TestCase):
         restored, _ = self.model_and_config()
         install_simplicial_modules(restored, config, backend="reference")
         restored.load_state_dict(model.state_dict(), strict=True)
-        self.assertTrue(torch.equal(restored(input_ids=tokens).logits, model(input_ids=tokens).logits))
+        self.assertTrue(
+            torch.equal(restored(input_ids=tokens).logits, model(input_ids=tokens).logits)
+        )
         with self.assertRaisesRegex(ValueError, "already installed"):
             install_simplicial_modules(model, config)
 
     def test_batch_and_geometry_fail_closed(self):
         from dataclasses import replace
 
-        from archlab.automodel.simplicial import install_simplicial_modules
+        from archlab.automodel.qwen.simplicial import install_simplicial_modules
 
         model, config = self.model_and_config()
         with self.assertRaisesRegex(ValueError, "geometry"):
             install_simplicial_modules(model, replace(config, hidden_size=64))
         install_simplicial_modules(model, config, backend="reference")
         tokens = torch.ones(1, 5, dtype=torch.long)
-        for kwargs in ({"attention_mask": torch.ones_like(tokens)}, {"use_cache": True},
-                       {"position_ids": torch.ones_like(tokens)}, {"cu_seqlens": torch.tensor([0, 5])}):
+        for kwargs in (
+            {"attention_mask": torch.ones_like(tokens)},
+            {"use_cache": True},
+            {"position_ids": torch.ones_like(tokens)},
+            {"cu_seqlens": torch.tensor([0, 5])},
+        ):
             with self.assertRaises(ValueError):
                 model(input_ids=tokens, **kwargs)
 
     def test_nonzero_first_backward_preserves_frozen_base_and_roundtrips(self):
         from dataclasses import replace
 
-        from archlab.automodel.simplicial import ADAPTER_MARKER, install_simplicial_modules
+        from archlab.automodel.qwen.simplicial import ADAPTER_MARKER, install_simplicial_modules
 
         torch.manual_seed(58)
         model, config = self.model_and_config()
@@ -130,13 +167,14 @@ class AutoModelSimplicialTests(unittest.TestCase):
         restored, _ = self.model_and_config()
         install_simplicial_modules(restored, config, seed=88, backend="reference")
         restored.load_state_dict(model.state_dict(), strict=True)
-        torch.testing.assert_close(restored(input_ids=tokens).logits, model(input_ids=tokens).logits,
-                                   rtol=0, atol=0)
+        torch.testing.assert_close(
+            restored(input_ids=tokens).logits, model(input_ids=tokens).logits, rtol=0, atol=0
+        )
 
     def test_checkpoint_wrapped_decoder_executes_added_module(self):
         from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 
-        from archlab.automodel.simplicial import install_simplicial_modules
+        from archlab.automodel.qwen.simplicial import install_simplicial_modules
 
         model, config = self.model_and_config()
         model.requires_grad_(False)
@@ -153,7 +191,7 @@ class AutoModelSimplicialTests(unittest.TestCase):
             self.assertGreater(adapter.output.weight.grad.abs().max().item(), 0)
 
     def test_meta_rope_uses_original_constructor(self):
-        from archlab.automodel.loading import rebuild_nonpersistent_buffers
+        from archlab.automodel.qwen.loading import rebuild_nonpersistent_buffers
 
         model, _ = self.model_and_config()
         rotary = model.model.language_model.rotary_emb
@@ -168,7 +206,7 @@ class AutoModelSimplicialTests(unittest.TestCase):
             rebuild_nonpersistent_buffers(model, torch.device("cpu"))
 
     def test_missing_load_destination_fails(self):
-        from archlab.automodel.loading import (
+        from archlab.automodel.qwen.loading import (
             assert_loaded_weights_finite,
             poison_weights_before_load,
         )

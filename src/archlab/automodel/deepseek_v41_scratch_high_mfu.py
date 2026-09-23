@@ -12,27 +12,42 @@ import torch
 
 
 def high_mfu_sparse_attention(q, kv, sinks, indices, scale, *, backend, reference_rounding=False):
-    from nemo_automodel.components.models.deepseek_v4.kernels.sparse_attention import sparse_attn_tilelang
+    from nemo_automodel.components.models.deepseek_v4.kernels.sparse_attention import (
+        sparse_attn_tilelang,
+    )
 
     if backend != "tilelang" or not reference_rounding:
         raise ValueError("high-MFU sparse attention is the batched native-rounding TileLang kernel")
     return sparse_attn_tilelang(
-        q.contiguous(), kv.contiguous(), sinks.float().contiguous(),
-        indices.to(torch.int32).contiguous(), scale, reference_rounding=True)
+        q.contiguous(),
+        kv.contiguous(),
+        sinks.float().contiguous(),
+        indices.to(torch.int32).contiguous(),
+        scale,
+        reference_rounding=True,
+    )
 
 
 def install_high_mfu_sparse(model):
     """Bind the batched TileLang autograd kernel to each official attention forward."""
     from nemo_automodel.components.models.deepseek_v41.attention import DeepseekV41Attention
 
-    selected = [(name, module) for name, module in model.named_modules()
-                if isinstance(module, DeepseekV41Attention)]
+    selected = [
+        (name, module)
+        for name, module in model.named_modules()
+        if isinstance(module, DeepseekV41Attention)
+    ]
     if not selected or getattr(model, "_archlab_high_mfu_sparse_installed", False):
-        raise ValueError("install batched TileLang sparse attention once on an official V4.1 backbone")
+        raise ValueError(
+            "install batched TileLang sparse attention once on an official V4.1 backbone"
+        )
     for name, module in selected:
         fn = module.forward.__func__
-        if (module.backend.attn != "tilelang" or "dsv4_sparse_attention" not in fn.__code__.co_names
-                or "forward" in module.__dict__):
+        if (
+            module.backend.attn != "tilelang"
+            or "dsv4_sparse_attention" not in fn.__code__.co_names
+            or "forward" in module.__dict__
+        ):
             raise ValueError(f"{name}: expected the original TileLang V4.1 attention forward")
         if any(parameter.requires_grad for parameter in module.parameters()):
             raise ValueError("freeze the official base before sparse kernel selection")
@@ -45,7 +60,9 @@ def install_high_mfu_sparse(model):
         bound.__kwdefaults__, bound.__annotations__ = fn.__kwdefaults__, fn.__annotations__
         module.forward = MethodType(bound, module)
     after = dict(model.named_parameters())
-    if after.keys() != parameters.keys() or any(after[name] is not parameter for name, parameter in parameters.items()):
+    if after.keys() != parameters.keys() or any(
+        after[name] is not parameter for name, parameter in parameters.items()
+    ):
         raise RuntimeError("sparse kernel selection changed a parameter")
     model._archlab_high_mfu_sparse_installed = True
     return {

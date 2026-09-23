@@ -8,15 +8,15 @@ weight residency, not KV caching and not a remedy for policy replay differences.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import math
+from contextlib import contextmanager
 
 import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.tensor import DTensor
 
-_GIB = 1024 ** 3
+_GIB = 1024**3
 
 
 def _collective_check(errors, *, memory=False):
@@ -58,10 +58,19 @@ def _inventory(model):
         local = _local(parameter)
         mesh = None
         if isinstance(parameter, DTensor):
-            mesh = (tuple(parameter.device_mesh.mesh.flatten().tolist()),
-                    tuple(str(placement) for placement in parameter.placements))
-        result[name] = (id(parameter), tuple(parameter.shape), tuple(local.shape),
-                        str(parameter.dtype), str(parameter.device), parameter.requires_grad, mesh)
+            mesh = (
+                tuple(parameter.device_mesh.mesh.flatten().tolist()),
+                tuple(str(placement) for placement in parameter.placements),
+            )
+        result[name] = (
+            id(parameter),
+            tuple(parameter.shape),
+            tuple(local.shape),
+            str(parameter.dtype),
+            str(parameter.device),
+            parameter.requires_grad,
+            mesh,
+        )
     return result
 
 
@@ -97,19 +106,37 @@ def _state_plan(model):
                 if getattr(parameter, "_extensions_data", None) is not None:
                     raise ValueError("custom all-gather extensions need a separate memory contract")
                 unsharded = getattr(parameter, "_unsharded_param", None)
-                if (getattr(parameter, "unsharded_accumulated_grad", None) is not None
-                        or unsharded is not None and unsharded.grad is not None):
+                if (
+                    getattr(parameter, "unsharded_accumulated_grad", None) is not None
+                    or unsharded is not None
+                    and unsharded.grad is not None
+                ):
                     raise ValueError("release accumulated and unsharded gradients before residency")
-                if getattr(parameter.sharded_param, "_nemo_model_owned_grad_divisor", None) is not None:
+                if (
+                    getattr(parameter.sharded_param, "_nemo_model_owned_grad_divisor", None)
+                    is not None
+                ):
                     raise ValueError("a model-owned table must not be managed by FSDP")
                 dtype = group.mp_policy.param_dtype or parameter.sharded_param.dtype
                 element_size = torch.empty((), dtype=dtype).element_size()
                 # This includes FSDP padding and preserves existing TP/EP ownership.
-                extra += parameter._sharded_param_data.numel() * parameter.mesh_info.shard_mesh_size * element_size
+                extra += (
+                    parameter._sharded_param_data.numel()
+                    * parameter.mesh_info.shard_mesh_size
+                    * element_size
+                )
         if len(set(policies)) != 1:
             raise ValueError("one FSDP module has mixed per-group reshard policies")
-        plan.append({"name": name, "module": module, "state": state,
-                     "groups": groups, "original_policy": policies[0], "extra_bytes": extra})
+        plan.append(
+            {
+                "name": name,
+                "module": module,
+                "state": state,
+                "groups": groups,
+                "original_policy": policies[0],
+                "extra_bytes": extra,
+            }
+        )
     if not plan:
         raise ValueError("actor has no FSDP-managed parameters")
     return plan
@@ -124,25 +151,40 @@ class WeightResidency:
         self.reserve = reserve
         self.active = False
         self.receipt = {
-            "format": "archlab-retained-fsdp-weights-v1", "torch": torch.__version__,
+            "format": "archlab-retained-fsdp-weights-v1",
+            "torch": torch.__version__,
             "scope": "no-grad weight residency; no KV cache or operator change",
             "estimated_gather_bytes": sum(item["extra_bytes"] for item in plan),
-            "minimum_free_bytes": reserve, "minimum_observed_free_bytes": None,
-            "entry_cache_release_attempted": False, "entry_cache_reclaimed_bytes": 0,
+            "minimum_free_bytes": reserve,
+            "minimum_observed_free_bytes": None,
+            "entry_cache_release_attempted": False,
+            "entry_cache_reclaimed_bytes": 0,
             "entry_driver_free_before_cache_release": None,
-            "managed_modules": [{"name": item["name"], "original_reshard_after_forward": item["original_policy"],
-                                 "estimated_gather_bytes": item["extra_bytes"]} for item in plan],
+            "managed_modules": [
+                {
+                    "name": item["name"],
+                    "original_reshard_after_forward": item["original_policy"],
+                    "estimated_gather_bytes": item["extra_bytes"],
+                }
+                for item in plan
+            ],
             "cleanup_verified": False,
         }
 
     def _guard(self, *, allow_entry_cache_release=False):
-        remaining = sum(item["extra_bytes"] for item in self.plan
-                        if any(group._sharded_state.name == "SHARDED" for group in item["groups"]))
+        remaining = sum(
+            item["extra_bytes"]
+            for item in self.plan
+            if any(group._sharded_state.name == "SHARDED" for group in item["groups"])
+        )
         errors = []
         try:
             free = _free_memory(self.device)
-            if (allow_entry_cache_release and free - remaining < self.reserve
-                    and _unused_allocator_cache(self.device) > 0):
+            if (
+                allow_entry_cache_release
+                and free - remaining < self.reserve
+                and _unused_allocator_cache(self.device) > 0
+            ):
                 self.receipt["entry_cache_release_attempted"] = True
                 self.receipt["entry_driver_free_before_cache_release"] = free
                 _release_unused_cache(self.device)
@@ -150,7 +192,9 @@ class WeightResidency:
                 self.receipt["entry_cache_reclaimed_bytes"] = max(0, after - free)
                 free = after
             previous = self.receipt["minimum_observed_free_bytes"]
-            self.receipt["minimum_observed_free_bytes"] = free if previous is None else min(previous, free)
+            self.receipt["minimum_observed_free_bytes"] = (
+                free if previous is None else min(previous, free)
+            )
             if free - remaining < self.reserve:
                 errors.append(f"free={free}, remaining_gathers={remaining}, reserve={self.reserve}")
         except (ValueError, RuntimeError) as error:
@@ -159,7 +203,9 @@ class WeightResidency:
 
     def _before_forward(self, module, args):
         if not self.active or torch.is_grad_enabled():
-            raise RuntimeError("retained-weight forwards must run inside the no-grad residency context")
+            raise RuntimeError(
+                "retained-weight forwards must run inside the no-grad residency context"
+            )
         state = module._get_fsdp_state()
         if any(group._sharded_state.name == "SHARDED" for group in state._fsdp_param_groups):
             self._guard()
@@ -180,7 +226,7 @@ class WeightResidency:
 
 
 @contextmanager
-def retained_fsdp_weights(model, *, minimum_free_gib=16.):
+def retained_fsdp_weights(model, *, minimum_free_gib=16.0):
     """Retain gathered weights lazily, then restore parameter ownership/policies.
 
     Enter only between optimizer operations with no live gradients. A conservative
@@ -262,8 +308,9 @@ def retained_fsdp_weights(model, *, minimum_free_gib=16.):
             cleanup_errors.append("live gradients remained after residency cleanup")
         for item in plan:
             state = item["module"]._get_fsdp_state()
-            if (state._auto_reshard_after_forward is not False
-                    or any(group._sharded_state.name != "SHARDED" for group in item["groups"])):
+            if state._auto_reshard_after_forward is not False or any(
+                group._sharded_state.name != "SHARDED" for group in item["groups"]
+            ):
                 cleanup_errors.append(f"FSDP ownership not restored: {item['name']}")
             for group in item["groups"]:
                 expected = group.mesh_info if item["original_policy"] else None
@@ -275,4 +322,6 @@ def retained_fsdp_weights(model, *, minimum_free_gib=16.):
             dist.all_gather_object(cleanup_packets, cleanup_errors)
         residency.receipt["cleanup_verified"] = not any(cleanup_packets)
         if any(cleanup_packets):
-            raise RuntimeError(f"weight residency cleanup failed: {cleanup_packets}") from body_error
+            raise RuntimeError(
+                f"weight residency cleanup failed: {cleanup_packets}"
+            ) from body_error

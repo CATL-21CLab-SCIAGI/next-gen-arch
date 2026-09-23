@@ -4,8 +4,8 @@ import copy
 import hashlib
 import importlib.util
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -48,7 +48,9 @@ def cuda_assets():
     if not torch.cuda.is_available():
         pytest.skip("requires frozen-container GPU and pinned native reference")
     _official_hc()
-    default = Path(__file__).resolve().parents[1] / "results/deepseek-v41-launch-20260913T165222Z/assets"
+    default = (
+        Path(__file__).resolve().parents[1] / "results/deepseek-v41-launch-20260913T165222Z/assets"
+    )
     assets = Path(os.environ.get("ARCHLAB_DEEPSEEK_V41_ASSETS", str(default)))
     if not (assets / "inference/kernel.py").is_file():
         pytest.skip("set ARCHLAB_DEEPSEEK_V41_ASSETS to the pinned native reference")
@@ -66,7 +68,9 @@ def _coefficients(output):
 
 def _oracle(model, hidden, kernel=hc_split_sinkhorn):
     flat = hidden.flatten(2).float()
-    mixes = F.linear(flat, model.fn) * torch.rsqrt(flat.square().mean(-1, keepdim=True) + model.norm_eps)
+    mixes = F.linear(flat, model.fn) * torch.rsqrt(
+        flat.square().mean(-1, keepdim=True) + model.norm_eps
+    )
     return kernel(mixes, model.scale, model.base, model.streams, model.iterations, model.eps)
 
 
@@ -107,7 +111,9 @@ def test_install_preserves_modules_parameters_state_dtype_and_rng(cpu_native):
     hidden = torch.randn(2, 7, 4, 32, dtype=torch.bfloat16)
     with torch.no_grad():
         for left, right in zip(model, restored, strict=True):
-            for actual, expected in zip(_coefficients(left(hidden)), _coefficients(right(hidden)), strict=True):
+            for actual, expected in zip(
+                _coefficients(left(hidden)), _coefficients(right(hidden)), strict=True
+            ):
                 torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
@@ -123,14 +129,20 @@ def test_install_rejects_missing_modules_and_reinstallation(cpu_native):
 @pytest.mark.parametrize("parameter_name", ["fn", "scale", "base"])
 @pytest.mark.parametrize("invalid_kind", ["trainable", "bfloat16"])
 def test_invalid_frozen_fp32_contract_rejected_before_any_forward_changes(
-    cpu_native, parameter_name, invalid_kind,
+    cpu_native,
+    parameter_name,
+    invalid_kind,
 ):
     model = nn.ModuleList([_official_hc(), _official_hc()])
     parameter = getattr(model[1], parameter_name)
     if invalid_kind == "trainable":
         parameter.requires_grad_(True)
     else:
-        setattr(model[1], parameter_name, nn.Parameter(parameter.to(torch.bfloat16), requires_grad=False))
+        setattr(
+            model[1],
+            parameter_name,
+            nn.Parameter(parameter.to(torch.bfloat16), requires_grad=False),
+        )
     with pytest.raises((ValueError, TypeError), match="frozen|freeze|FP32|float32"):
         native_hc.install_official_native_hc(model, cpu_native)
     assert all("forward" not in connection.__dict__ for connection in model)
@@ -145,7 +157,9 @@ def test_unsupported_geometry_is_rejected_before_installation(cpu_native, field,
     assert all("forward" not in connection.__dict__ for connection in model)
 
 
-def test_native_loader_rechecks_source_hashes_and_caches_canonical_fixture_path(monkeypatch, tmp_path):
+def test_native_loader_rechecks_source_hashes_and_caches_canonical_fixture_path(
+    monkeypatch, tmp_path
+):
     assets = tmp_path / "assets"
     inference = assets / "inference"
     inference.mkdir(parents=True)
@@ -202,10 +216,14 @@ def test_frozen_hidden_gradient_and_unused_coefficient_outputs(cpu_native, used_
 
 
 def _checkpoint_comparison(model):
-    hidden = torch.randn(2, 7, 4, 32, device=model.fn.device, dtype=torch.bfloat16, requires_grad=True)
+    hidden = torch.randn(
+        2, 7, 4, 32, device=model.fn.device, dtype=torch.bfloat16, requires_grad=True
+    )
     replay_hidden = hidden.detach().clone().requires_grad_(True)
     direct = _coefficients(model(hidden))
-    replay = checkpoint(lambda value: _coefficients(model(value)), replay_hidden, use_reentrant=False)
+    replay = checkpoint(
+        lambda value: _coefficients(model(value)), replay_hidden, use_reentrant=False
+    )
     cotangents = [torch.randn_like(value) for value in direct]
     sum((value * weight).sum() for value, weight in zip(direct, cotangents, strict=True)).backward()
     sum((value * weight).sum() for value, weight in zip(replay, cotangents, strict=True)).backward()
@@ -229,7 +247,9 @@ def test_cuda_all_coefficients_exactly_match_verified_native_kernel(cuda_assets,
     model = _official_hc("cuda")
     kernel = native_hc._native_hc_from_assets(cuda_assets)
     native_hc.install_official_native_hc(model, cuda_assets)
-    hidden = torch.randn(2, 17, 4, 32, device="cuda", dtype=torch.bfloat16, requires_grad=requires_grad)
+    hidden = torch.randn(
+        2, 17, 4, 32, device="cuda", dtype=torch.bfloat16, requires_grad=requires_grad
+    )
     with torch.set_grad_enabled(requires_grad):
         actual = _coefficients(model(hidden))
     with torch.no_grad():
@@ -252,12 +272,16 @@ def test_cuda_native_input_gradient_matches_math_and_official_backward(cuda_asse
     official_expected = _coefficients(official(official_hidden))
     cotangents = [torch.randn_like(value) for value in expected]
     for outputs in (actual, expected, official_expected):
-        sum((value * weight).sum() for value, weight in zip(outputs, cotangents, strict=True)).backward()
+        sum(
+            (value * weight).sum() for value, weight in zip(outputs, cotangents, strict=True)
+        ).backward()
     assert hidden.grad.isfinite().all() and hidden.grad.count_nonzero()
     # The native forward retains kernel rounding; the derivative is the reviewed
     # FP32 equation. An official derivative can differ at BF16 rounding edges.
     torch.testing.assert_close(hidden.grad, math_hidden.grad, rtol=0, atol=0)
-    relative_l2 = (hidden.grad.float() - official_hidden.grad.float()).norm() / official_hidden.grad.float().norm()
+    relative_l2 = (
+        hidden.grad.float() - official_hidden.grad.float()
+    ).norm() / official_hidden.grad.float().norm()
     assert float(relative_l2) < 0.01, float(relative_l2)
     assert all(parameter.grad is None for parameter in model.parameters())
 
@@ -281,14 +305,20 @@ def test_cuda_install_after_fsdp_preserves_saved_scale_base_through_backward(cud
     torch.cuda.set_device(0)
     model = _official_hc("cuda")
     reference = copy.deepcopy(model)
-    dist.init_process_group("nccl", init_method=f"file://{tmp_path / 'rendezvous'}", rank=0, world_size=1)
+    dist.init_process_group(
+        "nccl", init_method=f"file://{tmp_path / 'rendezvous'}", rank=0, world_size=1
+    )
     try:
         mesh = init_device_mesh("cuda", (1,))
         fully_shard(
-            model, mesh=mesh, reshard_after_forward=True,
+            model,
+            mesh=mesh,
+            reshard_after_forward=True,
             mp_policy=MixedPrecisionPolicy(
-                param_dtype=torch.float32, reduce_dtype=torch.float32,
-                output_dtype=None, cast_forward_inputs=False,
+                param_dtype=torch.float32,
+                reduce_dtype=torch.float32,
+                output_dtype=None,
+                cast_forward_inputs=False,
             ),
         )
         # Make the HC a nested FSDP unit so its all-gather storage is released
@@ -300,13 +330,19 @@ def test_cuda_install_after_fsdp_preserves_saved_scale_base_through_backward(cud
         state = {name: value.to_local().clone() for name, value in root.state_dict().items()}
         native_hc.install_official_native_hc(root, cuda_assets)
         for _ in range(2):
-            hidden = torch.randn(2, 7, 4, 32, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+            hidden = torch.randn(
+                2, 7, 4, 32, device="cuda", dtype=torch.bfloat16, requires_grad=True
+            )
             reference_hidden = hidden.detach().clone().requires_grad_(True)
             actual = _coefficients(root(hidden))
             expected = _oracle(reference, reference_hidden)
             cotangents = [torch.randn_like(value) for value in expected]
-            sum((value * weight).sum() for value, weight in zip(actual, cotangents, strict=True)).backward()
-            sum((value * weight).sum() for value, weight in zip(expected, cotangents, strict=True)).backward()
+            sum(
+                (value * weight).sum() for value, weight in zip(actual, cotangents, strict=True)
+            ).backward()
+            sum(
+                (value * weight).sum() for value, weight in zip(expected, cotangents, strict=True)
+            ).backward()
             torch.testing.assert_close(hidden.grad, reference_hidden.grad, rtol=0, atol=0)
             assert hidden.grad.isfinite().all() and hidden.grad.count_nonzero()
             assert all(parameter.grad is None for parameter in root.parameters())

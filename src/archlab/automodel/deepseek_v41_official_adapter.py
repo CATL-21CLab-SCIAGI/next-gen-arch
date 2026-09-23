@@ -1,3 +1,4 @@
+# ruff: noqa: I001  # Preserve the checkpoint-qualified import order.
 """Attach the reviewed simplicial branch to AutoModel's V4.1 attention write.
 
 The official block calls ``attn_hc.expand`` after attention and before predicting
@@ -23,7 +24,8 @@ from archlab.architectures.deepseek_v41_linsimp_adapter import (
     linsimp_adapter_parameter_count,
 )
 from archlab.architectures.deepseek_v41_normal_adapter import (
-    V41NormalAttentionAdapter, normal_adapter_parameter_count,
+    V41NormalAttentionAdapter,
+    normal_adapter_parameter_count,
 )
 
 ADAPTER_MARKER = ".simplicial_adapter."
@@ -53,14 +55,25 @@ def _check_text_window(module, args, kwargs, *, allow_right_padding=False):
     tokens = kwargs.get("input_ids", args[0] if args else None)
     if tokens is None or tokens.ndim != 2 or min(tokens.shape) < 1:
         raise ValueError("simplicial training requires [batch, sequence] text input_ids")
-    unsupported = ("inputs_embeds", "image_mask", "past_key_values", "pixel_values",
-                   "cu_seqlens", "seq_lens", "padding_mask")
+    unsupported = (
+        "inputs_embeds",
+        "image_mask",
+        "past_key_values",
+        "pixel_values",
+        "cu_seqlens",
+        "seq_lens",
+        "padding_mask",
+    )
     if any(kwargs.get(name) is not None for name in unsupported) or kwargs.get("use_cache"):
-        raise ValueError("simplicial training supports independent text windows without cache or packing")
+        raise ValueError(
+            "simplicial training supports independent text windows without cache or packing"
+        )
     mask = kwargs.get("attention_mask")
     if mask is not None:
         if not allow_right_padding:
-            raise ValueError("pass text windows without an attention_mask; tail padding must be unsupervised")
+            raise ValueError(
+                "pass text windows without an attention_mask; tail padding must be unsupervised"
+            )
         if mask.shape != tokens.shape or mask.dtype != torch.bool:
             raise ValueError("right-padding masks must be boolean and match input_ids")
         if bool((mask[:, 1:] & ~mask[:, :-1]).any()):
@@ -74,7 +87,7 @@ def _check_text_window(module, args, kwargs, *, allow_right_padding=False):
 
 def install_official_adapters(
     model: nn.Module,
-    config: V41AdapterConfig = V41AdapterConfig(),
+    config: V41AdapterConfig = V41AdapterConfig(),  # noqa: B008 — preserve checkpoint-qualified executable AST
     *,
     layer_indices: tuple[int, ...] = PRODUCTION_LAYER_INDICES,
     seed: int = 42,
@@ -111,8 +124,11 @@ def install_official_adapters(
     layers = model.model.layers
     if not isinstance(layers, nn.ModuleDict):
         raise TypeError("expected the official V4.1 decoder ModuleDict")
-    if (not layer_indices or len(set(layer_indices)) != len(layer_indices)
-            or any(type(index) is not int or str(index) not in layers for index in layer_indices)):
+    if (
+        not layer_indices
+        or len(set(layer_indices)) != len(layer_indices)
+        or any(type(index) is not int or str(index) not in layers for index in layer_indices)
+    ):
         raise ValueError("adapter layers must be distinct existing zero-based decoder indices")
     selected = {index: _unwrapped_layer(layers[str(index)]) for index in layer_indices}
     for layer in selected.values():
@@ -153,9 +169,12 @@ def install_official_adapters(
     if any(after.get(name) is not parameter for name, parameter in original.items()):
         raise RuntimeError("adapter insertion changed an original parameter or checkpoint key")
     trainable = [parameter for parameter in after.values() if parameter.requires_grad]
-    if (sum(parameter.numel() for parameter in trainable) != len(adapters) * expected_parameters
-            or any(parameter.dtype != torch.float32 for parameter in trainable)):
+    if sum(parameter.numel() for parameter in trainable) != len(
+        adapters
+    ) * expected_parameters or any(parameter.dtype != torch.float32 for parameter in trainable):
         raise RuntimeError("adapter parameter budget or FP32 master precision changed")
-    model.model.register_forward_pre_hook(partial(_check_text_window, allow_right_padding=allow_right_padding), with_kwargs=True)
+    model.model.register_forward_pre_hook(
+        partial(_check_text_window, allow_right_padding=allow_right_padding), with_kwargs=True
+    )
     model._archlab_v41_simplicial_installed = True
     return adapters

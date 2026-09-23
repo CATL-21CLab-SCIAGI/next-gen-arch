@@ -10,7 +10,6 @@ from archlab.automodel.deepseek_v41_official_training import (
     assess_replay_protocol,
 )
 
-
 _ADAPTER_PATH = ("adapters", 5, "weight")
 _MOMENT_PATHS = (
     ("optimizers", 0, "state", 0, "momentum_buffer"),
@@ -28,19 +27,21 @@ def _value(state, path):
 @pytest.fixture
 def replay_case():
     saved = {
-        "adapters": {5: {"weight": torch.tensor([100., -100.], dtype=torch.float64)}},
+        "adapters": {5: {"weight": torch.tensor([100.0, -100.0], dtype=torch.float64)}},
         "optimizers": [
             {
-                "state": {0: {"momentum_buffer": torch.tensor([.8, -.4], dtype=torch.float64)}},
-                "param_groups": [{"params": [0], "lr": 1e-5, "momentum": .95}],
+                "state": {0: {"momentum_buffer": torch.tensor([0.8, -0.4], dtype=torch.float64)}},
+                "param_groups": [{"params": [0], "lr": 1e-5, "momentum": 0.95}],
             },
             {
-                "state": {0: {
-                    "step": torch.tensor(7.),
-                    "exp_avg": torch.tensor([.3, -.2], dtype=torch.float64),
-                    "exp_avg_sq": torch.tensor([.1, .2], dtype=torch.float64),
-                }},
-                "param_groups": [{"params": [0], "lr": 1e-5, "betas": (.9, .95)}],
+                "state": {
+                    0: {
+                        "step": torch.tensor(7.0),
+                        "exp_avg": torch.tensor([0.3, -0.2], dtype=torch.float64),
+                        "exp_avg_sq": torch.tensor([0.1, 0.2], dtype=torch.float64),
+                    }
+                },
+                "param_groups": [{"params": [0], "lr": 1e-5, "betas": (0.9, 0.95)}],
             },
         ],
         "rng": {
@@ -49,11 +50,11 @@ def replay_case():
         },
     }
     expected = deepcopy(saved)
-    _value(expected, _ADAPTER_PATH).add_(torch.tensor([.125, -.25], dtype=torch.float64))
+    _value(expected, _ADAPTER_PATH).add_(torch.tensor([0.125, -0.25], dtype=torch.float64))
     for path in _MOMENT_PATHS:
         _value(expected, path).mul_(1.1)
     expected["optimizers"][1]["state"][0]["step"].add_(1)
-    metric = {"loss": 2., "supervised_tokens": 128, "gradient_norm_before_clip": .75}
+    metric = {"loss": 2.0, "supervised_tokens": 128, "gradient_norm_before_clip": 0.75}
     return saved, expected, metric
 
 
@@ -78,12 +79,15 @@ def _assess(case, checkpoint=None, memories=None, checkpoint_metric=None):
     )
 
 
-@pytest.mark.parametrize("path", [
-    _ADAPTER_PATH,
-    *_MOMENT_PATHS,
-    ("rng", "cpu"),
-    ("rng", "cuda"),
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        _ADAPTER_PATH,
+        *_MOMENT_PATHS,
+        ("rng", "cpu"),
+        ("rng", "cuda"),
+    ],
+)
 def test_exact_restore_rejects_each_corrupted_component(replay_case, path):
     saved, _, _ = replay_case
     corrupted = deepcopy(saved)
@@ -103,7 +107,7 @@ def test_exact_restore_accepts_independent_identical_snapshot(replay_case):
 @pytest.mark.parametrize("replay", ["checkpoint", "in_memory"])
 def test_fixed_ceiling_rejects_one_point_one_percent_update_error(replay_case, component, replay):
     saved, expected, metric = replay_case
-    bad = _perturbed(saved, expected, .011, component)
+    bad = _perturbed(saved, expected, 0.011, component)
     checkpoint = bad if replay == "checkpoint" else deepcopy(expected)
     memories = [(deepcopy(metric), deepcopy(expected)), (deepcopy(metric), deepcopy(expected))]
     if replay == "in_memory":
@@ -115,19 +119,22 @@ def test_fixed_ceiling_rejects_one_point_one_percent_update_error(replay_case, c
 @pytest.mark.parametrize("component", ["adapters", "optimizers"])
 def test_checkpoint_error_below_ceiling_must_still_match_memory_baseline(replay_case, component):
     saved, expected, metric = replay_case
-    checkpoint = _perturbed(saved, expected, .006, component)
-    memories = [(deepcopy(metric), _perturbed(saved, expected, fraction, component))
-                for fraction in (.001, .002)]
+    checkpoint = _perturbed(saved, expected, 0.006, component)
+    memories = [
+        (deepcopy(metric), _perturbed(saved, expected, fraction, component))
+        for fraction in (0.001, 0.002)
+    ]
     with pytest.raises(AssertionError):
         _assess(replay_case, checkpoint=checkpoint, memories=memories)
 
 
 def test_bounded_native_variation_passes_and_keeps_inputs_unchanged(replay_case):
     saved, expected, metric = replay_case
-    checkpoint = _perturbed(saved, expected, .003)
+    checkpoint = _perturbed(saved, expected, 0.003)
     checkpoint_metric = {**metric, "loss": metric["loss"] + 1e-6}
-    memories = [(deepcopy(metric), _perturbed(saved, expected, fraction))
-                for fraction in (.001, -.002)]
+    memories = [
+        (deepcopy(metric), _perturbed(saved, expected, fraction)) for fraction in (0.001, -0.002)
+    ]
     snapshots = deepcopy((saved, expected, checkpoint, memories))
     report = _assess(replay_case, checkpoint, memories, checkpoint_metric)
     assert report["passed"] is True
@@ -147,13 +154,16 @@ def test_exact_native_repeats_use_the_fixed_baseline_floor(replay_case, fraction
             _assess(replay_case, checkpoint=checkpoint)
 
 
-@pytest.mark.parametrize("path,replacement", [
-    (("optimizers", 1, "state", 0, "step"), torch.tensor(9.)),
-    (("optimizers", 0, "param_groups", 0, "lr"), 1.000001e-5),
-    (("optimizers", 0, "param_groups", 0, "momentum"), .95000001),
-    (("optimizers", 1, "param_groups", 0, "betas"), (.90000001, .95)),
-    (("optimizers", 1, "param_groups", 0, "params"), [1]),
-])
+@pytest.mark.parametrize(
+    "path,replacement",
+    [
+        (("optimizers", 1, "state", 0, "step"), torch.tensor(9.0)),
+        (("optimizers", 0, "param_groups", 0, "lr"), 1.000001e-5),
+        (("optimizers", 0, "param_groups", 0, "momentum"), 0.95000001),
+        (("optimizers", 1, "param_groups", 0, "betas"), (0.90000001, 0.95)),
+        (("optimizers", 1, "param_groups", 0, "params"), [1]),
+    ],
+)
 @pytest.mark.parametrize("replay", ["checkpoint", "in_memory"])
 def test_optimizer_counters_and_options_are_exact(replay_case, path, replacement, replay):
     _, expected, metric = replay_case

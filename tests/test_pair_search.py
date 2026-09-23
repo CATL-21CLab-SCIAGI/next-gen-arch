@@ -1,15 +1,19 @@
 """Check generated model-visible questions with an independent exhaustive oracle."""
 
-from collections import Counter
 import random
 import unittest
+from collections import Counter
 
 from archlab.evaluation.pair_search import generate_suite, make_twins
 
 
 def exhaustive(recent, earlier, target, modulus):
-    return [(i, j) for i, a in enumerate(recent) for j, b in enumerate(earlier)
-            if all((a[d] + b[d]) % modulus == target[d] for d in (0, 1))]
+    return [
+        (i, j)
+        for i, a in enumerate(recent)
+        for j, b in enumerate(earlier)
+        if all((a[d] + b[d]) % modulus == target[d] for d in (0, 1))
+    ]
 
 
 class PairSearchTests(unittest.TestCase):
@@ -17,14 +21,18 @@ class PairSearchTests(unittest.TestCase):
         for size in (8, 16, 32, 64, 128):
             for seed in range(20):
                 with self.subTest(size=size, seed=seed):
-                    recent, negative, positive, target = make_twins(random.Random(seed), earlier_count=size)
+                    recent, negative, positive, target = make_twins(
+                        random.Random(seed), earlier_count=size
+                    )
                     self.assertEqual(exhaustive(recent, negative, target, 97), [])
                     self.assertEqual(len(exhaustive(recent, positive, target, 97)), 1)
                     self.assertEqual(len(set(negative)), size)
                     self.assertEqual(len(set(positive)), size)
-                    self.assertEqual(sum(a != b for a, b in zip(negative, positive)), 2)
+                    self.assertEqual(sum(a != b for a, b in zip(negative, positive, strict=False)), 2)
                     for d in (0, 1):
-                        self.assertEqual(Counter(v[d] for v in negative), Counter(v[d] for v in positive))
+                        self.assertEqual(
+                            Counter(v[d] for v in negative), Counter(v[d] for v in positive)
+                        )
                         for a in recent:
                             self.assertTrue(any((a[d] + b[d]) % 97 == target[d] for b in negative))
 
@@ -47,8 +55,11 @@ class PairSearchTests(unittest.TestCase):
         self.assertTrue(all(sorted(values) == ["NO", "YES"] for values in labels.values()))
 
     def test_invalid_dimensions_fail(self):
-        for kwargs in ({"earlier_count": 3}, {"earlier_count": 10000},
-                       {"earlier_count": 8, "recent_count": 0}):
+        for kwargs in (
+            {"earlier_count": 3},
+            {"earlier_count": 10000},
+            {"earlier_count": 8, "recent_count": 0},
+        ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 make_twins(random.Random(0), **kwargs)
 

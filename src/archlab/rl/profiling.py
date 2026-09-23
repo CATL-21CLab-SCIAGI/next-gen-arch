@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import hashlib
 import json
 import math
 import random
 import time
+from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -59,12 +59,21 @@ def _actual_work(rollout, batch_size, max_new_tokens):
     if any(not 1 <= length <= max_new_tokens for length in lengths):
         raise ValueError("generated length violates the profiling budget")
     generated = sum(lengths)
-    if generated != rollout.receipt.get("generated_tokens") or generated != int(rollout.response_mask.sum()):
+    if generated != rollout.receipt.get("generated_tokens") or generated != int(
+        rollout.response_mask.sum()
+    ):
         raise ValueError("actual generated tokens disagree with the sampling receipt")
     shapes = rollout.receipt.get("forward_shapes")
-    if not isinstance(shapes, list) or not shapes or len(shapes) != rollout.receipt.get("forward_count"):
+    if (
+        not isinstance(shapes, list)
+        or not shapes
+        or len(shapes) != rollout.receipt.get("forward_count")
+    ):
         raise ValueError("missing model-forward receipt")
-    if any(len(shape) != 2 or shape[0] != batch_size or type(shape[1]) is not int or shape[1] < 1 for shape in shapes):
+    if any(
+        len(shape) != 2 or shape[0] != batch_size or type(shape[1]) is not int or shape[1] < 1
+        for shape in shapes
+    ):
         raise ValueError("invalid model-forward shape receipt")
     return generated, len(shapes), sum(shape[0] * shape[1] for shape in shapes)
 
@@ -104,7 +113,11 @@ def profile_rollout_batches(
     errors = []
     signature = None
     try:
-        if not isinstance(prompt_ids, list) or not prompt_ids or any(type(token) is not int or token < 0 for token in prompt_ids):
+        if (
+            not isinstance(prompt_ids, list)
+            or not prompt_ids
+            or any(type(token) is not int or token < 0 for token in prompt_ids)
+        ):
             raise ValueError("prompt_ids must be a nonempty list of token IDs")
         if not isinstance(policy_version, str) or not policy_version:
             raise ValueError("policy_version must be nonempty")
@@ -115,9 +128,18 @@ def profile_rollout_batches(
         if type(seed) is not int or type(pad_token_id) is not int or pad_token_id < 0:
             raise ValueError("seed and pad_token_id must be integers")
         sizes = tuple(batch_sizes)
-        if not sizes or len(set(sizes)) != len(sizes) or any(type(size) is not int or not 1 <= size <= 32 for size in sizes):
+        if (
+            not sizes
+            or len(set(sizes)) != len(sizes)
+            or any(type(size) is not int or not 1 <= size <= 32 for size in sizes)
+        ):
             raise ValueError("batch_sizes must be unique integers in [1,32]")
-        if type(warmup) is not int or not 0 <= warmup <= 10 or type(repeats) is not int or not 1 <= repeats <= 10:
+        if (
+            type(warmup) is not int
+            or not 0 <= warmup <= 10
+            or type(repeats) is not int
+            or not 1 <= repeats <= 10
+        ):
             raise ValueError("warmup/repeats must be bounded nonnegative/positive integers")
         stops = tuple(sorted(set(eos_token_ids)))
         if not stops or any(type(token) is not int or token < 0 for token in stops):
@@ -127,8 +149,18 @@ def profile_rollout_batches(
         if max(prompt_ids + list(stops) + [pad_token_id]) >= vocabulary:
             raise ValueError("profile token outside the model vocabulary")
         prompt_digest = hashlib.sha256(json.dumps(prompt_ids).encode()).hexdigest()
-        signature = (policy_version, max_new_tokens, context_limit, stops, pad_token_id,
-                     seed, sizes, warmup, repeats, prompt_digest)
+        signature = (
+            policy_version,
+            max_new_tokens,
+            context_limit,
+            stops,
+            pad_token_id,
+            seed,
+            sizes,
+            warmup,
+            repeats,
+            prompt_digest,
+        )
     except (AttributeError, TypeError, ValueError) as error:
         errors.append(str(error))
     _admit(errors, signature)
@@ -146,11 +178,17 @@ def profile_rollout_batches(
                 if measured:
                     started = time.perf_counter()
                 rollout = sample_rollouts(
-                    model, prompts, policy_version=policy_version,
-                    max_new_tokens=max_new_tokens, context_limit=context_limit,
-                    eos_token_ids=stops, pad_token_id=pad_token_id,
+                    model,
+                    prompts,
+                    policy_version=policy_version,
+                    max_new_tokens=max_new_tokens,
+                    context_limit=context_limit,
+                    eos_token_ids=stops,
+                    pad_token_id=pad_token_id,
                     seed=seed + batch_index * 1_000_000 + iteration,
-                    temperature=1., top_p=1., device=device,
+                    temperature=1.0,
+                    top_p=1.0,
+                    device=device,
                 )
                 _synchronize(device)
                 if not measured:
@@ -172,41 +210,64 @@ def profile_rollout_batches(
                     dist.all_reduce(counts, op=dist.ReduceOp.SUM)
                     dist.all_reduce(duration, op=dist.ReduceOp.MAX)
                     dist.all_reduce(maximum_forwards, op=dist.ReduceOp.MAX)
-                samples.append({
-                    "repeat": iteration - warmup,
-                    "max_rank_seconds": float(duration),
-                    "actual_generated_tokens_global": int(counts[0]),
-                    "rank_forward_calls_sum": int(counts[1]),
-                    "model_forward_calls_per_rank": int(maximum_forwards),
-                    "input_tokens_processed_global": int(counts[2]),
-                    "generated_tokens_per_second": int(counts[0]) / float(duration),
-                    "rollout_backend": rollout.receipt.get("backend", "unspecified-test-backend"),
-                    "retained_weights": rollout.receipt.get("retained_weights", False),
-                })
+                samples.append(
+                    {
+                        "repeat": iteration - warmup,
+                        "max_rank_seconds": float(duration),
+                        "actual_generated_tokens_global": int(counts[0]),
+                        "rank_forward_calls_sum": int(counts[1]),
+                        "model_forward_calls_per_rank": int(maximum_forwards),
+                        "input_tokens_processed_global": int(counts[2]),
+                        "generated_tokens_per_second": int(counts[0]) / float(duration),
+                        "rollout_backend": rollout.receipt.get(
+                            "backend", "unspecified-test-backend"
+                        ),
+                        "retained_weights": rollout.receipt.get("retained_weights", False),
+                    }
+                )
                 del rollout
             tokens = sum(sample["actual_generated_tokens_global"] for sample in samples)
             seconds = sum(sample["max_rank_seconds"] for sample in samples)
-            results.append({
-                "batch_size_per_rank": batch_size, "global_batch_size": batch_size * world,
-                "warmup_calls_per_rank": warmup, "measured_calls_per_rank": repeats,
-                "actual_generated_tokens_global": tokens, "max_rank_seconds_sum": seconds,
-                "rank_forward_calls_sum": sum(sample["rank_forward_calls_sum"] for sample in samples),
-                "input_tokens_processed_global": sum(sample["input_tokens_processed_global"] for sample in samples),
-                "generated_tokens_per_second": tokens / seconds, "samples": samples,
-            })
-    throughput = {item["batch_size_per_rank"]: item["generated_tokens_per_second"] for item in results}
+            results.append(
+                {
+                    "batch_size_per_rank": batch_size,
+                    "global_batch_size": batch_size * world,
+                    "warmup_calls_per_rank": warmup,
+                    "measured_calls_per_rank": repeats,
+                    "actual_generated_tokens_global": tokens,
+                    "max_rank_seconds_sum": seconds,
+                    "rank_forward_calls_sum": sum(
+                        sample["rank_forward_calls_sum"] for sample in samples
+                    ),
+                    "input_tokens_processed_global": sum(
+                        sample["input_tokens_processed_global"] for sample in samples
+                    ),
+                    "generated_tokens_per_second": tokens / seconds,
+                    "samples": samples,
+                }
+            )
+    throughput = {
+        item["batch_size_per_rank"]: item["generated_tokens_per_second"] for item in results
+    }
     return {
         "format": "archlab-rl-rollout-throughput-v1",
         "scope": "uncached resident-policy generation; no MFU percentage claimed",
-        "policy_version": policy_version, "world_size": world,
-        "measurement_device": str(device), "prompt_sha256": prompt_digest,
-        "prompt_tokens": len(prompt_ids), "max_new_tokens": max_new_tokens,
-        "temperature": 1., "top_p": 1., "cached": False,
+        "policy_version": policy_version,
+        "world_size": world,
+        "measurement_device": str(device),
+        "prompt_sha256": prompt_digest,
+        "prompt_tokens": len(prompt_ids),
+        "max_new_tokens": max_new_tokens,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "cached": False,
         "retained_weights": getattr(model, "_archlab_rl_retain_weights", False),
         "residency_setup_and_cleanup_included": True,
         "input_token_count_includes_padding": True,
         "warmup_included_in_measurements": False,
         "rng_and_module_modes_restored": True,
         "batches": results,
-        "batch4_over_batch1_throughput_ratio": throughput[4] / throughput[1] if 1 in throughput and 4 in throughput else None,
+        "batch4_over_batch1_throughput_ratio": throughput[4] / throughput[1]
+        if 1 in throughput and 4 in throughput
+        else None,
     }

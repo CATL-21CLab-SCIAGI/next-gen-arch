@@ -11,7 +11,11 @@ import torch
 
 from archlab.architectures.qwen38_flash_next_full import (
     DistributedPLE as ArchitecturePLE,
+)
+from archlab.architectures.qwen38_flash_next_full import (
     OwnerShardedPLEEmbedding as ArchitectureEmbedding,
+)
+from archlab.architectures.qwen38_flash_next_full import (
     Qwen38FlashNextFullConfig,
 )
 from archlab.megatron.ple_checkpoint import DistributedPLE, OwnerShardedPLEEmbedding
@@ -25,7 +29,7 @@ def test_checkpoint_adapter_preserves_initialization_state_forward_and_gradients
         module = cls(config, owner_rank=0, owner_world_size=1)
         module.embedding.reset_parameters()
         # Exercise the convolution and its input norm, not just its zero-init path.
-        torch.nn.init.normal_(module.conv.weight, std=.01)
+        torch.nn.init.normal_(module.conv.weight, std=0.01)
         return module, torch.get_rng_state().clone()
 
     base, base_rng = construct(ArchitecturePLE)
@@ -51,9 +55,16 @@ def test_checkpoint_adapter_preserves_initialization_state_forward_and_gradients
         base.named_parameters(), adapted.named_parameters(), strict=True
     ):
         assert name == adapted_name
-        for attribute in ("allreduce", "expert_parallel", "is_embedding_or_output_parameter",
-                          "archlab_optimizer", "archlab_no_weight_decay"):
-            assert getattr(parameter, attribute, None) == getattr(adapted_parameter, attribute, None)
+        for attribute in (
+            "allreduce",
+            "expert_parallel",
+            "is_embedding_or_output_parameter",
+            "archlab_optimizer",
+            "archlab_no_weight_decay",
+        ):
+            assert getattr(parameter, attribute, None) == getattr(
+                adapted_parameter, attribute, None
+            )
         torch.testing.assert_close(adapted_parameter.grad, parameter.grad, rtol=0, atol=0)
 
 
@@ -66,8 +77,9 @@ def test_native_embedding_keys_offsets_and_replica_ids(owners, replica, offsets)
     prefix = "decoder.layers.7.ple.embedding."
     elements = config.ngram_rows_per_partition * config.ngram_branch_dim
     for owner in range(owners):
-        module = OwnerShardedPLEEmbedding(config, owner_rank=owner,
-                                         owner_world_size=owners, replica_rank=replica)
+        module = OwnerShardedPLEEmbedding(
+            config, owner_rank=owner, owner_world_size=owners, replica_rank=replica
+        )
         state = module.sharded_state_dict(prefix, offsets, {"ignored": True})
         assert list(state) == [f"{prefix}tables.{slot}" for slot in range(len(module.tables))]
         for slot, partition in enumerate(range(owner, config.ngram_partitions, owners)):
@@ -76,9 +88,14 @@ def test_native_embedding_keys_offsets_and_replica_ids(owners, replica, offsets)
             assert shard.data is module.tables[slot]
             assert shard.local_shape == (elements,)
             assert shard.global_shape == tuple(fragmentation for _, _, fragmentation in offsets) + (
-                elements * config.ngram_partitions,)
-            assert shard.global_offset == tuple(rank for _, rank, _ in offsets) + (partition * elements,)
-            assert shard.axis_fragmentations == tuple(f for _, _, f in offsets) + (config.ngram_partitions,)
+                elements * config.ngram_partitions,
+            )
+            assert shard.global_offset == tuple(rank for _, rank, _ in offsets) + (
+                partition * elements,
+            )
+            assert shard.axis_fragmentations == tuple(f for _, _, f in offsets) + (
+                config.ngram_partitions,
+            )
             assert shard.prepend_axis_num == len(offsets)
             assert shard.replica_id == (0, 0, replica)
 

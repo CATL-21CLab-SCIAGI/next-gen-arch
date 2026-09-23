@@ -39,7 +39,7 @@ attention_core:
   extra_parameters_six_layers: 245952
   backward_accumulation: fp32-atomic-not-bitwise-deterministic
 preflight:
-  entry: archlab.benchmarks.simplicial_attention
+  entry: archlab.qualification.simplicial_attention
   precision: [fp32, bf16]
   oracle_precision: fp64
   oracle_tests: [forward, all-five-input-gradients, both-axis-causality, window-boundaries, batch-and-kv-group-isolation]
