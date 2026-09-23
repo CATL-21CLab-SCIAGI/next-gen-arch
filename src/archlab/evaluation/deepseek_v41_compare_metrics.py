@@ -7,20 +7,20 @@ from archlab.benchmarks.capability import paired_statistics
 VARIANTS=('simplicial','normal')
 
 
-def score_choices(case,scores):
+def score_choice_vector(case, values):
     lengths=[1]*len(case['choices']) if case['task']=='mmlu' else [len(x) for x in case['choices']]
     if any(n<=0 for n in lengths):raise ValueError('empty choice text')
-    result={}
-    for variant in VARIANTS:
-        values=scores[variant]
-        if len(values)!=len(lengths) or any(v is None or not math.isfinite(v) for v in values):
-            raise ValueError(f'incomplete/nonfinite choice scores: {case["id"]}')
-        normalized=[v/n for v,n in zip(values,lengths,strict=True)]
-        pred=max(range(len(values)),key=values.__getitem__)
-        pred_norm=max(range(len(values)),key=normalized.__getitem__)
-        result[variant]={'prediction':pred,'normalized_prediction':pred_norm,
-                         'accuracy':int(pred==case['answer']),'accuracy_norm':int(pred_norm==case['answer'])}
-    return result
+    if len(values)!=len(lengths) or any(v is None or not math.isfinite(v) for v in values):
+        raise ValueError(f'incomplete/nonfinite choice scores: {case["id"]}')
+    normalized=[v/n for v,n in zip(values,lengths,strict=True)]
+    pred=max(range(len(values)),key=values.__getitem__)
+    pred_norm=max(range(len(values)),key=normalized.__getitem__)
+    return {'prediction':pred,'normalized_prediction':pred_norm,
+            'accuracy':int(pred==case['answer']),'accuracy_norm':int(pred_norm==case['answer'])}
+
+
+def score_choices(case,scores):
+    return {variant: score_choice_vector(case, scores[variant]) for variant in VARIANTS}
 
 
 def paired_binary(first,second):
