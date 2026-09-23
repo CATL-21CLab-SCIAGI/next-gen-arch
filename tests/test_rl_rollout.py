@@ -129,8 +129,9 @@ def test_cached_sampling_preserves_scores_stops_and_full_prefix_replay(monkeypat
         def __init__(self, actor):
             self.actor = actor
 
-        def prefill(self, ids):
-            return self.actor.embedding(ids)[:, -1]
+        def prefill(self, ids, attention_mask):
+            positions = attention_mask.sum(-1) - 1
+            return self.actor.embedding(ids)[torch.arange(ids.shape[0]), positions]
 
         def decode(self, ids):
             return self.actor.embedding(ids)[:, 0]
@@ -148,7 +149,7 @@ def test_cached_sampling_preserves_scores_stops_and_full_prefix_replay(monkeypat
     torch.testing.assert_close(actual.policy_log_probs, reference.policy_log_probs, rtol=0, atol=0)
     steps, _ = _prefix_plan(actual, 4, 42, 8)
     assert steps == max(map(len, actual.generated_ids))
-    assert actual.receipt["forward_shapes"] == [[4, 2], *[[4, 1]] * (steps - 1)]
+    assert actual.receipt["forward_shapes"] == [reference.receipt["forward_shapes"][0], *[[4, 1]] * (steps - 1)]
     assert actual.receipt["replay_shapes"] == reference.receipt["forward_shapes"]
     for step in range(steps):
         for observed, expected in zip(reconstruct_prefix(actual, step), reconstruct_prefix(reference, step)):

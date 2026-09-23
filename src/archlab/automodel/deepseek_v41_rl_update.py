@@ -214,7 +214,7 @@ def _prefix_plan(rollout, count, seed, vocabulary_size):
                     or receipt.get("replay_inputs") != "equivalent-full-prefix-right-padded"
                     or len(executed) != steps
                     or len(set(rollout.prompt_lengths)) != 1
-                    or executed[0] != [batch, rollout.prompt_lengths[0]]
+                    or executed[0] != shapes[0]
                     or any(shape != [batch, 1] for shape in executed[1:])):
                 raise ValueError("invalid cached rollout execution or replay history")
         if (type(pad) is not int or not 0 <= pad < vocabulary_size or not stops

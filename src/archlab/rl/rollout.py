@@ -186,8 +186,8 @@ def sample_rollouts(
                 if cache_policy:
                     replay_shapes.append([len(sequences), length])
                     if generation_step == 0:
-                        prefill_ids, _ = _inputs(sequences, len(sequences[0]), pad_token_id, device)
-                        final_hidden = decode_cache.prefill(prefill_ids)
+                        prefill_ids, prefill_mask = _inputs(sequences, length, pad_token_id, device)
+                        final_hidden = decode_cache.prefill(prefill_ids, attention_mask=prefill_mask)
                         forward_shapes.append([len(sequences), prefill_ids.shape[1]])
                     else:
                         next_ids = torch.tensor(selected, device=device, dtype=torch.long).unsqueeze(1)

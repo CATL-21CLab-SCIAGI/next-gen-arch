@@ -37,6 +37,17 @@ absolute hidden error was 0.0078125 at one position and zero at the others.
 These small GPU checks used bare system Python and do not constitute a receipt
 for the full pretrained, distributed production actor.
 
+The subsequent sixteen-rank tiny normal probe used the existing production
+container runtime and **failed** the padded-prefix equivalence gate: maximum
+all-vocabulary log-probability difference was 0.0820694 nats. No optimizer update
+was attempted. A single-GPU diagnostic reproduced a discrepancy before any cached
+decode, caused by comparing unpadded prefill with the trainer's padded canvas.
+Prefill now preserves that canvas and its right-padding mask; only real prompt
+tokens enter the persistent cache. The initial prompt discrepancy is zero after
+this correction. Incremental differences remain: a four-step tiny local probe
+still reached 0.0349550 nats. Further diagnosis and distributed qualification are
+required; the cache remains disabled for production.
+
 ## Required before restart
 
 1. Qualify the distributed FSDP/EP/Engram cache path and ownership cleanup using

@@ -199,13 +199,22 @@ class V41PolicyCache:
         if self.model.training or torch.is_grad_enabled():
             raise ValueError("resident KV cache requires eval mode and no_grad")
 
-    def prefill(self, input_ids):
+    def prefill(self, input_ids, attention_mask=None):
         from nemo_automodel.components.models.deepseek_v41.attention import _apply_rope
         from nemo_automodel.components.models.deepseek_v41.quantization import quantize_cache
 
         self._check_mode()
         if not self.valid or self.position is not None or input_ids.ndim != 2 or min(input_ids.shape) < 1:
             raise ValueError("cache prefill requires one fresh uniform-length prompt batch")
+        prefix_length = input_ids.shape[1]
+        if attention_mask is not None:
+            if (attention_mask.shape != input_ids.shape or attention_mask.dtype != torch.bool
+                    or bool((attention_mask[:, 1:] & ~attention_mask[:, :-1]).any())):
+                raise ValueError("cache prefill requires a boolean right-padding mask")
+            lengths = attention_mask.sum(-1)
+            if not bool((lengths == lengths[0]).all()) or int(lengths[0]) < 1:
+                raise ValueError("cache prefill requires equal positive local prompt lengths")
+            prefix_length = int(lengths[0])
         hooks = []
         try:
             for index, (_, inner, attn) in enumerate(self.layers):
@@ -216,12 +225,12 @@ class V41PolicyCache:
                     angles = module.rotary_emb(kwargs["position_ids"])
                     kv = quantize_cache(_apply_rope(module.kv_norm(module.wkv(hidden)), angles),
                                         format="fp8", block_size=32)
-                    target["local_kv"] = kv[:, -module.window_size:].contiguous().clone()
-                    target["partial"] = (hidden[:, hidden.shape[1] // module.compress_ratio * module.compress_ratio:]
+                    target["local_kv"] = kv[:, max(0, prefix_length - module.window_size):prefix_length].contiguous().clone()
+                    target["partial"] = (hidden[:, prefix_length // module.compress_ratio * module.compress_ratio:prefix_length]
                                          .contiguous().clone() if module.compressor is not None else None)
-                    target["compressed_kv"] = (output.state.compressed_kv.contiguous().clone()
+                    target["compressed_kv"] = (output.state.compressed_kv[:, :prefix_length // module.compress_ratio].contiguous().clone()
                         if module.compressor is not None else None)
-                    target["index_keys"] = (output.state.index_keys.contiguous().clone()
+                    target["index_keys"] = (output.state.index_keys[:, :prefix_length // module.compress_ratio].contiguous().clone()
                         if module.indexer is not None and module.indexer.owns_keys else None)
 
                 hooks.append(attn.register_forward_hook(capture_attention, with_kwargs=True))
@@ -229,18 +238,18 @@ class V41PolicyCache:
                 if adapter is not None:
                     def capture_adapter(module, args, _output, *, target=cache):
                         _, _, projected = _adapter_projections(module, args[0])
-                        target["adapter"] = {name: value[:, -(module.config.short_window
-                            if name.endswith("1") else module.config.long_window):].contiguous().clone()
+                        target["adapter"] = {name: value[:, max(0, prefix_length - (module.config.short_window
+                            if name.endswith("1") else module.config.long_window)):prefix_length].contiguous().clone()
                             for name, value in projected.items()}
                     hooks.append(adapter.register_forward_hook(capture_adapter))
-            output = self.model(input_ids=input_ids, return_hidden_states=True)
+            output = self.model(input_ids=input_ids, attention_mask=attention_mask, return_hidden_states=True)
             if any("local_kv" not in item or "adapter" not in item and
                    getattr(inner.attn_hc, "simplicial_adapter", None) is not None
                    for item, (_, inner, _) in zip(self.caches, self.layers, strict=True)):
                 raise RuntimeError("a V4.1 prefill hook did not execute")
-            self.tokens = input_ids.clone()
-            self.position = input_ids.shape[1]
-            return output.hidden_states[:, -1]
+            self.tokens = input_ids[:, :prefix_length].clone()
+            self.position = prefix_length
+            return output.hidden_states[:, prefix_length - 1].clone()
         except BaseException:
             self.valid = False
             raise
@@ -324,6 +333,7 @@ def qualify_resident_cache(model, prompts, *, pad_token_id, context_limit, steps
     modes = [(module, module.training) for module in model.modules()]
     device = model.lm_head.weight.device
     stats = torch.zeros(4, device=device, dtype=torch.float32)
+    comparisons = []
     residency = None
     try:
         model.eval()
@@ -335,7 +345,10 @@ def qualify_resident_cache(model, prompts, *, pad_token_id, context_limit, steps
             original = torch.tensor(prompts, device=device, dtype=torch.long)
             ids = original.clone()
             cache = V41PolicyCache(model)
-            cached = cache.prefill(ids)
+            prefill_canvas = _bucket(_maximum(ids.shape[1], device), 128, context_limit)
+            prefill_ids = F.pad(ids, (0, prefill_canvas - ids.shape[1]), value=pad_token_id)
+            prefill_mask = torch.arange(prefill_canvas, device=device).expand_as(prefill_ids) < ids.shape[1]
+            cached = cache.prefill(prefill_ids, attention_mask=prefill_mask)
             for index in range(steps + 1):
                 if index:
                     token = original[:, (index - 1) % original.shape[1]:][:, :1]
@@ -359,6 +372,12 @@ def qualify_resident_cache(model, prompts, *, pad_token_id, context_limit, steps
                     probability_error = (observed - expected).abs().max()
                 values = torch.stack((absolute, relative_rms, probability_error, (~finite).float()))
                 stats = torch.maximum(stats, torch.nan_to_num(values, nan=0., posinf=0., neginf=0.))
+                local_values = values.tolist()
+                comparisons.append({"decode_step": index, "prefix_tokens": ids.shape[1],
+                    "replay_canvas": canvas, "finite": not bool(local_values[3]),
+                    "hidden_max_abs_error": local_values[0] if not local_values[3] else None,
+                    "hidden_relative_rms_error": local_values[1] if not local_values[3] else None,
+                    "logprob_max_abs_error": local_values[2] if not local_values[3] else None})
                 del observed, expected, reference, difference
             del cache, cached
         if dist.is_initialized():
@@ -371,6 +390,7 @@ def qualify_resident_cache(model, prompts, *, pad_token_id, context_limit, steps
                 "finite": not bool(nonfinite), "hidden_max_abs_error": maximum,
                 "hidden_relative_rms_error": relative, "hidden_relative_rms_tolerance": 1e-3,
                 "logprob_max_abs_error": logprob, "logprob_tolerance": tolerance,
+                "local_comparisons": comparisons,
                 "weight_residency": None if residency is None else residency.receipt,
                 "optimizer_updates": 0}
     finally:
