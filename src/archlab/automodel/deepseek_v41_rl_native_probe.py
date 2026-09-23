@@ -230,6 +230,7 @@ def main():
                         "kind": "synthetic-full-geometry-memory-only-v1",
                         "scope": "Synthetic weights and worst-case single-owner routing; no quality evaluation or production admission",
                         "world_size": dist.get_world_size(),
+                        "allocator_budget_gib": args.memory_budget_gib,
                         "variant": args.variant,
                         "implementation_sha256": sources,
                         "runtime": loading,
