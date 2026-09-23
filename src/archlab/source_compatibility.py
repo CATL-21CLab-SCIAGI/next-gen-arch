@@ -12,7 +12,23 @@ from pathlib import Path
 
 
 def ast_sha256(source):
-    tree = ast.dump(ast.parse(source), annotate_fields=True, include_attributes=False)
+    def canonical(value):
+        if isinstance(value, ast.AST):
+            fields = [(name, canonical(item)) for name, item in ast.iter_fields(value)
+                      # Python 3.12 added this empty field to existing definitions.
+                      if not (name == "type_params" and item == [])]
+            return [type(value).__name__, fields]
+        if isinstance(value, list):
+            return [canonical(item) for item in value]
+        if isinstance(value, bytes):
+            return ["bytes", value.hex()]
+        if isinstance(value, (float, complex)):
+            return [type(value).__name__, repr(value)]
+        if value is Ellipsis:
+            return ["ellipsis"]
+        return value
+
+    tree = json.dumps(canonical(ast.parse(source)), ensure_ascii=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(tree.encode()).hexdigest()
 
 
