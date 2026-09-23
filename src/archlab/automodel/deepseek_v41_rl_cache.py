@@ -51,6 +51,7 @@ def _adapter_step(adapter, cache, streams, *, position, replay_canvas):
     from flash_attn import flash_attn_func
 
     from archlab.architectures.simplicial_decode import simplicial_decode_attention
+    from archlab.automodel.deepseek_v41_rl_cache_shapes import pad_at_position
 
     if streams.shape[1] != 1:
         raise ValueError("cached adapter expects one token")
@@ -68,7 +69,14 @@ def _adapter_step(adapter, cache, streams, *, position, replay_canvas):
     with torch.autocast(
         "cuda", dtype=torch.bfloat16, enabled=streams.is_cuda and streams.dtype == torch.bfloat16
     ):
-        x, q, projected = _adapter_projections(adapter, streams)
+        x, q, projected = _adapter_projections(
+            adapter, pad_at_position(streams, position, replay_canvas)
+        )
+        q = q[:, position : position + 1].contiguous()
+        projected = {
+            name: value[:, position : position + 1].contiguous()
+            for name, value in projected.items()
+        }
         for name, value in projected.items():
             window = c.short_window if name.endswith("1") else c.long_window
             cache[name] = _append(cache[name], value, window)
@@ -92,9 +100,9 @@ def _adapter_step(adapter, cache, streams, *, position, replay_canvas):
                     cache["v1"].float(),
                     cache["v2"].float(),
                 ).to(q.dtype)
-        attended = attended.flatten(-2)
+        attended = pad_at_position(attended.flatten(-2), position, replay_canvas)
         attended = (attended.float() * adapter.output_gate(x).float().sigmoid()).to(attended.dtype)
-        branch = adapter.output(attended)
+        branch = adapter.output(attended)[:, position : position + 1]
         write = 2 * adapter.write_logits.float().sigmoid()
         return (streams.float() + branch.float().unsqueeze(-2) * write[None, None, :, None]).to(
             streams.dtype
