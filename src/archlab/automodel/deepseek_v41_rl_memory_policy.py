@@ -48,7 +48,7 @@ def _hc_forward_with_offload(self, hidden_states):
                 # flat is exclusively hidden_states.float(): storing the original
                 # activation dtype and promoting back is lossless, not quantization.
                 host = torch.empty(
-                    flat.numel(), dtype=hidden_states.dtype, device="cpu", pin_memory=True
+                    flat.numel(), dtype=hidden_states.dtype, device="cpu", pin_memory=False
                 )
                 host.copy_(flat.detach().reshape(-1))
                 self._archlab_hc_offload_stats["tensor_copies"] += 1
@@ -91,10 +91,11 @@ def install_hc_activation_offload(model):
         raise RuntimeError("HC activation offload changed parameter ownership")
     return {
         "enabled": True,
-        "kind": "HC-projection-activation-exact-host-roundtrip-v1",
+        "kind": "HC-projection-activation-exact-pageable-host-roundtrip-v2",
         "modules": [name for name, _ in selected],
         "weights_offloaded": False,
         "deduplicated_saved_views": True,
+        "host_allocator": "pageable; avoids variable-shape pinned-cache accumulation",
         "parameter_identity_preserved": True,
     }
 
