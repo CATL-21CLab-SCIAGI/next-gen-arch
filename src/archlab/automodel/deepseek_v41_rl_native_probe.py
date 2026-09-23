@@ -72,6 +72,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--variant", choices=("normal", "simplicial"), default="normal")
     parser.add_argument("--cache-policy", action="store_true")
+    parser.add_argument("--cache-context", type=int)
     parser.add_argument("--new-tokens", type=int)
     parser.add_argument("--prompt-tokens", type=int)
     parser.add_argument("--freeze-router", action="store_true")
@@ -107,6 +108,11 @@ def main():
     )
     if min(new_tokens, prompt_tokens) < 1 or prompt_tokens + 2 + new_tokens > 1024:
         parser.error("probe token budgets must be positive and fit the bounded 1024-token context")
+    if args.cache_context is not None and (
+        not args.cache_policy
+        or not prompt_tokens + 2 + max(new_tokens, 16) <= args.cache_context <= 4096
+    ):
+        parser.error("cache context must contain every probe prefix and be at most4096")
     from archlab.automodel.deepseek_v41_runtime import select_container_kernel_packages
 
     packages = select_container_kernel_packages(
@@ -262,7 +268,9 @@ def main():
         prompts = [
             [100 + rank, *range(101, 100 + prompt_tokens + (rank % 3 if args.cache_policy else 0))]
         ] * 4
-        context_limit = ((prompt_tokens + 2 + max(new_tokens, 16) + 127) // 128) * 128
+        context_limit = args.cache_context or (
+            ((prompt_tokens + 2 + max(new_tokens, 16) + 127) // 128) * 128
+        )
         if args.cache_policy:
             cache_equivalence = qualify_resident_cache(
                 model,
