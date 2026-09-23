@@ -169,20 +169,25 @@ def hc_offload_statistics(model):
     return {key: sum(row[key] for row in rows) for key in ("tensor_copies", "copied_bytes")}
 
 
-def _expert_activation(carrier, indices, weight, probabilities, limit):
+def _expert_activation(carrier, indices, weight, probabilities, limit, *, bounded=True):
+    from archlab.architectures.deepseek_v41_swiglu import native_swiglu
+
     selected = carrier[indices].to(weight.dtype)
     middle = weight.shape[-1] // 2
-    gate = F.linear(selected, weight[:, :middle].T.contiguous()).float()
-    value = F.linear(selected, weight[:, middle:].T.contiguous()).float()
-    gate = gate.clamp(max=limit)
-    value = value.clamp(min=-limit, max=limit)
-    activated = F.silu(gate) * value
-    return (activated * probabilities).to(weight.dtype)
+    gate = F.linear(selected, weight[:, :middle].T.contiguous())
+    value = F.linear(selected, weight[:, middle:].T.contiguous())
+    if not bounded:
+        return (
+            F.silu(gate.float().clamp(max=limit))
+            * value.float().clamp(min=-limit, max=limit)
+            * probabilities
+        ).to(weight.dtype)
+    return native_swiglu(gate, value, probabilities, limit=limit)
 
 
 def _checkpoint_expert_activation(*args):
     if not torch.is_grad_enabled():
-        return _expert_activation(*args)
+        return _expert_activation(*args, bounded=False)
     from torch.utils.checkpoint import checkpoint
 
     return checkpoint(_expert_activation, *args, use_reentrant=False, preserve_rng_state=False)
@@ -279,6 +284,8 @@ def install_inplace_moe_accumulation(model, *, checkpoint_activations=False):
         "maximum_temporary_rows": 8192,
         "backward": "one write per unique dispatcher output row",
         "expert_activation_checkpoint": checkpoint_activations,
+        "expert_pointwise_chunk_rows": 1024 if checkpoint_activations else None,
+        "expert_pointwise_chunking_scope": "gradient-bearing calls; eager pointwise sampling",
         "modules": [name for name, _ in selected],
         "container_code_changed": False,
         "parameter_identity_preserved": True,
