@@ -20,93 +20,19 @@ def _append(previous, current, limit=None):
     return result[:, -limit:].contiguous() if limit is not None else result.contiguous()
 
 
-def _adapter_projections(adapter, streams):
-    c = adapter.config
-    with torch.autocast(
-        "cuda", dtype=torch.bfloat16, enabled=streams.is_cuda and streams.dtype == torch.bfloat16
-    ):
-        read = adapter.read_logits.float().softmax(-1)
-        x = adapter.input_norm(
-            (streams.float() * read[None, None, :, None]).sum(-2).to(streams.dtype)
-        )
-        batch, length = streams.shape[:2]
-        q = adapter.q_norm(adapter.q(x).reshape(batch, length, c.query_heads, c.head_dim))
-        shape = (batch, length, c.kv_heads, c.head_dim)
-        if hasattr(adapter, "k1"):
-            projected = {
-                "k1": adapter.k1_norm(adapter.k1(x).reshape(shape)),
-                "k2": adapter.k2_norm(adapter.k2(x).reshape(shape)),
-                "v1": adapter.v1(x).reshape(shape),
-                "v2": adapter.v2(x).reshape(shape),
-            }
-        else:
-            projected = {
-                "k": adapter.k_norm(adapter.k(x).reshape(shape)),
-                "v": adapter.v(x).reshape(shape),
-            }
-    return x, q, projected
-
-
 def _adapter_step(adapter, cache, streams, *, position, replay_canvas):
-    from flash_attn import flash_attn_func
-
-    from archlab.architectures.simplicial_decode import simplicial_decode_attention
-    from archlab.automodel.deepseek_v41_rl_cache_shapes import pad_at_position
+    """Replay the original small adapter branch over its bounded input history."""
+    from archlab.architectures.deepseek_v41_adapter import V41SimplicialAdapter
+    from archlab.architectures.deepseek_v41_normal_adapter import V41NormalAttentionAdapter
 
     if streams.shape[1] != 1:
         raise ValueError("cached adapter expects one token")
-    c = adapter.config
-    if "streams" in cache:
-        from archlab.architectures.deepseek_v41_normal_adapter import V41NormalAttentionAdapter
-
-        history = _append(cache["streams"], streams, c.long_window)
-        cache["streams"] = history
-        padded = streams.new_zeros(streams.shape[0], replay_canvas, *streams.shape[2:])
-        padded[:, position + 1 - history.shape[1] : position + 1] = history
-        return V41NormalAttentionAdapter.forward(adapter, padded)[
-            :, position : position + 1
-        ].contiguous()
-    with torch.autocast(
-        "cuda", dtype=torch.bfloat16, enabled=streams.is_cuda and streams.dtype == torch.bfloat16
-    ):
-        x, q, projected = _adapter_projections(
-            adapter, pad_at_position(streams, position, replay_canvas)
-        )
-        q = q[:, position : position + 1].contiguous()
-        projected = {
-            name: value[:, position : position + 1].contiguous()
-            for name, value in projected.items()
-        }
-        for name, value in projected.items():
-            window = c.short_window if name.endswith("1") else c.long_window
-            cache[name] = _append(cache[name], value, window)
-        with torch.autocast(streams.device.type, enabled=False):
-            if "k" in cache:
-                attended = flash_attn_func(
-                    q.contiguous(),
-                    cache["k"],
-                    cache["v"],
-                    dropout_p=0.0,
-                    softmax_scale=c.head_dim**-0.5,
-                    causal=True,
-                    window_size=(c.long_window - 1, 0),
-                    deterministic=True,
-                )
-            else:
-                attended = simplicial_decode_attention(
-                    q.float(),
-                    cache["k1"].float(),
-                    cache["k2"].float(),
-                    cache["v1"].float(),
-                    cache["v2"].float(),
-                ).to(q.dtype)
-        attended = pad_at_position(attended.flatten(-2), position, replay_canvas)
-        attended = (attended.float() * adapter.output_gate(x).float().sigmoid()).to(attended.dtype)
-        branch = adapter.output(attended)[:, position : position + 1]
-        write = 2 * adapter.write_logits.float().sigmoid()
-        return (streams.float() + branch.float().unsqueeze(-2) * write[None, None, :, None]).to(
-            streams.dtype
-        )
+    history = _append(cache["streams"], streams, adapter.config.long_window)
+    cache["streams"] = history
+    padded = streams.new_zeros(streams.shape[0], replay_canvas, *streams.shape[2:])
+    padded[:, position + 1 - history.shape[1] : position + 1] = history
+    implementation = V41SimplicialAdapter if hasattr(adapter, "k1") else V41NormalAttentionAdapter
+    return implementation.forward(adapter, padded)[:, position : position + 1].contiguous()
 
 
 def _index_step(
@@ -369,30 +295,10 @@ class V41PolicyCache:
                 if adapter is not None:
 
                     def capture_adapter(module, args, _output, *, target=cache):
-                        if not hasattr(module, "k1"):
-                            target["adapter"] = {
-                                "streams": args[0][
-                                    :, max(0, prefix_length - module.config.long_window) : prefix_length
-                                ].contiguous().clone()
-                            }
-                            return
-                        _, _, projected = _adapter_projections(module, args[0])
                         target["adapter"] = {
-                            name: value[
-                                :,
-                                max(
-                                    0,
-                                    prefix_length
-                                    - (
-                                        module.config.short_window
-                                        if name.endswith("1")
-                                        else module.config.long_window
-                                    ),
-                                ) : prefix_length,
-                            ]
-                            .contiguous()
-                            .clone()
-                            for name, value in projected.items()
+                            "streams": args[0][
+                                :, max(0, prefix_length - module.config.long_window) : prefix_length
+                            ].contiguous().clone()
                         }
 
                     hooks.append(adapter.register_forward_hook(capture_adapter))
