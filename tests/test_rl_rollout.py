@@ -156,7 +156,8 @@ def test_cached_sampling_preserves_scores_stops_and_full_prefix_replay(monkeypat
             positions = attention_mask.sum(-1) - 1
             return self.actor.embedding(ids)[torch.arange(ids.shape[0]), positions]
 
-        def decode(self, ids):
+        def decode(self, ids, *, replay_canvas):
+            assert replay_canvas >= 2
             return self.actor.embedding(ids)[:, 0]
 
     monkeypatch.setattr("archlab.rl.weight_residency.retained_fsdp_weights", retained)
@@ -165,7 +166,7 @@ def test_cached_sampling_preserves_scores_stops_and_full_prefix_replay(monkeypat
     with torch.no_grad():
         model.lm_head.weight.zero_()  # Uniform random EOS creates unequal response lengths.
     prompts = [[0, 4]] * 4
-    reference = sample(model, prompts, max_new_tokens=8)
+    reference = sample(model, prompts, max_new_tokens=8, bucket_multiple=16)
     actual = sample(model, prompts, max_new_tokens=8, cache_policy=True, retain_weights=True)
     assert actual.generated_ids == reference.generated_ids
     assert len(set(map(len, actual.generated_ids))) > 1
@@ -177,6 +178,7 @@ def test_cached_sampling_preserves_scores_stops_and_full_prefix_replay(monkeypat
         *[[4, 1]] * (steps - 1),
     ]
     assert actual.receipt["replay_shapes"] == reference.receipt["forward_shapes"]
+    assert actual.receipt["replay_canvas_policy"] == "fixed-context-v1"
     for step in range(steps):
         for observed, expected in zip(
             reconstruct_prefix(actual, step), reconstruct_prefix(reference, step)

@@ -226,6 +226,9 @@ def sample_rollouts(
                     _maximum(max(map(len, sequences)), device), bucket_multiple, context_limit
                 )
                 if cache_policy:
+                    # Cached historical states must not change numerical kernels
+                    # when a later prefix crosses a padding bucket boundary.
+                    length = context_limit
                     replay_shapes.append([len(sequences), length])
                     if generation_step == 0:
                         prefill_ids, prefill_mask = _inputs(sequences, length, pad_token_id, device)
@@ -237,7 +240,7 @@ def sample_rollouts(
                         next_ids = torch.tensor(
                             selected, device=device, dtype=torch.long
                         ).unsqueeze(1)
-                        final_hidden = decode_cache.decode(next_ids)
+                        final_hidden = decode_cache.decode(next_ids, replay_canvas=length)
                         forward_shapes.append([len(sequences), 1])
                 else:
                     ids, mask = _inputs(sequences, length, pad_token_id, device)
@@ -306,6 +309,8 @@ def sample_rollouts(
             module.training = training
 
     length = _bucket(_maximum(max(map(len, sequences)), device), bucket_multiple, context_limit)
+    if cache_policy:
+        length = context_limit
     ids, mask = _inputs(sequences, length, pad_token_id, device)
     labels = torch.full_like(ids, -100)
     policy = torch.zeros_like(ids, dtype=torch.float32)
@@ -352,6 +357,7 @@ def sample_rollouts(
     if cache_policy:
         receipt["replay_shapes"] = replay_shapes
         receipt["replay_inputs"] = "equivalent-full-prefix-right-padded"
+        receipt["replay_canvas_policy"] = "fixed-context-v1"
     return RolloutBatch(
         ids, mask, labels, labels != -100, policy, behavior, generated, lengths, reasons, receipt
     )

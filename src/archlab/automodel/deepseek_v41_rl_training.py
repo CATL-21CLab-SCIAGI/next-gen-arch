@@ -44,6 +44,7 @@ SOURCE_FILES = (
     "rl/profiling.py",
     "rl/weight_residency.py",
     "automodel/deepseek_v41_rl_cache.py",
+    "automodel/deepseek_v41_rl_cache_shapes.py",
     "automodel/deepseek_v41_rl_memory.py",
     "rl/regularization.py",
     "automodel/deepseek_v41_rl_memory_policy.py",
