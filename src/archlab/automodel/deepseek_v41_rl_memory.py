@@ -122,9 +122,29 @@ def input_offload_statistics(model):
     return {key: sum(row[key] for row in rows) for key in ("tensor_copies", "copied_bytes")}
 
 
-def qualify_replay_memory(
-    model, optimizer, indexers, prompts, *, config, policy_version, stops, pad
-):
+def optimizer_memory_reserve(optimizer):
+    """Size the pinned Adafactor's lazy FP32 state plus its bounded update workspace."""
+    from archlab.optimizers.sharded_adafactor import ShardedAdafactor, local_tensor
+
+    if not isinstance(optimizer, ShardedAdafactor):
+        raise TypeError("memory admission is qualified only for the existing sharded Adafactor")
+    state_bytes = 0
+    for group in optimizer.param_groups:
+        for parameter in group["params"]:
+            shape = local_tensor(parameter).shape
+            elements = (
+                math.prod(shape[:-1]) + math.prod(shape[:-2]) * shape[-1]
+                if parameter.ndim > 1
+                else math.prod(shape)
+            )
+            state_bytes += elements * 4
+    workspace_bytes = max(
+        256 * 2**20, max(group["chunk_elements"] * 32 for group in optimizer.param_groups)
+    )
+    return state_bytes, workspace_bytes
+
+
+def qualify_replay_memory(model, optimizer, indexers, prompts, *, config, policy_version, pad):
     """Stress a maximum-context replay without updating weights or optimizer state."""
     import threading
 
@@ -134,9 +154,30 @@ def qualify_replay_memory(
     from archlab.automodel.deepseek_v41_rl_update import policy_gradient_step
     from archlab.rl.rollout import sample_rollouts
 
-    target = config["context_limit"] - 1
+    if any(optimizer.state.values()):
+        raise ValueError("memory admission requires a fresh optimizer")
+    replay_count = 2
+    target = config["context_limit"] - replay_count
     extended = [(row * ((target + len(row) - 1) // len(row)))[:target] for row in prompts]
     device = model.lm_head.weight.device
+    state_bytes, workspace_bytes = optimizer_memory_reserve(optimizer)
+    from archlab.optimizers.sharded_adafactor import local_tensor
+
+    parameter_bytes = sum(local_tensor(p).numel() * p.element_size() for p in model.parameters())
+    gradient_bytes = sum(
+        local_tensor(p).numel() * p.element_size()
+        for group in optimizer.param_groups
+        for p in group["params"]
+    )
+    buffer_bytes = sum(local_tensor(b).numel() * b.element_size() for b in model.buffers())
+    optimizer_step_bound = (
+        parameter_bytes + buffer_bytes + gradient_bytes + state_bytes + workspace_bytes
+    )
+    if optimizer_step_bound > config["gpu_memory_budget_gib"] * 2**30:
+        raise ValueError("estimated optimizer phase exceeds the declared allocator budget")
+    # Occupy the space required by the future real optimizer without creating
+    # synthetic moment estimates or applying a synthetic optimizer step.
+    optimizer_reserve = torch.empty(state_bytes, dtype=torch.uint8, device=device)
     minimum_free = [0]
     done = threading.Event()
 
@@ -154,13 +195,19 @@ def qualify_replay_memory(
             model,
             extended,
             policy_version=policy_version,
-            max_new_tokens=1,
+            max_new_tokens=replay_count,
             context_limit=config["context_limit"],
-            eos_token_ids=stops,
+            # Resource stress continues past the model's real EOS. It uses a
+            # declared sentinel and is never treated as a task completion.
+            eos_token_ids={model.lm_head.weight.shape[0] - 1},
             pad_token_id=pad,
             seed=config["seed"] + 3000000,
             retain_weights=False,
         )
+        generation_steps = torch.tensor(max(map(len, rollout.generated_ids)), device=device)
+        dist.all_reduce(generation_steps, op=dist.ReduceOp.MAX)
+        if int(generation_steps) != replay_count:
+            raise RuntimeError("memory stress did not exercise two accumulated backward passes")
         rewards = torch.zeros(
             len(prompts) // config["group_size"], config["group_size"], device=device
         )
@@ -174,7 +221,7 @@ def qualify_replay_memory(
             lr=config["learning_rate"],
             group_size=config["group_size"],
             replay_mode="sampled-prefix",
-            replay_prefixes=1,
+            replay_prefixes=replay_count,
             replay_seed=config["seed"],
             replay_tolerance=config["replay_tolerance"],
             audit_only=True,
@@ -195,6 +242,9 @@ def qualify_replay_memory(
         "optimizer_state_empty": not any(optimizer.state.values()),
         "input_offload": input_offload_statistics(model),
         "hc_offload": hc_offload_statistics(model),
+        "optimizer_state_reserve_bytes": optimizer_reserve.numel(),
+        "estimated_optimizer_workspace_bytes": workspace_bytes,
+        "optimizer_step_tensor_bytes_upper_bound": optimizer_step_bound,
     }
     rows = [None] * dist.get_world_size()
     dist.all_gather_object(rows, local)
@@ -206,7 +256,14 @@ def qualify_replay_memory(
             and row["minimum_driver_free_bytes"] >= reserve
             for row in rows
         ),
-        "kind": "maximum-context-replay-memory-v1",
+        "kind": "maximum-context-accumulated-replay-memory-v2",
+        "replay_prefixes": replay_count,
+        "optimizer_state_reserve_bytes": max(row["optimizer_state_reserve_bytes"] for row in rows),
+        "estimated_optimizer_workspace_bytes": workspace_bytes,
+        "optimizer_step_tensor_bytes_upper_bound": max(
+            row["optimizer_step_tensor_bytes_upper_bound"] for row in rows
+        ),
+        "memory_stop_token_id": model.lm_head.weight.shape[0] - 1,
         "context_limit": config["context_limit"],
         "required_evaluation_reserve_gib": config["evaluation_reserve_gib"],
         "minimum_driver_free_gib": min(row["minimum_driver_free_bytes"] for row in rows) / 2**30,

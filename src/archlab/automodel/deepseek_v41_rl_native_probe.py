@@ -214,6 +214,7 @@ def main():
                 "replay_tolerance": 0.02,
                 "loss_normalization": args.loss_normalization,
                 "evaluation_reserve_gib": args.evaluation_reserve_gib,
+                "gpu_memory_budget_gib": args.memory_budget_gib,
             }
             result = qualify_replay_memory(
                 model,
@@ -222,7 +223,6 @@ def main():
                 [[100 + rank, 101, 102]] * 4,
                 config=config,
                 policy_version=model._archlab_rl_policy_version,
-                stops={1},
                 pad=2,
             )
             if sources != {

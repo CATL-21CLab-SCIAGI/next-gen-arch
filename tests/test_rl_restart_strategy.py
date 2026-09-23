@@ -89,6 +89,9 @@ def test_shared_gpu_admission_requires_measured_headroom():
         admit_qualification(receipt, contract)
     receipt["memory_admission"] = {
         "passed": True,
+        "kind": "maximum-context-accumulated-replay-memory-v2",
+        "replay_prefixes": 2,
+        "optimizer_state_reserve_bytes": 1,
         "required_evaluation_reserve_gib": 64,
         "context_limit": 2048,
         "minimum_driver_free_gib": 63,
@@ -97,6 +100,29 @@ def test_shared_gpu_admission_requires_measured_headroom():
         admit_qualification(receipt, contract)
     receipt["memory_admission"]["minimum_driver_free_gib"] = 64
     admit_qualification(receipt, contract)
+    receipt["memory_admission"]["replay_prefixes"] = 1
+    with pytest.raises(ValueError, match="memory admission"):
+        admit_qualification(receipt, contract)
+
+
+def test_optimizer_memory_estimate_matches_materialized_factored_state():
+    from archlab.automodel.deepseek_v41_rl_memory import optimizer_memory_reserve
+    from archlab.optimizers.sharded_adafactor import ShardedAdafactor
+
+    parameters = [nn.Parameter(torch.randn(shape)) for shape in ((4, 5), (2, 3, 4), (6,))]
+    optimizer = ShardedAdafactor(parameters, lr=1e-6)
+    estimated, workspace = optimizer_memory_reserve(optimizer)
+    assert not optimizer.state and workspace > 0
+    for parameter in parameters:
+        parameter.grad = torch.ones_like(parameter)
+    optimizer.step()
+    actual = sum(
+        tensor.numel() * tensor.element_size()
+        for state in optimizer.state.values()
+        for tensor in state.values()
+        if isinstance(tensor, torch.Tensor)
+    )
+    assert estimated == actual
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires the existing B300 runtime")
@@ -117,7 +143,9 @@ def test_checkpoint_input_offload_preserves_gradients_and_never_copies_weights()
     second.square().mean().backward()
     torch.testing.assert_close(first, second, rtol=0, atol=0)
     torch.testing.assert_close(x.grad, y.grad, rtol=0, atol=0)
-    for (name, p), (_, q) in zip(reference.named_parameters(), candidate.named_parameters(), strict=False):
+    for (name, p), (_, q) in zip(
+        reference.named_parameters(), candidate.named_parameters(), strict=False
+    ):
         torch.testing.assert_close(p.grad, q.grad, rtol=0, atol=0)
         assert q.device.type == "cuda" and id(q) == before[name]
     stats = input_offload_statistics(candidate)

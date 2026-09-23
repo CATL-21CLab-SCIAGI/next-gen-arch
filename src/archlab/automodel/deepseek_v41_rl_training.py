@@ -568,6 +568,9 @@ def admit_qualification(receipt, contract):
         memory = receipt.get("memory_admission", {})
         if (
             memory.get("passed") is not True
+            or memory.get("kind") != "maximum-context-accumulated-replay-memory-v2"
+            or memory.get("replay_prefixes", 0) < 2
+            or memory.get("optimizer_state_reserve_bytes", 0) <= 0
             or memory.get("required_evaluation_reserve_gib") != reserve
             or memory.get("context_limit") != contract["recipe"]["context_limit"]
             or memory.get("minimum_driver_free_gib", -1) < reserve
@@ -735,7 +738,6 @@ def run_qualification(
                 prompts,
                 config=config,
                 policy_version=version,
-                stops=stops,
                 pad=pad,
             )
             if rank == 0:
