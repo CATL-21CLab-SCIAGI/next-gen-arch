@@ -1,4 +1,4 @@
-"""Small native V4.1 EP8/FSDP2 replay/residency qualification; no policy update."""
+"""Native EP8/FSDP2 numerical probes and synthetic full-geometry memory checks."""
 
 from __future__ import annotations
 
@@ -7,6 +7,64 @@ import datetime
 import json
 import os
 from pathlib import Path
+
+
+def _full_memory_actor(args, packages):
+    """Exercise full parameter/activation geometry without reading checkpoint payloads."""
+    import torch
+    from nemo_automodel.components.moe.layers import Gate
+
+    from archlab.automodel.deepseek_v41_rl_model import _construct_full_shell
+    from archlab.optimizers.sharded_adafactor import local_tensor
+
+    model, indexers, loading = _construct_full_shell(
+        variant=args.variant,
+        assets=Path(os.environ["ARCHLAB_DEEPSEEK_V41_ASSETS"]),
+        weights=Path(os.environ["ARCHLAB_DEEPSEEK_V41_CHECKPOINT"]),
+        tiny=False,
+    )
+    with torch.no_grad():
+        for name, parameter in model.named_parameters():
+            value = local_tensor(parameter)
+            if name.endswith("lm_head.weight"):
+                value.normal_(0, 0.001)
+            elif ".ffn.gate." in name or name.endswith(".base"):
+                value.zero_()
+            elif name.endswith(".fn"):
+                value.normal_(0, 0.001)
+            elif value.ndim < 2:
+                value.fill_(1 if "norm" in name or name.endswith(".scale") else 0)
+            else:
+                value.normal_(0, 0.01)
+        gates = [module for module in model.modules() if isinstance(module, Gate)]
+        if len(gates) != 40:
+            raise ValueError("expected all forty full-geometry routers")
+        for gate in gates:
+            if gate.e_score_correction_bias is None:
+                raise ValueError("full geometry needs the native routing bias for the stress test")
+            bias = local_tensor(gate.e_score_correction_bias)
+            if bias.numel() != gate.n_experts:
+                raise ValueError("memory-probe routing bias must remain replicated")
+            bias.zero_()
+            bias[: gate.topk].fill_(1000)
+
+    model._archlab_memory_routing_checks = 0
+
+    def verify_owner(module, _inputs, output):
+        indices = output[1]
+        if not bool(((indices >= 0) & (indices < module.n_experts // 8)).all()):
+            raise AssertionError("synthetic routing did not exercise one expert owner")
+        model._archlab_memory_routing_checks += 1
+
+    for gate in gates:
+        gate.register_forward_hook(verify_owner)
+    loading.update(
+        resolved_kernel_packages=packages,
+        actor_weight_origin="synthetic-memory-only",
+        checkpoint_payloads_read=False,
+        routing="all selected experts on EP owner zero",
+    )
+    return model, indexers, loading, None
 
 
 def main():
@@ -20,12 +78,25 @@ def main():
     parser.add_argument("--checkpoint-input-offload", action="store_true")
     parser.add_argument("--inplace-moe-accumulation", action="store_true")
     parser.add_argument("--hc-activation-offload", action="store_true")
+    parser.add_argument("--checkpoint-expert-activations", action="store_true")
+    parser.add_argument("--full-memory-audit", action="store_true")
+    parser.add_argument("--memory-context", type=int, default=2048)
+    parser.add_argument("--memory-budget-gib", type=float, default=198)
+    parser.add_argument("--evaluation-reserve-gib", type=float, default=64)
     parser.add_argument(
         "--loss-normalization",
         choices=("sequence_sum", "prompt_token_mean"),
         default="sequence_sum",
     )
     args = parser.parse_args()
+    if args.checkpoint_expert_activations and not args.inplace_moe_accumulation:
+        parser.error("expert checkpoints require the native memory policy")
+    if args.full_memory_audit and (
+        args.cache_policy or not args.freeze_router or not 128 <= args.memory_context <= 4096
+    ):
+        parser.error(
+            "full memory audit requires frozen routers, uncached execution and context >=128"
+        )
     new_tokens = (
         args.new_tokens if args.new_tokens is not None else (64 if args.cache_policy else 2)
     )
@@ -57,7 +128,12 @@ def main():
 
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     # Qualification may share a node with a live actor. Bound allocator demand.
-    torch.cuda.set_per_process_memory_fraction(0.02)
+    if args.full_memory_audit:
+        from archlab.automodel.deepseek_v41_rl_memory import configure_gpu_budget
+
+        configure_gpu_budget(args.memory_budget_gib)
+    else:
+        torch.cuda.set_per_process_memory_fraction(0.02)
     torch.set_num_threads(4)
     torch.manual_seed(82)
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -71,15 +147,19 @@ def main():
     try:
         if args.output.exists():
             raise FileExistsError("use a fresh qualification output")
-        model, indexers, loading, _ = construct_rl_actor(
-            checkpoint=None,
-            family="full",
-            variant=args.variant,
-            tiny=True,
-            assets=Path(os.environ["ARCHLAB_DEEPSEEK_V41_ASSETS"]),
-            weights=Path(os.environ["ARCHLAB_DEEPSEEK_V41_CHECKPOINT"]),
-            declared_execution_changes=EXECUTION_CHANGES,
-            resolved_kernel_packages=packages,
+        model, indexers, loading, _ = (
+            _full_memory_actor(args, packages)
+            if args.full_memory_audit
+            else construct_rl_actor(
+                checkpoint=None,
+                family="full",
+                variant=args.variant,
+                tiny=True,
+                assets=Path(os.environ["ARCHLAB_DEEPSEEK_V41_ASSETS"]),
+                weights=Path(os.environ["ARCHLAB_DEEPSEEK_V41_CHECKPOINT"]),
+                declared_execution_changes=EXECUTION_CHANGES,
+                resolved_kernel_packages=packages,
+            )
         )
         install_rl_head(model)
         from archlab.automodel.deepseek_v41_rl_memory import (
@@ -96,11 +176,63 @@ def main():
         )
 
         if args.inplace_moe_accumulation:
-            strategy["moe_accumulation"] = install_inplace_moe_accumulation(model)
+            strategy["moe_accumulation"] = install_inplace_moe_accumulation(
+                model, checkpoint_activations=args.checkpoint_expert_activations
+            )
         if args.hc_activation_offload:
             strategy["hc_activations"] = install_hc_activation_offload(model)
         if args.checkpoint_input_offload:
             strategy["checkpoint_inputs"] = install_checkpoint_input_offload(model)
+        if args.full_memory_audit:
+            from archlab.automodel.deepseek_v41_rl_memory import qualify_replay_memory
+
+            model._archlab_rl_policy_version = "synthetic-full-geometry-memory-only"
+            optimizer = ShardedAdafactor(
+                (p for p in model.parameters() if p.requires_grad), lr=1e-6
+            )
+            config = {
+                "context_limit": args.memory_context,
+                "group_size": 4,
+                "seed": 891,
+                "learning_rate": 1e-6,
+                "replay_tolerance": 0.02,
+                "loss_normalization": args.loss_normalization,
+                "evaluation_reserve_gib": args.evaluation_reserve_gib,
+            }
+            result = qualify_replay_memory(
+                model,
+                optimizer,
+                indexers,
+                [[100 + rank, 101, 102]] * 4,
+                config=config,
+                policy_version=model._archlab_rl_policy_version,
+                stops={1},
+                pad=2,
+            )
+            if sources != {
+                **source_identity(),
+                "automodel/deepseek_v41_rl_native_probe.py": sha256_file(__file__),
+            }:
+                raise RuntimeError("probe source changed during the synthetic memory test")
+            if rank == 0:
+                atomic_write_json(
+                    args.output,
+                    {
+                        **result,
+                        "kind": "synthetic-full-geometry-memory-only-v1",
+                        "scope": "Synthetic weights and worst-case single-owner routing; no quality evaluation or production admission",
+                        "world_size": dist.get_world_size(),
+                        "variant": args.variant,
+                        "implementation_sha256": sources,
+                        "runtime": loading,
+                        "strategy": strategy,
+                        "verified_router_calls_rank0": model._archlab_memory_routing_checks,
+                    },
+                    allow_nan=False,
+                )
+            if not result["passed"]:
+                raise AssertionError("synthetic full-geometry memory gate failed")
+            return
         cache_equivalence = None
         if args.cache_policy:
             from archlab.automodel.deepseek_v41_rl_cache import qualify_resident_cache
@@ -221,6 +353,15 @@ def main():
                 + "\n"
             )
             print(json.dumps({"passed": True, "output": str(args.output)}), flush=True)
+    except BaseException:
+        import traceback
+
+        atomic_write_json(
+            args.output.with_name(f"{args.output.stem}-rank-{rank:02d}-failure.json"),
+            {"traceback": traceback.format_exc()},
+            allow_nan=False,
+        )
+        raise
     finally:
         dist.destroy_process_group()
 

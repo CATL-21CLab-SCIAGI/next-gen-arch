@@ -60,7 +60,10 @@ def test_hc_host_roundtrip_is_exact_and_deduplicates_saved_views(dtype):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires the existing B300 runtime")
 @pytest.mark.parametrize("first_expert", [0, 2])
-def test_inplace_expert_sum_has_exact_outputs_and_all_input_gradients(first_expert):
+@pytest.mark.parametrize("checkpoint_activations", [False, True])
+def test_inplace_expert_sum_has_exact_outputs_and_all_input_gradients(
+    first_expert, checkpoint_activations
+):
     from archlab.automodel.deepseek_v41_official_moe import _native_up_grouped_down
 
     torch.manual_seed(788)
@@ -84,7 +87,7 @@ def test_inplace_expert_sum_has_exact_outputs_and_all_input_gradients(first_expe
     first = _native_up_grouped_down(
         owner, x, mask, weights, indices, up, down, experts, first_expert
     )
-    second = inplace_native_expert_function()(
+    second = inplace_native_expert_function(checkpoint_activations=checkpoint_activations)(
         owner, copies[0], mask, copies[1], indices, copies[2], copies[3], experts, first_expert
     )
     upstream = torch.randn_like(first)

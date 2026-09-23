@@ -181,6 +181,7 @@ def validate_recipe(config):
     config.setdefault("freeze_router", False)
     config.setdefault("checkpoint_input_offload", False)
     config.setdefault("inplace_moe_accumulation", False)
+    config.setdefault("checkpoint_expert_activations", False)
     config.setdefault("hc_activation_offload", False)
     config.setdefault("gpu_memory_budget_gib", None)
     config.setdefault("evaluation_reserve_gib", 0.0)
@@ -197,6 +198,7 @@ def validate_recipe(config):
             "freeze_router",
             "checkpoint_input_offload",
             "inplace_moe_accumulation",
+            "checkpoint_expert_activations",
             "hc_activation_offload",
             "initial_evaluation",
             "qualification_evaluation",
@@ -205,6 +207,8 @@ def validate_recipe(config):
         raise ValueError("router freeze and checkpoint input offload must be boolean")
     if config["loss_normalization"] not in ("sequence_sum", "prompt_token_mean"):
         raise ValueError("unsupported declared RL loss normalization")
+    if config["checkpoint_expert_activations"] and not config["inplace_moe_accumulation"]:
+        raise ValueError("expert activation checkpoints require the qualified memory policy")
     budget = config["gpu_memory_budget_gib"]
     if budget is not None and (
         isinstance(budget, bool)
@@ -1554,7 +1558,9 @@ def main():
                 else {"enabled": False}
             ),
             "moe_accumulation": (
-                install_inplace_moe_accumulation(model)
+                install_inplace_moe_accumulation(
+                    model, checkpoint_activations=config["checkpoint_expert_activations"]
+                )
                 if config["inplace_moe_accumulation"]
                 else {"enabled": False}
             ),

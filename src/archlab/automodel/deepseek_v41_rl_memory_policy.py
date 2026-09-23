@@ -109,7 +109,26 @@ def hc_offload_statistics(model):
     return {key: sum(row[key] for row in rows) for key in ("tensor_copies", "copied_bytes")}
 
 
-def inplace_native_expert_function():
+def _expert_activation(carrier, indices, weight, probabilities, limit):
+    selected = carrier[indices].to(weight.dtype)
+    middle = weight.shape[-1] // 2
+    gate = F.linear(selected, weight[:, :middle].T.contiguous()).float()
+    value = F.linear(selected, weight[:, middle:].T.contiguous()).float()
+    gate = gate.clamp(max=limit)
+    value = value.clamp(min=-limit, max=limit)
+    activated = F.silu(gate) * value
+    return (activated * probabilities).to(weight.dtype)
+
+
+def _checkpoint_expert_activation(*args):
+    if not torch.is_grad_enabled():
+        return _expert_activation(*args)
+    from torch.utils.checkpoint import checkpoint
+
+    return checkpoint(_expert_activation, *args, use_reentrant=False, preserve_rng_state=False)
+
+
+def inplace_native_expert_function(*, checkpoint_activations=False):
     from archlab.architectures.ordered_scatter import ordered_permutation_sum
     from archlab.automodel.deepseek_v41_official_moe import _native_up_grouped_down
 
@@ -146,6 +165,20 @@ def inplace_native_expert_function():
     ).body
     namespace = dict(_native_up_grouped_down.__globals__)
     namespace["_ordered_permutation_sum"] = ordered_permutation_sum
+    if checkpoint_activations:
+        blocks = [
+            node
+            for node in ast.walk(parsed)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "count"
+        ]
+        if len(blocks) != 1 or not isinstance(blocks[0].body[0], ast.Assign):
+            raise ValueError("native expert activation loop changed")
+        blocks[0].body = ast.parse(
+            "activations.append(_checkpoint_expert_activation(x, ids[first:last], up[expert], probs[first:last, None], self.config.swiglu_limit))"
+        ).body
+        namespace["_checkpoint_expert_activation"] = _checkpoint_expert_activation
     exec(
         compile(
             ast.unparse(ast.fix_missing_locations(parsed)),
@@ -157,7 +190,7 @@ def inplace_native_expert_function():
     return namespace[_native_up_grouped_down.__name__]
 
 
-def install_inplace_moe_accumulation(model):
+def install_inplace_moe_accumulation(model, *, checkpoint_activations=False):
     from archlab.automodel.deepseek_v41_official_moe import _fp32_grouped_experts_forward
 
     selected = [
@@ -169,7 +202,9 @@ def install_inplace_moe_accumulation(model):
         raise ValueError("expected the project-qualified native FP32 expert orchestration")
     before = {name: id(p) for name, p in model.named_parameters()}
     namespace = dict(_fp32_grouped_experts_forward.__globals__)
-    namespace["_native_up_grouped_down"] = inplace_native_expert_function()
+    namespace["_native_up_grouped_down"] = inplace_native_expert_function(
+        checkpoint_activations=checkpoint_activations
+    )
     original = _fp32_grouped_experts_forward
     forward = FunctionType(
         original.__code__, namespace, original.__name__, original.__defaults__, original.__closure__
@@ -183,6 +218,7 @@ def install_inplace_moe_accumulation(model):
         "kind": "ordered-native-FP32-chunked-expert-sum-v2",
         "maximum_temporary_rows": 8192,
         "backward": "one write per unique dispatcher output row",
+        "expert_activation_checkpoint": checkpoint_activations,
         "modules": [name for name, _ in selected],
         "container_code_changed": False,
         "parameter_identity_preserved": True,

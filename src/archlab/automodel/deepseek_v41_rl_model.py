@@ -379,6 +379,30 @@ def _scratch_constructor(path):
     return module.construct_scratch
 
 
+def _construct_full_shell(*, variant, assets, weights, tiny):
+    """Unrestored shell shared by strict parent loading and memory-only probes."""
+    from archlab.architectures.deepseek_v41_adapter import V41AdapterConfig
+    from archlab.automodel.deepseek_v41_full_boundaries import install_full_training_boundaries
+    from archlab.automodel.deepseek_v41_full_eval_construct import build_eval_shell
+    from archlab.automodel.deepseek_v41_full_indexer import install_trainable_indexers
+    from archlab.automodel.deepseek_v41_official_adapter import install_official_adapters
+
+    model, _, loading = build_eval_shell(weights=Path(weights), assets=Path(assets), tiny=tiny)
+    adapters = install_official_adapters(
+        model,
+        V41AdapterConfig(width=256) if tiny else V41AdapterConfig(),
+        layer_indices=(1, 3, 5) if tiny else (4, 9, 14, 19, 24, 29, 34, 39),
+        device="cuda",
+        variant=variant,
+        allow_right_padding=True,
+        backend="deterministic" if variant == "simplicial" else "flash-attn-deterministic",
+    )
+    loading["boundaries"] = install_full_training_boundaries(model)
+    indexers = install_trainable_indexers(model, sample_queries=64)
+    loading["adapter_layers"] = list(adapters)
+    return model, indexers, loading
+
+
 def construct_rl_actor(
     *,
     checkpoint,
@@ -435,25 +459,9 @@ def construct_rl_actor(
             raise ValueError(
                 "Full actors need normal/simplicial and the recorded model config directory"
             )
-        from archlab.architectures.deepseek_v41_adapter import V41AdapterConfig
-        from archlab.automodel.deepseek_v41_full_boundaries import install_full_training_boundaries
-        from archlab.automodel.deepseek_v41_full_eval_construct import build_eval_shell
-        from archlab.automodel.deepseek_v41_full_indexer import install_trainable_indexers
-        from archlab.automodel.deepseek_v41_official_adapter import install_official_adapters
-
-        model, _, loading = build_eval_shell(weights=Path(weights), assets=Path(assets), tiny=tiny)
-        adapters = install_official_adapters(
-            model,
-            V41AdapterConfig(width=256) if tiny else V41AdapterConfig(),
-            layer_indices=(1, 3, 5) if tiny else (4, 9, 14, 19, 24, 29, 34, 39),
-            device="cuda",
-            variant=variant,
-            allow_right_padding=True,
-            backend="deterministic" if variant == "simplicial" else "flash-attn-deterministic",
+        model, indexers, loading = _construct_full_shell(
+            variant=variant, assets=assets, weights=weights, tiny=tiny
         )
-        loading["boundaries"] = install_full_training_boundaries(model)
-        indexers = install_trainable_indexers(model, sample_queries=64)
-        loading["adapter_layers"] = list(adapters)
     else:
         if base_config is None:
             raise ValueError("Scratch actors require the recorded base configuration")
