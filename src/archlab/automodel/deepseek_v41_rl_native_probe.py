@@ -83,6 +83,7 @@ def main():
     parser.add_argument("--serialize-backward-gathers", action="store_true")
     parser.add_argument("--unshard-on-compute-stream", action="store_true")
     parser.add_argument("--full-memory-audit", action="store_true")
+    parser.add_argument("--retain-weights", action="store_true")
     parser.add_argument("--memory-context", type=int, default=2048)
     parser.add_argument("--memory-budget-gib", type=float, default=198)
     parser.add_argument("--evaluation-reserve-gib", type=float, default=64)
@@ -92,6 +93,8 @@ def main():
         default="sequence_sum",
     )
     args = parser.parse_args()
+    if args.retain_weights and not args.full_memory_audit:
+        parser.error("--retain-weights selects retained sampling for full memory audits")
     if args.checkpoint_expert_activations and not args.inplace_moe_accumulation:
         parser.error("expert checkpoints require the native memory policy")
     if args.full_memory_audit and (
@@ -213,6 +216,7 @@ def main():
                 (p for p in model.parameters() if p.requires_grad), lr=1e-6
             )
             config = {
+                "retain_weights": args.retain_weights,
                 "context_limit": args.memory_context,
                 "group_size": 4,
                 "seed": 891,

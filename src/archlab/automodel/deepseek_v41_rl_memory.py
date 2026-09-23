@@ -202,7 +202,7 @@ def qualify_replay_memory(model, optimizer, indexers, prompts, *, config, policy
             eos_token_ids={model.lm_head.weight.shape[0] - 1},
             pad_token_id=pad,
             seed=config["seed"] + 3000000,
-            retain_weights=False,
+            retain_weights=config.get("retain_weights", False),
         )
         generation_steps = torch.tensor(max(map(len, rollout.generated_ids)), device=device)
         dist.all_reduce(generation_steps, op=dist.ReduceOp.MAX)
@@ -258,6 +258,7 @@ def qualify_replay_memory(model, optimizer, indexers, prompts, *, config, policy
         ),
         "kind": "maximum-context-accumulated-replay-memory-v2",
         "replay_prefixes": replay_count,
+        "retained_sampling_weights": config.get("retain_weights", False),
         "optimizer_state_reserve_bytes": max(row["optimizer_state_reserve_bytes"] for row in rows),
         "estimated_optimizer_workspace_bytes": workspace_bytes,
         "optimizer_step_tensor_bytes_upper_bound": max(
