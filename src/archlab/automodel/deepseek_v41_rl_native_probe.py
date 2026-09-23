@@ -80,6 +80,7 @@ def main():
     parser.add_argument("--hc-activation-offload", action="store_true")
     parser.add_argument("--checkpoint-expert-activations", action="store_true")
     parser.add_argument("--serialize-backward-gathers", action="store_true")
+    parser.add_argument("--unshard-on-compute-stream", action="store_true")
     parser.add_argument("--full-memory-audit", action="store_true")
     parser.add_argument("--memory-context", type=int, default=2048)
     parser.add_argument("--memory-budget-gib", type=float, default=198)
@@ -175,6 +176,7 @@ def main():
             install_hc_activation_offload,
             install_inplace_moe_accumulation,
             serialize_backward_gathers,
+            unshard_on_compute_stream,
         )
 
         if args.inplace_moe_accumulation:
@@ -183,6 +185,8 @@ def main():
             )
         if args.serialize_backward_gathers:
             strategy["backward_gathers"] = serialize_backward_gathers(model)
+        if args.unshard_on_compute_stream:
+            strategy["gather_allocation"] = unshard_on_compute_stream(model)
         if args.hc_activation_offload:
             strategy["hc_activations"] = install_hc_activation_offload(model)
         if args.checkpoint_input_offload:

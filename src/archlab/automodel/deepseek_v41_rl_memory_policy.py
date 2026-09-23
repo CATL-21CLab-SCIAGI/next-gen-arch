@@ -14,6 +14,33 @@ import torch
 from torch.nn import functional as F
 
 
+def unshard_on_compute_stream(model):
+    """Use the pinned runtime's documented default-stream gather-allocation option."""
+    from torch.distributed.fsdp import FSDPModule
+
+    before = {name: id(parameter) for name, parameter in model.named_parameters()}
+    selected = [
+        (name, module) for name, module in model.named_modules() if isinstance(module, FSDPModule)
+    ]
+    if not selected:
+        raise ValueError("compute-stream gathers require the existing FSDP model")
+    for _, module in selected:
+        module._set_unshard_async_op(True)
+    for name, module in selected:
+        if any(not group.unshard_async_op for group in module._get_fsdp_state()._fsdp_param_groups):
+            raise RuntimeError(f"gather allocation option not installed: {name}")
+    if before != {name: id(parameter) for name, parameter in model.named_parameters()}:
+        raise RuntimeError("gather allocation option changed parameter ownership")
+    return {
+        "enabled": True,
+        "kind": "FSDP-default-stream-gather-allocation-v1",
+        "api": "FSDPModule._set_unshard_async_op",
+        "torch": torch.__version__,
+        "modules": [name for name, _ in selected],
+        "parameter_identity_preserved": True,
+    }
+
+
 def serialize_backward_gathers(model):
     """Use the public explicit-prefetch API to bypass implicit next-group gathers."""
     from torch.distributed.fsdp import FSDPModule

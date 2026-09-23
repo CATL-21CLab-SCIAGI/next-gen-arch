@@ -183,6 +183,7 @@ def validate_recipe(config):
     config.setdefault("inplace_moe_accumulation", False)
     config.setdefault("checkpoint_expert_activations", False)
     config.setdefault("serialize_backward_gathers", False)
+    config.setdefault("unshard_on_compute_stream", False)
     config.setdefault("hc_activation_offload", False)
     config.setdefault("gpu_memory_budget_gib", None)
     config.setdefault("evaluation_reserve_gib", 0.0)
@@ -201,6 +202,7 @@ def validate_recipe(config):
             "inplace_moe_accumulation",
             "checkpoint_expert_activations",
             "serialize_backward_gathers",
+            "unshard_on_compute_stream",
             "hc_activation_offload",
             "initial_evaluation",
             "qualification_evaluation",
@@ -1551,10 +1553,16 @@ def main():
             install_hc_activation_offload,
             install_inplace_moe_accumulation,
             serialize_backward_gathers,
+            unshard_on_compute_stream,
         )
 
         loading["rl_memory_policy"] = {
             "allocator": memory_budget,
+            "gather_allocation": (
+                unshard_on_compute_stream(model)
+                if config["unshard_on_compute_stream"]
+                else {"enabled": False}
+            ),
             "backward_gathers": (
                 serialize_backward_gathers(model)
                 if config["serialize_backward_gathers"]
