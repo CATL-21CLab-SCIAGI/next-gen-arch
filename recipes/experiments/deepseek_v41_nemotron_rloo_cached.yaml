@@ -11,7 +11,7 @@ data_manifest: env:ARCHLAB_NEMOTRON_RL_DATA_MANIFEST
 data_manifest_sha256: 588525114edeffcc57c6ff723a63d5ac55351ff2b403eb4514985c7109255a17
 eval_count: 64
 eval_interval_updates: 8
-eval_local_batch_size: 4
+eval_local_batch_size: 1
 evaluation_reserve_gib: 0
 family: full
 freeze_router: true
