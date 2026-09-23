@@ -25,6 +25,7 @@ from pathlib import Path
 from archlab.artifacts import atomic_write_json, sha256_file
 
 SOURCE_FILES = (
+    "architectures/ordered_scatter.py",
     "source_compatibility.py",
     "data/source-formatting-20260923.json",
     "automodel/deepseek_v41_rl_training.py",

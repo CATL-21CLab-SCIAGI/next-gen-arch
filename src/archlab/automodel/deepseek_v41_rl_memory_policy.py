@@ -110,6 +110,7 @@ def hc_offload_statistics(model):
 
 
 def inplace_native_expert_function():
+    from archlab.architectures.ordered_scatter import ordered_permutation_sum
     from archlab.automodel.deepseek_v41_official_moe import _native_up_grouped_down
 
     parsed = ast.parse(textwrap.dedent(inspect.getsource(_native_up_grouped_down)))
@@ -126,12 +127,33 @@ def inplace_native_expert_function():
             and node.value.func.value.id == "result"
             and node.value.func.attr == "index_add"
         ):
-            node.value.func.attr = "index_add_"
             changed += 1
     if changed != 1:
         raise ValueError("native MoE must contain exactly one reviewed ordered result.index_add")
+    body = parsed.body[0].body
+    if (
+        not isinstance(body[-3], ast.Assign)
+        or not isinstance(body[-2], ast.For)
+        or not isinstance(body[-1], ast.Return)
+        or body[-1].value.id != "result"
+    ):
+        raise ValueError("native MoE ordered-sum tail changed")
+    # positions is built immediately above from unique dispatcher slot IDs and
+    # arange(ids.numel()), then permuted within rows. That construction proves
+    # complete, unique source-row coverage; avoid sorting it again per layer.
+    body[-3:] = ast.parse(
+        "return _ordered_permutation_sum(output, ordered_positions, validate=False)"
+    ).body
     namespace = dict(_native_up_grouped_down.__globals__)
-    exec(compile(ast.fix_missing_locations(parsed), __file__, "exec"), namespace)
+    namespace["_ordered_permutation_sum"] = ordered_permutation_sum
+    exec(
+        compile(
+            ast.unparse(ast.fix_missing_locations(parsed)),
+            __file__ + ":native_expert_forward",
+            "exec",
+        ),
+        namespace,
+    )
     return namespace[_native_up_grouped_down.__name__]
 
 
@@ -158,7 +180,9 @@ def install_inplace_moe_accumulation(model):
         raise RuntimeError("MoE accumulation changed parameter ownership")
     return {
         "enabled": True,
-        "kind": "ordered-native-FP32-inplace-expert-sum-v1",
+        "kind": "ordered-native-FP32-chunked-expert-sum-v2",
+        "maximum_temporary_rows": 8192,
+        "backward": "one write per unique dispatcher output row",
         "modules": [name for name, _ in selected],
         "container_code_changed": False,
         "parameter_identity_preserved": True,

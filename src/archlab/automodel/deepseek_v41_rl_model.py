@@ -12,6 +12,8 @@ import importlib.util
 import json
 import re
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SOURCE_CHANGE_REASONS = {
@@ -208,11 +210,52 @@ def validate_constructed_runtime(parent, loading, *, family):
         raise ValueError("Resolved native kernel packages differ from parent")
 
 
-def _restore_local_weights(model, checkpoint, marker, *, rank, expected_device):
+def _ordered_weight_payloads(folder, entries, depth):
+    """Read/checksum bounded CPU payloads concurrently; yield manifest order."""
+    import torch
+
+    jobs = iter((entry, chunk) for entry in entries for chunk in entry["chunks"])
+
+    def read(job):
+        entry, chunk = job
+        host = torch.load(folder / chunk["file"], map_location="cpu", weights_only=True)
+        if (
+            not isinstance(host, torch.Tensor)
+            or host.ndim != 1
+            or str(host.dtype) != entry["dtype"]
+            or host.numel() != chunk["elements"]
+            or hashlib.sha256(memoryview(host.contiguous().view(torch.uint8).numpy())).hexdigest()
+            != chunk["sha256"]
+        ):
+            raise ValueError(f"Weight payload checksum/dtype/shape differs: {entry['name']}")
+        return host
+
+    if depth == 0:
+        for job in jobs:
+            yield read(job)
+        return
+    with ThreadPoolExecutor(max_workers=depth) as pool:
+        pending = deque()
+        for _ in range(depth):
+            job = next(jobs, None)
+            if job is not None:
+                pending.append(pool.submit(read, job))
+        while pending:
+            host = pending.popleft().result()
+            job = next(jobs, None)
+            if job is not None:
+                pending.append(pool.submit(read, job))
+            yield host
+
+
+def _restore_local_weights(model, checkpoint, marker, *, rank, expected_device, prefetch_chunks=2):
     """Private local reader, CPU-testable; public construction always requires CUDA."""
     import torch
 
     from archlab.optimizers.sharded_adafactor import local_tensor
+
+    if type(prefetch_chunks) is not int or not 0 <= prefetch_chunks <= 2:
+        raise ValueError("weight read-ahead is bounded to zero, one, or two chunks")
 
     checkpoint = Path(checkpoint)
     folder = checkpoint / f"rank-{rank:02d}"
@@ -266,25 +309,17 @@ def _restore_local_weights(model, checkpoint, marker, *, rank, expected_device):
         ),
         flush=True,
     )
-    with torch.no_grad():
+    from contextlib import closing
+
+    with (
+        torch.no_grad(),
+        closing(_ordered_weight_payloads(folder, manifest["tensors"], prefetch_chunks)) as payloads,
+    ):
         for (_, tensor), entry in zip(named, manifest["tensors"], strict=True):
             local = local_tensor(tensor)
             flat, offset = local.view(-1), 0
-            for chunk in entry["chunks"]:
-                host = torch.load(folder / chunk["file"], map_location="cpu", weights_only=True)
-                if (
-                    not isinstance(host, torch.Tensor)
-                    or host.ndim != 1
-                    or host.dtype != local.dtype
-                    or host.numel() != chunk["elements"]
-                    or hashlib.sha256(
-                        host.contiguous().view(torch.uint8).numpy().tobytes()
-                    ).hexdigest()
-                    != chunk["sha256"]
-                ):
-                    raise ValueError(
-                        f"Weight payload checksum/dtype/shape differs: {entry['name']}"
-                    )
+            for _chunk in entry["chunks"]:
+                host = next(payloads)
                 flat[offset : offset + host.numel()].copy_(host)
                 offset += host.numel()
                 size += host.numel() * host.element_size()
@@ -324,6 +359,8 @@ def _restore_local_weights(model, checkpoint, marker, *, rank, expected_device):
         "optimizer_loaded": False,
         "rng_loaded": False,
         "cpu_weight_offload": False,
+        "reader_prefetch_chunks": prefetch_chunks,
+        "maximum_payloads_in_flight_including_current": prefetch_chunks + 1,
     }
 
 

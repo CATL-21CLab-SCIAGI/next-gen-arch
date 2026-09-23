@@ -29,6 +29,21 @@ def tensor_sha(tensor):
 
 
 class RLModelTests(unittest.TestCase):
+    def test_bounded_read_ahead_is_identical_to_sequential_restoration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model, marker, _, expected = self.checkpoint(root)
+            for depth in (0, 1, 2):
+                with torch.no_grad():
+                    for tensor in model.state_dict().values():
+                        tensor.zero_()
+                receipt = _restore_local_weights(
+                    model, root, marker, rank=0, expected_device="cpu", prefetch_chunks=depth
+                )
+                self.assertEqual(receipt["reader_prefetch_chunks"], depth)
+                for name, tensor in model.state_dict().items():
+                    self.assertTrue(torch.equal(tensor, expected[name]))
+
     def parent(self, root, family="scratch"):
         world = 8 if family == "scratch" else 16
         runtime = {
