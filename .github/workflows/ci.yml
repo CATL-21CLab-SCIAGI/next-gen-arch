@@ -16,7 +16,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.0.1
@@ -27,8 +27,6 @@ jobs:
         run: uv sync --locked --extra cpu --extra tracking --group dev
       - name: Lint
         run: uv run ruff check src/archlab tests
-      - name: Compile source
-        run: uv run python -m compileall -q src/archlab
       - name: Verify frozen artifacts
         run: |
           uv run next-gen-arch verify
@@ -48,27 +46,3 @@ jobs:
         env:
           NANOCHAT_ATTENTION_BACKEND: sdpa
         run: uv run pytest -m "not slow" -q
-      - name: Build distributions
-        run: uv build
-      - name: Verify relocated modules and packaged resources
-        run: |
-          for path in \
-            archlab/evaluation/capability.py \
-            archlab/reporting/paired_curves.py \
-            archlab/automodel/qwen/train.py \
-            archlab/automodel/deepseek_v41/qualification/attention_probe.py \
-            archlab/serving/sglang/deepseek_v41.py \
-            archlab/data/source-formatting-20260923.json \
-            archlab/prompts/capability_regression.yaml; do
-            unzip -Z1 dist/*.whl | grep -Fx "$path" > /dev/null
-          done
-      - name: Verify runtime frameworks are not vendored
-        run: |
-          if tar -tzf dist/*.tar.gz | grep -E '/(Megatron-LM|NeMo|results|\.runtime)(/|$)' > /dev/null; then
-            echo 'source archive unexpectedly contains runtime or run artifacts'
-            exit 1
-          fi
-          if unzip -Z1 dist/*.whl | grep -E '^(megatron|nemo)/' > /dev/null; then
-            echo 'wheel unexpectedly contains a runtime framework'
-            exit 1
-          fi

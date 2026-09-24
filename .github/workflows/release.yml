@@ -24,6 +24,28 @@ jobs:
           python-version: "3.11"
       - name: Build source and wheel distributions
         run: uv build
+      - name: Verify relocated modules and packaged resources
+        run: |
+          for path in \
+            archlab/evaluation/capability.py \
+            archlab/reporting/paired_curves.py \
+            archlab/automodel/qwen/train.py \
+            archlab/automodel/deepseek_v41/qualification/attention_probe.py \
+            archlab/serving/sglang/deepseek_v41.py \
+            archlab/data/source-formatting-20260923.json \
+            archlab/prompts/capability_regression.yaml; do
+            unzip -Z1 dist/*.whl | grep -Fx "$path" > /dev/null
+          done
+      - name: Verify runtime frameworks are not vendored
+        run: |
+          if tar -tzf dist/*.tar.gz | grep -E '/(Megatron-LM|NeMo|results|\.runtime)(/|$)' > /dev/null; then
+            echo 'source archive unexpectedly contains runtime or run artifacts'
+            exit 1
+          fi
+          if unzip -Z1 dist/*.whl | grep -E '^(megatron|nemo)/' > /dev/null; then
+            echo 'wheel unexpectedly contains a runtime framework'
+            exit 1
+          fi
       - name: Publish GitHub release artifacts
         uses: softprops/action-gh-release@v2
         with:
