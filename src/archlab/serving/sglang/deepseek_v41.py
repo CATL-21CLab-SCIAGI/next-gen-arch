@@ -58,7 +58,10 @@ class DeepseekV4ForCausalLM(NativeV41):
         metadata = getattr(config, "archlab", None)
         if not isinstance(metadata, dict) or metadata.get("variant") not in ("normal", "simplicial"):
             raise ValueError("missing full fine-tuned checkpoint metadata")
-        if quant_config is not None or getattr(config, "quantization_config", None):
+        stock_fp8 = os.environ.get("ARCHLAB_MILES_STOCK_FP8") == "1"
+        if stock_fp8 and (quant_config is None or quant_config.get_name() != "fp8"):
+            raise ValueError("stock FP8 rollout requires the native FP8 quantization config")
+        if not stock_fp8 and (quant_config is not None or getattr(config, "quantization_config", None)):
             raise ValueError("full fine-tuned weights must not be requantized")
         if config.model_type != "deepseek_v41" or not config.hc_pre_from_prev_sublayer:
             raise ValueError("expected native V4.1 carried pre-mix architecture")
@@ -66,7 +69,7 @@ class DeepseekV4ForCausalLM(NativeV41):
         config.router_fp32 = True
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-        super().__init__(config, quant_config=None, prefix=prefix)
+        super().__init__(config, quant_config=quant_config, prefix=prefix)
         head_loader = getattr(self.lm_head.weight, "weight_loader", None)
         self.lm_head.float()
         if head_loader is not None:
@@ -76,8 +79,9 @@ class DeepseekV4ForCausalLM(NativeV41):
         self.archlab_cache_states = {}
         for layer in self.model.layers:
             install_live_source_boundary(layer.self_attn)
-            install_native_moe(layer.mlp, tp_rank=parallel.tp_rank, tp_size=parallel.tp_size,
-                               all_reduce=tensor_model_parallel_all_reduce)
+            if not stock_fp8:
+                install_native_moe(layer.mlp, tp_rank=parallel.tp_rank, tp_size=parallel.tp_size,
+                                   all_reduce=tensor_model_parallel_all_reduce)
         device = self.model.embed_tokens.weight.device
         variant = metadata["variant"]
         cls = V41NormalAttentionAdapter if variant == "normal" else V41SimplicialAdapter
@@ -98,7 +102,7 @@ class DeepseekV4ForCausalLM(NativeV41):
             self.model.layers[index].engram.embed = BF16EngramEmbedding(
                 rows, config.engram_head_dim, tp_rank=parallel.tp_rank, tp_size=parallel.tp_size,
                 all_reduce=tensor_model_parallel_all_reduce, device=device)
-        if os.environ.get("ARCHLAB_RL_OFFLOAD_POLICY") == "forbidden":
+        if stock_fp8 or os.environ.get("ARCHLAB_RL_OFFLOAD_POLICY") == "forbidden":
             # Deterministic buffers are not refreshed by the policy stream.
             # Retain them on GPU outside the discardable weight allocation pool.
             from torch_memory_saver import torch_memory_saver

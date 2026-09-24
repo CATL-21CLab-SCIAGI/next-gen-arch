@@ -1,0 +1,40 @@
+name: deepseek-v41-normal-stock-miles-fp8
+upstream:
+  repository: https://github.com/radixark/miles
+  revision: 6c6858a42
+  recipe: scripts/run_deepseek_v41.py
+  driver: train.py
+  reference_recipe: https://github.com/radixark/miles/blob/main/docs/models/deepseek/deepseek-v4-flash.md
+checkpoint: env:ARCHLAB_CHECKPOINT
+variant: normal
+training:
+  nodes: 4
+  gpus_per_node: 8
+  tensor_parallel: 8
+  pipeline_parallel: 4
+  expert_parallel: 8
+  context_parallel: 1
+  dtype: bfloat16
+  freeze_engram_tables: true
+  optimizer: upstream_distributed_adam
+  learning_rate: 1.0e-6
+  stored_moment_dtype: bfloat16
+  master_and_optimizer_arithmetic: float32
+  optimizer_state_streaming: disk
+  activation_recompute: full
+rollout:
+  engine_gpus: 8
+  engine_count: 4
+  quantization: fp8_e4m3_block128
+  engram_table_dtype: bfloat16
+  adapter_dtype: float32
+  routing_replay: true
+  prompts: 16
+  samples_per_prompt: 8
+  maximum_response_tokens: 2001
+algorithm: upstream_grpo
+execution:
+  maximum_rollouts: 64
+  checkpoint_interval: 2
+  status: unqualified
+  qualification: useful_finite_updates_stable_policy_gap_checkpoint_and_measured_step_time
