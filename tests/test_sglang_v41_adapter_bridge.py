@@ -109,3 +109,37 @@ def test_idle_dp_rank_still_calls_native_layer_without_advancing_adapter():
     assert actual.shape == empty.shape
     assert combined.shape == (0, 16)
     assert not state.caches
+
+
+@pytest.mark.parametrize("variant", ["normal", "simplicial"])
+def test_padding_does_not_advance_adapter_prefixes(variant):
+    layer, adapter = Layer(), make_adapter(variant)
+    state = install_adapter_boundary(layer, adapter, tp_size=8)
+    batch = SimpleNamespace(req_pool_indices=torch.tensor([0]), extend_seq_lens_cpu=[3],
+                            num_token_non_padded_cpu=3,
+                            forward_mode=SimpleNamespace(is_decode=lambda: False,
+                                is_extend_without_speculative=lambda: True))
+    streams = torch.randn(8, 2, 16)
+    actual, _, _ = layer.forward_hc_pre_from_prev(torch.arange(8), streams, None, batch, None, None)
+    with torch.no_grad():
+        expected = adapter(streams[:3].unsqueeze(0))[0]
+    torch.testing.assert_close(actual[:3], expected, atol=2e-6, rtol=2e-6)
+    torch.testing.assert_close(actual[3:], streams[3:])
+    assert state.caches[0].position == 3
+    # Decode request IDs are themselves padded by the native batch preparer.
+    batch.forward_mode.is_decode = lambda: True
+    batch.req_pool_indices = torch.tensor([0] * 8)
+    batch.num_token_non_padded_cpu = 1
+    layer.forward_hc_pre_from_prev(torch.tensor([3] + [0] * 7), streams, None, batch, None, None)
+    assert state.caches[0].position == 4
+
+
+def test_idle_padded_rank_keeps_collective_shape_without_adapter_cache():
+    layer, adapter = Layer(), make_adapter("normal")
+    state = install_adapter_boundary(layer, adapter, tp_size=8)
+    batch = SimpleNamespace(req_pool_indices=torch.tensor([0] * 8), num_token_non_padded_cpu=0,
+                            forward_mode=SimpleNamespace())
+    streams = torch.randn(8, 2, 16)
+    actual, _, _ = layer.forward_hc_pre_from_prev(torch.zeros(8), streams, None, batch, None, None)
+    assert actual.shape == streams.shape
+    assert not state.caches

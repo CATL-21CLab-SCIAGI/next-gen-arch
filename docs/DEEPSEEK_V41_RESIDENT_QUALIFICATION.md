@@ -151,3 +151,12 @@ The four-node allocation and persistent artifacts are retained. Evidence is in
 `pilot-normal-v8.log`, `pilot-normal-v8/BLOCKER.json`, the per-rank resident
 receipts and per-node HBM observations under the run root. No runtime library
 source was modified to bypass this failure.
+
+The project serving extension now bounds eager extend compressor/indexer inputs
+to the real-token prefix while retaining padded attention and MoE communication
+shapes. Adapter caches likewise consume only real prefill/decode tokens; padded
+decode request slots write the Engram hasher's dedicated spare history row.
+This addresses both the observed 104/100 assertion and subsequent stateful
+padding hazards without changing container source. Twelve focused CPU tests
+pass, including idle ranks and both adapter variants. Full-run qualification
+of the correction is pending in attempt 9.

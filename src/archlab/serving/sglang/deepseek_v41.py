@@ -24,6 +24,10 @@ from archlab.architectures.deepseek_v41_normal_adapter import V41NormalAttention
 from archlab.serving.sglang_v41_adapter_bridge import install_adapter_boundary
 from archlab.serving.sglang_v41_engram import BF16EngramEmbedding
 from archlab.serving.sglang_v41_moe import install_native_moe
+from archlab.serving.sglang_v41_padding import (
+    install_hash_padding_boundary,
+    install_live_source_boundary,
+)
 from archlab.serving.v41_checkpoint_inventory import V41CheckpointInventory
 from archlab.serving.v41_direct_checkpoint import iter_weights
 from sglang.srt.distributed import tensor_model_parallel_all_reduce
@@ -71,6 +75,7 @@ class DeepseekV4ForCausalLM(NativeV41):
         self.archlab_adapters = {}
         self.archlab_cache_states = {}
         for layer in self.model.layers:
+            install_live_source_boundary(layer.self_attn)
             install_native_moe(layer.mlp, tp_rank=parallel.tp_rank, tp_size=parallel.tp_size,
                                all_reduce=tensor_model_parallel_all_reduce)
         device = self.model.embed_tokens.weight.device
@@ -101,6 +106,7 @@ class DeepseekV4ForCausalLM(NativeV41):
                 for buffer in self.buffers():
                     if buffer.device.type == "cuda":
                         buffer.data = buffer.detach().clone()
+        install_hash_padding_boundary(self.model.engram_hasher)
         self._archlab_loaded = False
         if os.environ.get("ARCHLAB_RL_OFFLOAD_POLICY") == "forbidden":
             # Replacing native FP8 Engram storage with BF16 leaves obsolete

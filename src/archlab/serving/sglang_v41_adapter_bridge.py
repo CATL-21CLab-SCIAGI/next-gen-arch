@@ -12,6 +12,7 @@ from types import MethodType
 import torch
 
 from archlab.architectures.deepseek_v41_incremental import IncrementalV41Adapter
+from archlab.serving.sglang_v41_padding import real_token_count
 
 
 class RequestAdapterCaches:
@@ -62,10 +63,18 @@ def install_adapter_boundary(layer, adapter, *, tp_size, max_slots=32):
     context = {}
     layer.add_module("archlab_adapter", adapter)
 
+    def apply_live(updated):
+        count = context["count"]
+        if count == 0:
+            return updated
+        live = state.apply(updated[:count], slots=context["slots"], lengths=context["lengths"],
+                           positions=context["positions"])
+        return torch.cat((live, updated[count:]), dim=0) if count < updated.shape[0] else live
+
     def post(self, x, residual, post, comb, pre, forward_batch, norm=None):
         updated, combined, normalized = original_post(x, residual, post, comb, pre,
                                                       forward_batch, norm=norm)
-        if updated.shape[0] == 0:
+        if updated.shape[0] == 0 or not context:
             return updated, combined, normalized
         if norm is self.post_attention_layernorm:
             if not context or context["batch"] is not forward_batch:
@@ -73,23 +82,21 @@ def install_adapter_boundary(layer, adapter, *, tp_size, max_slots=32):
             context["calls"] += 1
             if context["calls"] != 1:
                 raise RuntimeError("adapter attention boundary executed more than once")
-            updated = state.apply(updated, slots=context["slots"], lengths=context["lengths"],
-                                  positions=context["positions"])
+            updated = apply_live(updated)
             # Any fused FFN input computed before adaptation is now stale.
             combined, normalized = None, None
         return updated, combined, normalized
 
     def direct_post(self, x, residual, post, comb):
         updated = original_post(x, residual, post, comb)
-        if updated.shape[0] == 0:
+        if updated.shape[0] == 0 or not context:
             return updated
         if not context:
             raise RuntimeError("adapter HC expansion has no matching request context")
         context["posts"] += 1
         if context["posts"] == 1:
             context["calls"] += 1
-            return state.apply(updated, slots=context["slots"], lengths=context["lengths"],
-                               positions=context["positions"])
+            return apply_live(updated)
         if context["posts"] != 2:
             raise RuntimeError("unexpected extra hyper-connection expansion")
         return updated
@@ -99,18 +106,22 @@ def install_adapter_boundary(layer, adapter, *, tp_size, max_slots=32):
         if context:
             raise RuntimeError("reentrant layer execution is unsupported")
         mode = forward_batch.forward_mode
+        count = real_token_count(forward_batch, hidden_states.shape[0])
         slots = forward_batch.req_pool_indices.detach().cpu().tolist()
-        if not slots and hidden_states.shape[0] == 0:
+        if count == 0:
             return original_forward(positions, hidden_states, input_ids, forward_batch,
                                     input_ids_global, prev_pre, **kwargs)
         if mode.is_decode():
+            slots = slots[:count]
             lengths = [1] * len(slots)
         elif mode.is_extend_without_speculative():
             lengths = list(forward_batch.extend_seq_lens_cpu)
         else:
             raise ValueError("only non-speculative eager prefill and decode are qualified")
-        context.update(batch=forward_batch, slots=slots, lengths=lengths,
-                       positions=positions.detach().cpu().tolist(), calls=0, posts=0)
+        if sum(lengths) != count:
+            raise ValueError("adapter request lengths do not cover real tokens")
+        context.update(batch=forward_batch, slots=slots, lengths=lengths, count=count,
+                       positions=positions[:count].detach().cpu().tolist(), calls=0, posts=0)
         try:
             result = original_forward(positions, hidden_states, input_ids, forward_batch,
                                       input_ids_global, prev_pre, **kwargs)
