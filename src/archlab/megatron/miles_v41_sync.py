@@ -32,6 +32,16 @@ class ArchlabWeightIterator(direct.HfWeightIteratorDirect):
         for name, param in named_params:
             if ".archlab_adapter." in name:
                 yield [(source_names(self.args, name, param)[0], param)]
+            elif (name.endswith(".v41_engram.linear_wkv.weight")
+                  and self.quantization_config
+                  and self.quantization_config.get("quant_method") == "fp8"):
+                from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_fp8 import (
+                    _quantize_param,
+                )
+
+                converted = source_names(self.args, name, param)[0]
+                yield _quantize_param(self.args, converted, param,
+                                      self.quantization_config.get("weight_block_size"))
             else:
                 yield from super()._convert_to_hf_param_units([(name, param)])
 

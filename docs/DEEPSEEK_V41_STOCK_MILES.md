@@ -74,3 +74,21 @@ claim. The resident-actor change eliminates these policy-backup transfers
 instead of moving another full copy onto nearly full local optimizer disks.
 Twelve focused regressions, upstream argument validation, and a GPU probe of
 the actual Miles actor's no-backup/no-restore/live-sync path passed.
+
+The first resident run completed all 32 parent imports and skipped the NAS
+backup/restore, but its first sync exposed Ray's pre-created method wrappers:
+the generated subclass still called the original backup reader. The adapter
+now covers those subclasses too. Thirteen focused tests and a GPU probe using
+Ray's actual generated actor class pass. The retry uses `train-attempt2.log`
+under `deepseek-v41-stock-fp8-resident-policy-20260924`; the original log and
+receipts are retained. This fix still requires full refresh and RL qualification.
+
+That retry reached full-policy coverage validation in about three minutes of
+weight transfer, with 21–24 GiB of measured GPU headroom on an Engram training
+stage. Validation rejected missing FP8 scales for the two Engram WKV
+projections. The upstream V4.1 FP8 converter does not include these projections;
+the compatibility iterator now sends them through the existing Miles FP8
+quantizer. A GPU probe of both full-size 25600-by-6144 projections verified the
+weight/scale names and native packed UE8M0 scales, with 2.65% reconstruction
+error. No completeness checks were relaxed. The subsequent retry uses
+`train-attempt3.log`; no successful RL update is implied by these probes.
