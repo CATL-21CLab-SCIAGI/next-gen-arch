@@ -92,3 +92,14 @@ quantizer. A GPU probe of both full-size 25600-by-6144 projections verified the
 weight/scale names and native packed UE8M0 scales, with 2.65% reconstruction
 error. No completeness checks were relaxed. The subsequent retry uses
 `train-attempt3.log`; no successful RL update is implied by these probes.
+
+Attempt 3 completed all four FP8 engine refreshes (1333 tensors per rank), then
+generated 128 samples in 2049 seconds. Fifteen samples received reward 1;
+response lengths ranged from 85 to 2001 tokens. Training rejected the batch
+because all routing-replay records were missing. A controlled HTTP echo probe
+proved that the installed SGLang router strips `return_routed_experts` before
+forwarding requests. The same probe through the unmodified Miles router
+preserved the request flag and response metadata. The launcher now selects
+`--use-miles-router`; this also uses native active-request balancing. Replay
+remains mandatory. Attempt 4 uses `train-attempt4.log`; the rejected rollout is
+archived and no optimizer update from attempt 3 is claimed.

@@ -36,6 +36,7 @@ def main():
         "--save-trigger-sentinel", str(root / "SAVE_REQUEST"),
         "--stream-optimizer-state-moment-dtype", "bf16",
         "--no-offload-train", "--offload-train-target", "cpu",
+        "--use-miles-router",
         "--sglang-load-format", "dummy", "--sglang-device", "cuda",
         "--sglang-moe-runner-backend", "triton",
         "--sglang-disable-shared-experts-fusion", "--sglang-enable-fp32-lm-head",
