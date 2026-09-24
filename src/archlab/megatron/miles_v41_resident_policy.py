@@ -2,7 +2,11 @@
 
 
 def install(actor_type):
-    if getattr(actor_type, "_archlab_resident_policy_installed", False):
+    # Ray copies methods into a generated subclass before this init hook runs.
+    # Patch those already-created wrappers as well as the original class.
+    for subclass in actor_type.__subclasses__():
+        install(subclass)
+    if actor_type.__dict__.get("_archlab_resident_policy_installed", False):
         return
     original_enabled = actor_type._enable_weight_backup
     original_weights = actor_type._get_actor_weights

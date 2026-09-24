@@ -46,6 +46,28 @@ def test_sync_reads_updated_live_weights_without_a_backup():
         actor._get_actor_weights()
 
 
+def test_preexisting_ray_style_wrapper_uses_live_weights():
+    class Actor:
+        _enable_weight_backup = property(lambda self: True)
+
+        def _get_actor_weights(self):
+            raise AssertionError("backup reader must not run")
+
+    original = Actor._get_actor_weights
+
+    class RayActor(Actor):
+        def _get_actor_weights(self):
+            return original(self)
+
+    install(Actor)
+    install(Actor)
+    actor = make_actor(RayActor)
+    weight = torch.ones(2)
+    actor._named_actor_weights = lambda: [("weight", weight)]
+    assert not actor._enable_weight_backup
+    assert actor._get_actor_weights()["weight"] is weight
+
+
 @pytest.mark.parametrize("option", ["offload_train", "keep_old_actor", "with_ref", "with_opd_teacher"])
 def test_other_lifecycles_keep_upstream_backups(option):
     actor = make_actor(actor_type(), **{option: True})
