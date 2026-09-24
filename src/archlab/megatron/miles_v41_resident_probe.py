@@ -18,6 +18,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--momentum-dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     parser.add_argument("--weight-scale", type=float, default=.02)
+    parser.add_argument("--rows", type=int, default=32)
+    parser.add_argument("--columns", type=int, default=48)
     args = parser.parse_args()
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -29,7 +31,7 @@ def main():
     direction_errors, direction_cosines = [], []
     for axis in (0, 1):
         torch.manual_seed(917)
-        full = torch.nn.Parameter(torch.randn(32, 48, device="cuda") * args.weight_scale)
+        full = torch.nn.Parameter(torch.randn(args.rows, args.columns, device="cuda") * args.weight_scale)
         local = torch.nn.Parameter(full.detach().chunk(world, dim=axis)[rank].clone())
         local.tensor_model_parallel, local.partition_dim, local.partition_stride = True, axis, 1
         comparison = torch.nn.Parameter(local.detach().clone())
@@ -106,6 +108,7 @@ def main():
         torch.testing.assert_close(p, other_p, atol=0, rtol=0)
     receipt = dict(rank=rank, momentum_dtype=args.momentum_dtype,
                    orthogonalization_dtype="float32", weight_scale=args.weight_scale,
+                   matrix_shape=[args.rows, args.columns],
                    max_direction_relative_error=max(direction_errors), min_direction_cosine=min(direction_cosines),
                    max_update_relative_error=max(errors), min_update_cosine=min(cosines),
                    sinkhorn_distributed=True, resident_resume_exact=True, distributed_checkpoint_roundtrip=True,

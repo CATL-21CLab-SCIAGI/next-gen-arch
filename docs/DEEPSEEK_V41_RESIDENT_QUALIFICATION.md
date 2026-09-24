@@ -22,6 +22,10 @@ FP16 gradient history from under/overflow; recurrence and master arithmetic stay
 FP32. CPU tests cover gradient scales 1e-12, 1 and 1e4. This saves about 33 GiB
 per heavily loaded trainer rank relative to FP32 matrix momentum.
 
+A 100-step two-rank probe at actual expert dimensions (2304 x 5120) also
+passed: maximum direction error 0.00079368 and applied-update error 0.00615041,
+with exact checkpoint restore. Admission requires both small and expert-size probes.
+
 The corresponding BF16 + FP32 orthogonalization GPU diagnostic still failed
 (1.47% direction error, 1.55% applied-update error on rank 0). Original order-one
 weight diagnostics are retained, rather than treated as direct momentum-error

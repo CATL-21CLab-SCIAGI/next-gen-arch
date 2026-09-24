@@ -35,6 +35,21 @@ def verify_numerical(root, momentum_dtype="float32"):
                 or (momentum_dtype == "float32" and receipt.get("destructive_restore_verified") is not True)
                 or receipt.get("distributed_checkpoint_roundtrip") is not True):
             raise ValueError(f"{momentum_dtype} momentum numerical admission rejected rank {rank}")
+    if momentum_dtype == "float16":
+        for rank in range(2):
+            receipt = json.loads((root / "fp16-expert-shape-admission" / f"rank-{rank}.json").read_text())
+            if (receipt.get("rank") != rank or receipt.get("matrix_shape") != [2304, 5120]
+                    or receipt.get("momentum_dtype") != "float16"
+                    or receipt.get("orthogonalization_dtype") != "float32"
+                    or receipt.get("passed") is not True):
+                raise ValueError("expert-size momentum numerical admission rejected")
+            for name, limit, lower in (("max_direction_relative_error", .01, False),
+                                        ("max_update_relative_error", .01, False),
+                                        ("min_direction_cosine", .999, True),
+                                        ("min_update_cosine", .999, True)):
+                value = receipt.get(name, float("nan"))
+                if not math.isfinite(value) or (value < limit if lower else value > limit):
+                    raise ValueError(f"expert-size momentum numerical admission rejected: {name}")
 
 
 def verify(root, momentum_dtype="float32", variants=("normal", "simplicial")):
