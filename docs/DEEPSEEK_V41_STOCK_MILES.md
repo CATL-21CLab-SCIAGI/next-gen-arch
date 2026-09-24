@@ -103,3 +103,19 @@ preserved the request flag and response metadata. The launcher now selects
 `--use-miles-router`; this also uses native active-request balancing. Replay
 remains mandatory. Attempt 4 uses `train-attempt4.log`; the rejected rollout is
 archived and no optimizer update from attempt 3 is claimed.
+
+Attempt 4 validated routing records for all 128 samples and completed two
+finite updates: gradient norms 0.193/0.309, train-rollout KL 0.00160/0.00187,
+and log-probability absolute differences 0.0231/0.0278. Rollouts took 968/1006
+seconds; the second training phase took about 5.5 minutes. The requested save
+failed before writing: Miles's broad `"adapter"` name heuristic classified
+`archlab_adapter` as LoRA and selected an adapter-only exporter requiring
+Megatron Bridge. These two updates were not checkpointed.
+
+The compatibility hook excludes only `.archlab_adapter.` from that heuristic
+and preserves detection of real LoRA/PEFT modules. Both normal save dispatch
+and explicit save-with-LoRA dispatch now reach the native full-model saver.
+Seventeen regressions and a probe of the actual Miles dispatch passed; the
+probe intercepts the final saver and is not a full checkpoint round trip.
+Attempt 5 uses `train-attempt5.log` and requests a full checkpoint after its
+first update. A completed full checkpoint is still required for qualification.
