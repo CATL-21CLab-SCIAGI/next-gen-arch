@@ -36,20 +36,24 @@ def verify_numerical(root, momentum_dtype="float32"):
                 or receipt.get("distributed_checkpoint_roundtrip") is not True):
             raise ValueError(f"{momentum_dtype} momentum numerical admission rejected rank {rank}")
     if momentum_dtype == "float16":
-        for rank in range(2):
-            receipt = json.loads((root / "fp16-expert-shape-admission" / f"rank-{rank}.json").read_text())
-            if (receipt.get("rank") != rank or receipt.get("matrix_shape") != [2304, 5120]
-                    or receipt.get("momentum_dtype") != "float16"
-                    or receipt.get("orthogonalization_dtype") != "float32"
-                    or receipt.get("passed") is not True):
-                raise ValueError("expert-size momentum numerical admission rejected")
-            for name, limit, lower in (("max_direction_relative_error", .01, False),
-                                        ("max_update_relative_error", .01, False),
-                                        ("min_direction_cosine", .999, True),
-                                        ("min_update_cosine", .999, True)):
-                value = receipt.get(name, float("nan"))
-                if not math.isfinite(value) or (value < limit if lower else value > limit):
-                    raise ValueError(f"expert-size momentum numerical admission rejected: {name}")
+        for directory, shape, ranks in (("fp16-expert-shape-admission", [2304, 5120], 2),
+                                         ("fp16-fused-expert-admission", [4608, 5120], 1),
+                                         ("fp16-down-expert-admission", [5120, 2304], 1)):
+            for rank in range(ranks):
+                receipt = json.loads((root / directory / f"rank-{rank}.json").read_text())
+                if (receipt.get("rank") != rank or receipt.get("matrix_shape") != shape
+                        or (ranks == 1 and receipt.get("world_size") != 1)
+                        or receipt.get("momentum_dtype") != "float16"
+                        or receipt.get("orthogonalization_dtype") != "float32"
+                        or receipt.get("passed") is not True):
+                    raise ValueError("expert-size momentum numerical admission rejected")
+                for name, limit, lower in (("max_direction_relative_error", .01, False),
+                                            ("max_update_relative_error", .01, False),
+                                            ("min_direction_cosine", .999, True),
+                                            ("min_update_cosine", .999, True)):
+                    value = receipt.get(name, float("nan"))
+                    if not math.isfinite(value) or (value < limit if lower else value > limit):
+                        raise ValueError(f"expert-size momentum numerical admission rejected: {name}")
 
 
 def verify(root, momentum_dtype="float32", variants=("normal", "simplicial")):

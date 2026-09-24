@@ -106,12 +106,13 @@ def main():
         optimizer.step()
         other.step()
         torch.testing.assert_close(p, other_p, atol=0, rtol=0)
-    receipt = dict(rank=rank, momentum_dtype=args.momentum_dtype,
+    receipt = dict(rank=rank, world_size=world, momentum_dtype=args.momentum_dtype,
                    orthogonalization_dtype="float32", weight_scale=args.weight_scale,
                    matrix_shape=[args.rows, args.columns],
                    max_direction_relative_error=max(direction_errors), min_direction_cosine=min(direction_cosines),
                    max_update_relative_error=max(errors), min_update_cosine=min(cosines),
-                   sinkhorn_distributed=True, resident_resume_exact=True, distributed_checkpoint_roundtrip=True,
+                   sinkhorn_distributed=world > 1, resident_resume_exact=True, checkpoint_roundtrip=True,
+                   distributed_checkpoint_roundtrip=world > 1,
                    streaming_checkpoint=True, destructive_restore_verified=True,
                    passed=max(errors) <= .01 and min(cosines) >= .999 and max(direction_errors) <= .01 and min(direction_cosines) >= .999)
     args.output.mkdir(parents=True, exist_ok=True)

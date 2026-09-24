@@ -188,3 +188,20 @@ mismatch. The ongoing attempt predates this checkpoint-only correction; its
 source snapshot is retained and the checkpoint boundary records the new receipt.
 The B300 restore probe also passed: all optimizer storage addresses remained
 unchanged and three resumed steps matched exactly (`inplace-restore-gpu-probe.log`).
+
+The actual gate/up expert parameter is fused to 4608×5120; the earlier
+2304×5120 probe used transposed down-projection dimensions. An additional 100-step
+single-rank B300 probe now covers the unsharded fused matrix: maximum direction
+error 0.1053%, maximum applied-update error 0.6167%, minimum update cosine
+0.9999809. It also passed destructive streaming checkpoint restore and three
+exact resumed steps with the in-place loader. This single-rank receipt does not
+claim distributed Sinkhorn/checkpoint coverage; the existing two-rank probes
+provide that evidence. Numerical admission now requires both expert geometries.
+The extended numerical gate was checked separately for the ongoing attempt,
+whose driver had already imported the preceding admission module.
+
+A matching unsharded 5120×2304 down-projection probe also passed 100 steps:
+maximum direction error 0.0794%, maximum applied-update error 0.5297%,
+minimum update cosine 0.9999859, exact destructive checkpoint restore and
+three exact resumed steps. The admission gate requires these actual local
+layouts as well as the earlier distributed probes.
