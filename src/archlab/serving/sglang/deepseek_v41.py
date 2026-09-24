@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import itertools
 import json
 import os
 import re
@@ -39,9 +40,16 @@ class DeepseekV4ForCausalLM(NativeV41):
         if not expected or actual != expected:
             raise ValueError("SGLang model source differs from the reviewed runtime fingerprint")
         parallel = get_parallel()
-        if (parallel.tp_size, parallel.moe_ep_size, parallel.attn_dp_size,
-                parallel.attn_cp_size, parallel.pp_group.world_size) != (8, 8, 1, 1, 1):
-            raise ValueError("full-checkpoint qualification requires one TP8/EP8 worker")
+        geometry = (parallel.tp_size, parallel.moe_ep_size, parallel.attn_dp_size,
+                    parallel.attn_cp_size, parallel.pp_group.world_size)
+        allowed = {(8, 8, 1, 1, 1)}
+        if os.environ.get("ARCHLAB_RL_OFFLOAD_POLICY") == "forbidden":
+            from sglang.srt.runtime_context import get_exec
+            if get_exec().features.enable_weights_cpu_backup:
+                raise ValueError("resident rollout forbids CPU weight backups")
+            allowed.add((32, 32, 4, 1, 1))
+        if geometry not in allowed:
+            raise ValueError("unsupported full-checkpoint serving geometry")
         metadata = getattr(config, "archlab", None)
         if not isinstance(metadata, dict) or metadata.get("variant") not in ("normal", "simplicial"):
             raise ValueError("missing full fine-tuned checkpoint metadata")
@@ -84,9 +92,41 @@ class DeepseekV4ForCausalLM(NativeV41):
             self.model.layers[index].engram.embed = BF16EngramEmbedding(
                 rows, config.engram_head_dim, tp_rank=parallel.tp_rank, tp_size=parallel.tp_size,
                 all_reduce=tensor_model_parallel_all_reduce, device=device)
+        if os.environ.get("ARCHLAB_RL_OFFLOAD_POLICY") == "forbidden":
+            # Deterministic buffers are not refreshed by the policy stream.
+            # Retain them on GPU outside the discardable weight allocation pool.
+            from torch_memory_saver import torch_memory_saver
+            with torch_memory_saver.disable():
+                for buffer in self.buffers():
+                    if buffer.device.type == "cuda":
+                        buffer.data = buffer.detach().clone()
         self._archlab_loaded = False
+        if os.environ.get("ARCHLAB_RL_OFFLOAD_POLICY") == "forbidden":
+            # Replacing native FP8 Engram storage with BF16 leaves obsolete
+            # allocations in the caching allocator. Return those pages before
+            # colocated policy transfer; live parameters remain on GPU.
+            torch.cuda.synchronize()
+            before_free, total = torch.cuda.mem_get_info()
+            torch.cuda.empty_cache()
+            after_free, _ = torch.cuda.mem_get_info()
+            print("ARCHLAB_SERVING_MEMORY " + json.dumps(dict(
+                rank=parallel.tp_rank, parameter_bytes=sum(p.numel() * p.element_size() for p in self.parameters()),
+                buffer_bytes=sum(b.numel() * b.element_size() for b in self.buffers()),
+                released_cached_bytes=after_free-before_free, free_bytes=after_free,
+                total_bytes=total)), flush=True)
 
     def load_weights(self, weights, is_nextn=False):
+        weights = iter(weights)
+        first = next(weights, None)
+        weights = itertools.chain(() if first is None else (first,), weights)
+        if os.environ.get("ARCHLAB_MILES_LIVE_WEIGHTS") == "1" and (
+                self._archlab_loaded or getattr(self, "_archlab_live_update", None) is not None
+                or (first is not None and first[0] == "archlab_update_begin")):
+            from archlab.serving.sglang_v41_live_weights import update
+
+            if is_nextn:
+                raise ValueError("draft model updates are unsupported")
+            return update(self, weights, super().load_weights)
         if is_nextn or self._archlab_loaded:
             raise ValueError("draft models and partial live weight updates are not qualified")
         if "full_checkpoint" in self.archlab_metadata:
@@ -165,6 +205,23 @@ class DeepseekV4ForCausalLM(NativeV41):
                        "attn_mqa.k_scale", "attn_mqa.v_scale", "blockscale_swizzled"))}
         if missing:
             raise ValueError(f"engine parameters were not loaded from the full checkpoint: {sorted(missing)}")
+        self.validate_derived_state()
+        if any(parameter.device.type != "cuda" for parameter in self.parameters()):
+            raise ValueError("all inference weights must remain resident on GPU")
+        self.requires_grad_(False)
+        for layer in self.config.engram_layer_ids:
+            self.model.layers[layer].engram.embed.finish_load(str(layer))
+        self.eval()
+        self._archlab_loaded = True
+        print(json.dumps(dict(event="archlab_full_checkpoint_loaded",
+                              variant=self.archlab_metadata["variant"],
+                              cursor=self.archlab_metadata["checkpoint_cursor"],
+                              adapter_tensors=len(loaded), engram_dtype="bfloat16",
+                              backbone_parameter_tensors_loaded=len(loaded_parameters),
+                              router_compute="float32", lm_head_dtype="float32")), flush=True)
+        return result
+
+    def validate_derived_state(self):
         root = Path(get_serving().tokenizer_path)
         for name, filename in self.archlab_metadata["derived_buffer_files"].items():
             if not re.fullmatch(r"engram_hash\.(token_map|primes|offsets|multipliers)", name):
@@ -176,18 +233,6 @@ class DeepseekV4ForCausalLM(NativeV41):
             derived = getattr(self.model.engram_hasher, name.split(".")[-1]).detach().cpu()
             if stored.numel() != derived.numel() or not torch.equal(stored.reshape(-1), derived.reshape(-1)):
                 raise ValueError(f"engine-derived Engram state differs from training: {name}")
-        if any(parameter.device.type != "cuda" for parameter in self.parameters()):
-            raise ValueError("all inference weights must remain resident on GPU")
-        self.requires_grad_(False)
-        self.eval()
-        self._archlab_loaded = True
-        print(json.dumps(dict(event="archlab_full_checkpoint_loaded",
-                              variant=self.archlab_metadata["variant"],
-                              cursor=self.archlab_metadata["checkpoint_cursor"],
-                              adapter_tensors=len(loaded), engram_dtype="bfloat16",
-                              backbone_parameter_tensors_loaded=len(loaded_parameters),
-                              router_compute="float32", lm_head_dtype="float32")), flush=True)
-        return result
 
     def forward(self, *args, **kwargs):
         if not self._archlab_loaded:

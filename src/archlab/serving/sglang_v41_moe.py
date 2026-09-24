@@ -15,11 +15,11 @@ from archlab.architectures.deepseek_v41_inference_moe import (
 
 def install_native_moe(moe, *, tp_rank, tp_size, all_reduce):
     c = moe.config
-    if (tp_size != 8 or c.n_routed_experts % tp_size or moe.num_fused_shared_experts
+    if (tp_size not in (8, 32) or c.n_routed_experts % tp_size or moe.num_fused_shared_experts
             or not moe._shared_expert_tp1 or moe.is_hash
             or c.scoring_func != "sqrtsoftplus" or not c.norm_topk_prob
             or c.n_shared_experts != 1 or c.swiglu_limit <= 0):
-        raise ValueError("native MoE requires EP8, one replicated shared expert, and V4.1 routing")
+        raise ValueError("native MoE requires EP8/EP32, one replicated shared expert, and V4.1 routing")
     if "forward" in moe.__dict__:
         raise ValueError("MoE execution was already extended")
     local_experts = c.n_routed_experts // tp_size
@@ -29,6 +29,10 @@ def install_native_moe(moe, *, tp_rank, tp_size, all_reduce):
                 input_ids=None, input_ids_global=None, skip_shared_experts=False):
         if skip_shared_experts or hidden_states.dtype != torch.bfloat16 or hidden_states.ndim != 2:
             raise ValueError("native MoE requires complete BF16 text-token inputs")
+        if tp_size == 32:
+            from sglang.srt.runtime_context import get_forward
+            if get_forward().mlp_reduce_scatter:
+                raise ValueError("native EP32 requires gathered inputs and exactly one FP32 all-reduce")
         if hidden_states.shape[0] == 0:
             return hidden_states
         gate_up, down = self.experts.w13_weight, self.experts.w2_weight

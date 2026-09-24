@@ -95,3 +95,17 @@ def test_packaged_preview_boundary_adapts_only_the_attention_expansion():
         expected = adapter(streams.unsqueeze(0))[0]
     torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
     torch.testing.assert_close(layer.ffn_input, expected, atol=2e-6, rtol=2e-6)
+
+
+def test_idle_dp_rank_still_calls_native_layer_without_advancing_adapter():
+    layer, adapter = Layer(), make_adapter("normal")
+    state = install_adapter_boundary(layer, adapter, tp_size=8)
+    batch = SimpleNamespace(req_pool_indices=torch.empty(0, dtype=torch.long),
+                            forward_mode=SimpleNamespace(is_decode=lambda: False,
+                                is_extend_without_speculative=lambda: False))
+    empty = torch.empty(0, 2, 16)
+    actual, combined, normalized = layer.forward_hc_pre_from_prev(
+        torch.empty(0, dtype=torch.long), empty, None, batch, None, None)
+    assert actual.shape == empty.shape
+    assert combined.shape == (0, 16)
+    assert not state.caches

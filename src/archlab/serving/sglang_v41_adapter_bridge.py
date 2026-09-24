@@ -100,15 +100,15 @@ def install_adapter_boundary(layer, adapter, *, tp_size, max_slots=32):
             raise RuntimeError("reentrant layer execution is unsupported")
         mode = forward_batch.forward_mode
         slots = forward_batch.req_pool_indices.detach().cpu().tolist()
+        if not slots and hidden_states.shape[0] == 0:
+            return original_forward(positions, hidden_states, input_ids, forward_batch,
+                                    input_ids_global, prev_pre, **kwargs)
         if mode.is_decode():
             lengths = [1] * len(slots)
         elif mode.is_extend_without_speculative():
             lengths = list(forward_batch.extend_seq_lens_cpu)
         else:
             raise ValueError("only non-speculative eager prefill and decode are qualified")
-        if not slots and hidden_states.shape[0] == 0:
-            return original_forward(positions, hidden_states, input_ids, forward_batch,
-                                    input_ids_global, prev_pre, **kwargs)
         context.update(batch=forward_batch, slots=slots, lengths=lengths,
                        positions=positions.detach().cpu().tolist(), calls=0, posts=0)
         try:

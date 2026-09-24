@@ -1,5 +1,10 @@
 # DeepSeek V4.1 training-first RL restart
 
+**Retired by user request (2026-09-24):** the replacement is Miles using the
+MiMo report's RL recipe, starting from the matched step-4537 SFT parents.
+See [migration status and blockers](DEEPSEEK_V41_MILES_MIMO_MIGRATION.md).
+The fallback and admission notes below describe the historical AutoModel run.
+
 The scientific comparison is matched normal versus simplicial (three-body) attention.
 
 **Active fallback candidate:** `recipes/experiments/deepseek_v41_nemotron_rloo_retained.yaml`.

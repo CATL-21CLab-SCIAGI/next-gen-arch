@@ -81,7 +81,18 @@ class BF16EngramEmbedding(nn.Module):
     def forward(self, indices, forward_batch=None, *, cp_all_tokens=False):
         if cp_all_tokens:
             raise ValueError("prototype supports TP-only lookup, without context parallelism")
+        if self.tp_size == 32:
+            from sglang.srt.layers.engram import EngramEmbedding
+            # The native gather/reduce/scatter protocol supports idle DP ranks;
+            # only the owned-row storage/lookup is replaced with exact BF16.
+            return EngramEmbedding._dp_sharded_lookup(self, indices, forward_batch)
         values = self.owned_rows(indices)
         if values.numel() and self.tp_size > 1:
             values = self.all_reduce(values)
         return values
+
+    def _owned_rows(self, indices):
+        return self.owned_rows(indices)
+
+    def _empty(self, indices):
+        return self.weight.new_empty((*indices.shape, self.dim))

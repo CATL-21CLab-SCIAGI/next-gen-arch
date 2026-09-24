@@ -47,6 +47,10 @@ def prepare(config):
                  TORCH_EXTENSIONS_DIR=str(cache / "torch-extensions"))
     bindings = [(p, p, p in ("/dev", "/proc", "/sys")) for p in
                 ("/dev", "/proc", "/sys", "/mnt/nas", "/mnt/oss", "/etc/resolv.conf", "/etc/hosts")]
+    if config.get("private_tmp", False):
+        private_tmp = cache / "tmp"
+        private_tmp.mkdir(parents=True, exist_ok=True)
+        bindings.append((str(private_tmp), "/tmp", False))
     bindings.extend([(str(cuda_driver), "/run/archlab-cuda-compat", False),
                      (str(nvml), "/run/archlab-driver/libnvidia-ml.so.1", False)])
     if executable := shutil.which("nvidia-smi"):

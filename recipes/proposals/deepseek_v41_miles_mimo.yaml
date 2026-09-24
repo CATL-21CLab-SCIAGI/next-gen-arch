@@ -1,0 +1,108 @@
+# Migration contract, not an executable/admitted training recipe.
+schema_version: 1
+status: production_admission_in_progress
+backend: miles
+source:
+  report: https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL/resolve/main/MiMo_V2_6_technical_report.pdf
+  report_sha256: fb81e6e083801b3358f084ed6be953dc23b0d2e434690f4541d5eae03e01e7af
+  sections: ['4.1', '4.3.3', '5.1', '5.4']
+  miles_repository: https://github.com/radixark/miles.git
+  miles_revision: 6c6858a42b61459467814edc1404b1d9bfa38471
+  miles_upstream_branch: zczeng/dsv41-rl-support
+  miles_root: env:ARCHLAB_MILES_ROOT
+parents:
+  normal:
+    checkpoint: env:ARCHLAB_RL_PARENT_NORMAL
+    marker_sha256: 3f946519f860a516345cd80cfff2764be6e1aa0095b791cddcc92aa3a06769fc
+  simplicial:
+    checkpoint: env:ARCHLAB_RL_PARENT_SIMPLICIAL
+    marker_sha256: b60da9ce92b75a163a3aef3bada010eb654870bf6c126267f661661e4ec336a9
+  supervised_step: 4537
+  supervised_tokens: 756364650
+  rl_initialization: fresh
+  resume_old_rl: false
+data:
+  manifest: env:ARCHLAB_NEMOTRON_RL_DATA_MANIFEST
+  manifest_sha256: 588525114edeffcc57c6ff723a63d5ac55351ff2b403eb4514985c7109255a17
+  prompt_template: package:prompts/deepseek_v41_math_rl_v1.yaml
+  reward_backend: exact-rational-scalar-v1
+  train_count: 8192
+  heldout_count: 512
+algorithm:
+  name: GRPO
+  advantage: reward_minus_group_mean
+  standardize_advantage: false
+  loss: detached_importance_ratio_times_mask_times_advantage_times_negative_logprob
+  normalization: prompt_mean_of_group_token_means
+  replay: all_response_tokens
+  behavior_logprobs: recorded_at_generation_never_recomputed
+  importance_ratio: per_token_stop_gradient
+  ratio_mask_bounds:
+    positive: [0.2, 5.0]
+    negative: [0.2, 5.0]
+  # The report describes entropy-driven adjustment, but supplies no numerical controller.
+  bound_adjustment: explicit_recorded_updates_only
+  freeze_router: true
+  freeze_router_bias: true
+  reference_kl_coefficient: 0.0
+  entropy_loss_coefficient: 0.0
+optimizer:
+  name: Muown
+  learning_rate: 3.0e-6
+  weight_decay: 0.0
+  warmup_steps: 0
+  gradient_clip: 1.0
+  muon_momentum: 0.95
+  nesterov: true
+  newton_schulz_steps: 10
+  update_scale: 0.5
+  adam_betas: [0.95, 0.95]
+  adam_epsilon: 1.0e-8
+  # Our parents do not supply MiMo's Muown row state. Never substitute Adam/Muon silently.
+  restore_sft_muown_row_state: false
+  require_qualified_muown_implementation: true
+  master_precision: float32
+  state_storage: persistent_streamed
+  gradient_accumulation_precision: bfloat16
+rollout:
+  samples_per_prompt: 16
+  target_max_policy_staleness: 4
+  admission_max_policy_staleness: 0
+  temperature: 1.0
+  top_p: 1.0
+  context_limit: 2560
+  max_new_tokens: 2001
+length_penalty:
+  # Eq. (4); numeric values retained from our previous math contract, not published MiMo values.
+  enabled: true
+  minimum_pass_rate: 0.25
+  reference_quantile: 0.5
+  maximum_deduction: 0.1
+  tolerated_excess: 0.1
+  saturation_excess: 1.0
+  exponent: 1.0
+task_specific_grading:
+  code_agent_gar: false
+  tool_call_segment_penalties: false
+local_scale_defaults:
+  nodes_total: 4
+  gpus_per_node: 8
+  gpu_model: NVIDIA_B300
+  gpus_per_arm: 16
+  prompts_per_rollout_batch: 16
+  seed: 20260922
+  max_rollout_batches: 128
+  pilot_updates: 2
+  eval_count: 64
+  eval_interval_updates: 8
+  checkpoint_interval_updates: 16
+launch_requirements:
+  - compatible_amd64_container_with_v41_sglang_and_megatron_apis
+  - qualified_muown_optimizer_with_distributed_state_and_checkpoint_tests
+  - both_custom_attention_adapters_preserved_in_trainer_and_rollout
+  - complete_sft_checkpoint_conversion_and_parameter_coverage
+  - qualified_weight_sync_including_adapters_and_engram
+  - actual_parent_rollout_training_numerical_admission
+  - full_response_backward_memory_admission
+  - generation_logprob_and_staleness_provenance
+  - distributed_prompt_group_loss_normalization

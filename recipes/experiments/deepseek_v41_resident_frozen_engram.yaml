@@ -1,0 +1,49 @@
+schema_version: 1
+name: deepseek-v41-resident-frozen-engram-scaled-fp16-momentum
+status: qualification_required
+extends_descriptive_contract: package:recipes/proposals/deepseek_v41_miles_mimo.yaml
+execution:
+  order: [normal, simplicial]
+  nodes: 4
+  gpus_per_node: 8
+  gpu_model: NVIDIA_B300
+  training: {tp: 8, pp: 4, ep: 8, cp: 1}
+  rollout: {world_size: 32, tp: 32, ep: 32, attention_dp: 4, topology_status: unqualified}
+  rl_seconds_per_arm: 7200
+  budget_includes: [rollout, training, policy_transfer]
+  heavy_evaluation: deferred
+  fresh_rl_state: true
+memory:
+  offload_policy: forbidden
+  permitted_host_transfers: [initial_checkpoint_load, explicit_checkpoint_save, scalar_metrics, rollout_records]
+  minimum_free_hbm_fraction: 0.1
+  activation_recomputation: full
+  micro_batch_size: 1
+  policy_backup: live_gpu_alias
+optimizer:
+  implementation: archlab.megatron.miles_v41_resident.build_optimizer
+  master_dtype: float32
+  matrix_momentum_dtype: float16
+  momentum_scale_dtype: float32
+  momentum_scaling: per_matrix_power_of_two
+  momentum_selection: user_authorized_16bit_path_after_fp32_memory_failure
+  orthogonalization_dtype: float32
+  row_statistics_dtype: float32
+  matrix_optimizer: Muown
+  embedding_and_head_optimizer: Sinkhorn
+  sinkhorn: {beta: 0.95, iterations: 11, threshold: 0.001, epsilon: 1.0e-20, correction: 0.18}
+  engram_tables: frozen
+  engram_projections_and_gates: trainable
+  router_and_router_bias: frozen
+admission:
+  momentum_steps: 100
+  maximum_update_relative_error: 0.01
+  minimum_update_cosine: 0.999
+  require_distributed_sinkhorn: true
+  require_exact_optimizer_resume: true
+  require_full_model_pilot_before_each_arm: true
+  baseline_priority: user_requested_baseline_healthy_before_simplicial
+  direction_maximum_relative_error: 0.01
+  direction_minimum_cosine: 0.999
+  policy_parity: {mean_abs_response_logprob_error: 0.05, max_abs_response_logprob_error: 0.5}
+  launch_without_admission: forbidden
