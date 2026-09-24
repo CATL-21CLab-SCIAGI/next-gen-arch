@@ -9,6 +9,7 @@ execution:
   gpu_model: NVIDIA_B300
   training: {tp: 8, pp: 4, ep: 8, cp: 1}
   rollout: {world_size: 32, tp: 32, ep: 32, attention_dp: 4, topology_status: unqualified}
+  rollout_scheduling: {max_running_requests: 64, requests_per_attention_dp: 16, load_balance: round_robin}
   rl_seconds_per_arm: 7200
   budget_includes: [rollout, training, policy_transfer]
   heavy_evaluation: deferred

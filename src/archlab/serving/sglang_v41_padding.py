@@ -36,6 +36,16 @@ class _LiveSources:
 
 def install_live_source_boundary(attention):
     original = attention._forward_prepare
+    original_forward = attention.forward
+
+    def forward(self, x, positions, forward_batch, **kwargs):
+        if real_token_count(forward_batch, x.shape[0]) == 0:
+            # Attention TP groups share the same local DP batch. They may skip
+            # local attention together; the outer layer still runs MoE collectives.
+            return x.new_zeros(x.shape)
+        return original_forward(x, positions, forward_batch, **kwargs)
+
+    attention.forward = MethodType(forward, attention)
 
     def prepare(self, x, positions, forward_batch, attn_backend, *args, **kwargs):
         return original(x, positions, forward_batch, _LiveSources(attn_backend), *args, **kwargs)
@@ -51,6 +61,11 @@ def install_hash_padding_boundary(hasher):
 
     def forward(self, input_ids, forward_batch):
         count = real_token_count(forward_batch, input_ids.shape[0])
+        if count == 0:
+            # Idle DP ranks can have nonempty communication padding. No request
+            # owns these rows, so do not enter the native stateful hash kernel.
+            return input_ids.new_zeros((input_ids.shape[0], self.primes.shape[0],
+                                        self.offsets.shape[1]))
         if forward_batch.forward_mode.is_decode() and count < input_ids.shape[0]:
             forward_batch = copy(forward_batch)
             forward_batch.req_pool_indices = forward_batch.req_pool_indices.clone()

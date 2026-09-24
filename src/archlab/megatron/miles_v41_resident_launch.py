@@ -22,7 +22,8 @@ def argv_for(args):
                "--rollout-num-gpus-per-engine": "32", "--sglang-tp-size": "32",
                "--sglang-ep-size": "32", "--sglang-dp-size": "4",
                "--sglang-mem-fraction-static": "0.90", "--num-rollout": "1000000",
-               "--sglang-chunked-prefill-size": "1024"}
+               "--sglang-chunked-prefill-size": "1024",
+               "--sglang-max-running-requests": "64"}
     result, i = [], 0
     while i < len(original):
         key = original[i]
@@ -43,7 +44,7 @@ def argv_for(args):
     # Miles calls discard/reallocation of SGLang's no-backup buffers "offload".
     # This flag enables that lifecycle, not CPU/disk transfer (guarded in model).
     return result + ["--no-offload-train", "--offload-rollout", "--skip-eval-before-train",
-                     "--sglang-enable-dp-attention",
+                     "--sglang-enable-dp-attention", "--sglang-load-balance-method", "round_robin",
                      "--disable-grad-buffers-cpu-backup", "--train-env-vars", json.dumps(env)]
 
 

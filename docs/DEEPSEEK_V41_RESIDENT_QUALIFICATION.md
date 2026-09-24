@@ -160,3 +160,18 @@ This addresses both the observed 104/100 assertion and subsequent stateful
 padding hazards without changing container source. Twelve focused CPU tests
 pass, including idle ranks and both adapter variants. Full-run qualification
 of the correction is pending in attempt 9.
+
+Attempt 9 passed prefill and sustained decode at roughly 17–18 tokens/s per
+attention-DP group, then exposed a padded idle batch in native Engram hashing.
+The idle batch had no real tokens but nonempty communication padding; native
+hashing rejected its IDLE mode. The extension now returns inert hash padding
+without history writes and bypasses only local attention computation on an
+idle attention-TP group. The outer layer still executes MoE/Engram collectives.
+Fourteen focused regressions pass. The failed workers were retired.
+
+Attempt 10 also raises the serving request limit from 16 globally (4 per DP)
+to 64 globally (16 per DP), with explicit round-robin routing. The measured
+single-token decode batches underused the GPUs and queued a full 256-response
+rollout behind four active requests per DP. Prefill chunk size, token-pool limit,
+training batch, prompt groups and offload prohibitions retain their contract;
+the larger serving concurrency must still pass the same physical HBM gate.
