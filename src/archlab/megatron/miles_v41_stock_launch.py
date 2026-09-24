@@ -35,6 +35,7 @@ def main():
         "--save", str(root / "checkpoints"), "--save-interval", "20",
         "--save-trigger-sentinel", str(root / "SAVE_REQUEST"),
         "--stream-optimizer-state-moment-dtype", "bf16",
+        "--no-offload-train", "--offload-train-target", "cpu",
         "--sglang-load-format", "dummy", "--sglang-device", "cuda",
         "--sglang-moe-runner-backend", "triton",
         "--sglang-disable-shared-experts-fusion", "--sglang-enable-fp32-lm-head",
@@ -72,10 +73,12 @@ def main():
         "SGLANG_EXTERNAL_MODEL_PACKAGE": "archlab.serving.sglang",
         "ARCHLAB_SGLANG_MODEL_SHA256": "11ac4bec0aac9e2d094cc38211e1744ee7cdc5d8a9920b6af12d9c92f24a5163",
         "ARCHLAB_MILES_LIVE_WEIGHTS": "1", "ARCHLAB_MILES_STOCK_FP8": "1",
+        "ARCHLAB_MILES_RESIDENT_POLICY": "1",
+        "ARCHLAB_MILES_RUN_ROOT": str(root),
         "ARCHLAB_RL_FREEZE_ENGRAM": "1", "SGLANG_DIAG_BYPASS_HEALTH_GENERATE": "1",
         "SGLANG_SHARED_EXPERT_TP1": "1", "SGLANG_OPT_FUSE_SWIGLU_INTERLEAVED": "0",
         "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1", "SGLANG_OPT_FP8_WO_A_GEMM": "0",
-        "MILES_WEIGHT_BACKUP_DIR": str(root / "weight-backup"), "WANDB_MODE": "disabled",
+        "WANDB_MODE": "disabled",
     }
     os.environ.update(env)
     from miles.utils.external_utils.model_args_utils import load_model_args

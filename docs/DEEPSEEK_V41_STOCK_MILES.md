@@ -51,3 +51,26 @@ completed generation alone is not healthy RL. Before leaving it unattended,
 observe multiple finite nonzero updates, reward variation, stable policy-gap
 metrics, a completed checkpoint, and practical measured step times. Status and
 logs live in the explicit run directory; do not infer success from this document.
+
+The next configuration removes the NAS policy-backup path entirely. Measured
+trainer allocation peaked at about 92 GiB per GPU, while FP8 serving used about
+148 GiB including the bounded KV cache. The actor and gradients therefore stay
+on GPU (`--no-offload-train`); only stock Adam state streams to local disk.
+Serving still discards its allocations during training. A narrowly scoped
+adapter disables Miles's unconditional colocation backup and reads the live
+actor for weight synchronization when there is no reference, teacher, or old
+actor. This also makes the existing startup `_switch_model("actor")` a no-op,
+instead of restoring the identical policy from NAS. Other configurations keep
+upstream backup behavior. Full coexistence and training peaks remain subject
+to runtime qualification.
+
+A bounded 256 MiB probe isolated the native mapped-copy path: NAS copy plus
+flush took 1.63 s versus 0.15 s on local storage; reopening after dropping the
+mapping/cache and restoring took 1.50 s versus 0.13 s. The plain GPU-to-CPU
+transfer was 0.074–0.075 s on both paths. A buffered NAS write plus flush took
+0.64 s, so the mapped path adds overhead beyond sequential NAS bandwidth.
+These are small single-process measurements, not a sustained 32-rank bandwidth
+claim. The resident-actor change eliminates these policy-backup transfers
+instead of moving another full copy onto nearly full local optimizer disks.
+Twelve focused regressions, upstream argument validation, and a GPU probe of
+the actual Miles actor's no-backup/no-restore/live-sync path passed.

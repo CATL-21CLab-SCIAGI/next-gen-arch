@@ -21,6 +21,9 @@ training:
   stored_moment_dtype: bfloat16
   master_and_optimizer_arithmetic: float32
   optimizer_state_streaming: disk
+  actor_offload: false
+  actor_weight_backup: false
+  policy_sync_source: live_gpu_actor
   activation_recompute: full
 rollout:
   engine_gpus: 8
