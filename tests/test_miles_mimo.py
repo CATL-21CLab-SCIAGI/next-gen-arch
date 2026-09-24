@@ -1,10 +1,26 @@
+import asyncio
 import copy
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from archlab.optimizers.muown import Muown
 from archlab.rl.miles_mimo import masked_importance_objective
+
+
+@pytest.mark.parametrize("response, expected", [
+    (r"\boxed{15}" + "<｜end▁of▁sentence｜>", 1.0),
+    (r"\boxed{15}", 1.0),
+    (r"\boxed{16}" + "<｜end▁of▁sentence｜>", 0.0),
+    (r"\boxed{15} or 16" + "<｜end▁of▁sentence｜>", 0.0),
+    (r"\boxed{15}" + "<｜end▁of▁sentence｜>more", 0.0),
+    (r"\boxed{15}" + "<｜end▁of▁sentence｜>" * 2, 0.0),
+])
+def test_miles_reward_terminal_eos_boundary(response, expected):
+    from archlab.rl.miles_mimo import reward
+    sample = SimpleNamespace(response=response, label="15")
+    assert asyncio.run(reward(None, sample)) == expected
 
 
 def test_mimo_group_normalization_and_detached_ratio():

@@ -205,3 +205,26 @@ maximum direction error 0.0794%, maximum applied-update error 0.5297%,
 minimum update cosine 0.9999859, exact destructive checkpoint restore and
 three exact resumed steps. The admission gate requires these actual local
 layouts as well as the earlier distributed probes.
+
+Attempt 10 completed the full 256-response rollout without a serving exception
+and reached the first optimizer boundary. Rollout time was 2941 seconds; all
+responses used weight version 1. However, initial serving/training parity failed
+over 359,401 response tokens: mean absolute log-probability error 0.0203692
+(limit 0.05), maximum 1.9957209 (limit 0.5). No optimizer update was applied and
+production was not admitted. This is a correctness blocker, not another loading
+failure. The gate remains unchanged; the average passing does not excuse the
+worst-token failure. All failed workers were retired, retaining the allocation.
+
+The same rollout had zero rewards and 53.125% truncation. Inspection found an
+independent reward-boundary defect: Miles explicitly uses `no_stop_trim=True`
+and `skip_special_tokens=False`, whereas the strict verifier rejects anything
+following the answer. The Miles reward adapter now removes exactly one terminal
+DeepSeek EOS marker before verification, preserving interior/duplicate markers,
+incorrect answers and trailing prose as failures. Six regression cases cover
+this boundary. This explains rejection of otherwise valid EOS-terminated answers;
+it does not establish how many of the 256 answers were correct because that run
+did not retain full responses. Future resident attempts persist rollout samples
+and behavior scores before training so this gap cannot recur. Focused reward
+tests passed (17 tests and 56 subtests). A new production launch should follow
+diagnosis of the parity outliers; repeating the same failed gate would not
+establish healthy RL.

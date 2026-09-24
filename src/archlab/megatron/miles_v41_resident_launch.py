@@ -63,6 +63,9 @@ async def train(args, *, pilot, seconds, output, continue_after_pilot=False, var
     from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
     configure_logger(args, source=MainProcessIdentity())
+    # Retain responses and behavior scores even when the first training gate
+    # fails, so reward and serving/training mismatches can be reproduced.
+    args.save_debug_rollout_data = str(output / "rollout-{rollout_id}.pt")
     _manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)

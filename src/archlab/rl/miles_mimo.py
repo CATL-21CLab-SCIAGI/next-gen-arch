@@ -9,7 +9,15 @@ from archlab.rl.rewards import verify_math_answer
 
 
 async def reward(args, sample, **kwargs):
-    return verify_math_answer(sample.response, sample.label).reward
+    # Miles requests no_stop_trim=True and skip_special_tokens=False. Its
+    # DeepSeek response therefore includes EOS, which is transport framing,
+    # not prose following the answer. Remove exactly one terminal EOS; retain
+    # interior tokens, duplicate EOS and all actual answer text for validation.
+    response = sample.response.rstrip()
+    eos = "<｜end▁of▁sentence｜>"
+    if response.endswith(eos):
+        response = response[:-len(eos)]
+    return verify_math_answer(response, sample.label).reward
 
 
 def groups(samples, expected):
