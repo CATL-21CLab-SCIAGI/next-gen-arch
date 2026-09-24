@@ -112,10 +112,8 @@ class ResidentMuown(torch.optim.Optimizer):
                 for key, value in saved.items():
                     if key == "optimizer":
                         opt = entry[key]
-                        # Optimizer.load_state_dict casts BF16 state to master dtype.
-                        opt.load_state_dict(value)
-                        for state in opt.state.values():
-                            state["momentum_buffer"] = state["momentum_buffer"].to(self.momentum_dtype)
+                        from archlab.megatron.miles_v41_inplace_restore import load_muown_in_place
+                        load_muown_in_place(opt, value)
                     elif isinstance(value, torch.Tensor):
                         entry[key].copy_(value)
                     else:

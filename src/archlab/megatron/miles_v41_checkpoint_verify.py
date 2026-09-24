@@ -38,6 +38,9 @@ def restore_and_verify(args, iteration, models, optimizer, scheduler):
     def state():
         return dict(model=[m.state_dict() for m in models], optimizer=optimizer.state_dict())
 
+    from archlab.megatron.miles_v41_inplace_restore import install_for_resident
+    install_for_resident(optimizer.optimizer)
+    storage_before = {key: tensor.data_ptr() for key, tensor in tensors(state())}
     before = fingerprint(state())
     completed_steps = optimizer.optimizer.completed_steps
     # Model and optimizer must really be read back from the new checkpoint.
@@ -56,11 +59,13 @@ def restore_and_verify(args, iteration, models, optimizer, scheduler):
         for name, value in previous.items():
             setattr(args, name, value)
     after = fingerprint(state())
-    if (before != after or restored_iteration != iteration
+    storage_preserved = storage_before == {key: tensor.data_ptr() for key, tensor in tensors(state())}
+    if (not storage_preserved or before != after or restored_iteration != iteration
             or optimizer.optimizer.completed_steps != completed_steps):
         raise ValueError("full model/optimizer checkpoint restore was not exact")
     receipt = dict(rank=dist.get_rank(), world_size=dist.get_world_size(), iteration=iteration,
-                   completed_updates=completed_steps, checkpoint_restore=True, **after)
+                   completed_updates=completed_steps, checkpoint_restore=True,
+                   optimizer_restore_in_place=storage_preserved, **after)
     (Path(args.save).parent / f"checkpoint-restore-rank-{dist.get_rank():02d}.json").write_text(
         json.dumps(receipt, indent=2))
     print("ARCHLAB_CHECKPOINT_RESTORE " + json.dumps(receipt), flush=True)

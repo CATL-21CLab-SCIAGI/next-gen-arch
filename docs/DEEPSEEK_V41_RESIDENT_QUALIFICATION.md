@@ -175,3 +175,16 @@ single-token decode batches underused the GPUs and queued a full 256-response
 rollout behind four active requests per DP. Prefill chunk size, token-pool limit,
 training batch, prompt groups and offload prohibitions retain their contract;
 the larger serving concurrency must still pass the same physical HBM gate.
+
+Checkpoint restore now copies Muown state into existing storage, preserving its
+FP16 momentum and FP32 row statistics. Generic optimizer loading casts all state
+to the FP32 master dtype and then requires new FP16 allocations; that transient
+duplication is unnecessary for this resident contract. The explicit checkpoint
+verification boundary installs the in-place loader on existing optimizer
+instances as well, and now requires unchanged storage addresses in addition to
+exact bytes, iteration and completed-update count. Three focused CPU checks
+pass, including exact resumed updates and rejection before mutation on a dtype
+mismatch. The ongoing attempt predates this checkpoint-only correction; its
+source snapshot is retained and the checkpoint boundary records the new receipt.
+The B300 restore probe also passed: all optimizer storage addresses remained
+unchanged and three resumed steps matched exactly (`inplace-restore-gpu-probe.log`).
