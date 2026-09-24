@@ -119,3 +119,32 @@ Seventeen regressions and a probe of the actual Miles dispatch passed; the
 probe intercepts the final saver and is not a full checkpoint round trip.
 Attempt 5 uses `train-attempt5.log` and requests a full checkpoint after its
 first update. A completed full checkpoint is still required for qualification.
+
+Attempt 5 completed one finite update (gradient norm 0.23525, train/rollout KL
+0.001566, reward 18/128). All 64 optimizer manifests and 2,696 bucket files
+(4.450 TB) reached NAS in about 37 minutes; sampled saved moments were finite
+and nonzero. The model save then exhausted host NUMA memory, confirmed by the
+kernel OOM log. One failed trainer had about 80 GB of shared memory resident.
+This is an incomplete checkpoint and cannot be used as a training resume point.
+It is retained under `checkpoints/attempt5-incomplete-iter_0000000`.
+
+The synchronous MCore strategy still stages the entire rank's model through
+its asynchronous writer before writing. `miles_v41_checkpoint_writer` supplies
+a strategy through the existing checkpointing context that uses native
+PyTorch `FileSystemWriter` with one thread, zero copy-ahead, and one tensor
+per file. This pinned PyTorch retains `tensor_dict` until a file closes even
+for torch serialization, so single-file-per-rank must also be disabled. MCore still
+converts and validates shards and writes the completion metadata; its native
+loader reads the same `torch_dist` format. CPU copies are made as individual
+tensors are written, rather than staging the whole policy. The largest tensor
+still determines the per-rank copy peak. Optimizer save behavior is unchanged.
+No container library is modified.
+An eight-B300 round trip using TMS-backed BF16 tensors passed through the
+native distributed save and load APIs on every rank, including sharded objects
+and common state (`serial-checkpoint-probe2.log`). This checks the writer and
+format compatibility; the full RL checkpoint remains the launch gate.
+The larger eight-B300 probe saved and reloaded 4 GiB per rank exactly. One-file-
+per-rank writing grew peak RSS by 4.1–4.2 GiB; one-tensor-per-file writing reduced
+that to 2.1–2.2 GiB with four 1 GiB tensors (`serial-checkpoint-probe-bounded.log`).
+Four dispatch/contract tests and the 17 existing focused regressions passed.
+Attempt 6 uses `train-attempt6.log`, with the stock initial-save sentinel retained.
