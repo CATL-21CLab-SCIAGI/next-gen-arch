@@ -20,9 +20,9 @@ the upstream driver. It preserves the dataset's already formatted prompts.
 The versioned contract is `recipes/experiments/deepseek_v41_stock_fp8.yaml`.
 
 The September 24 attempt uses four nodes / 32 B300 GPUs. All four nodes were
-verified idle before launch. Each has about 1.4 TB local disk free; offload
-and checkpoint storage for this attempt is NAS, not an assumed NVMe volume.
-Its performance must be measured. Argument validation and 24 focused existing
+verified idle before launch. Each initially had about 1.53 TB of local disk free.
+The initial attempt used NAS for offload and checkpoint storage; the retry below
+uses local optimizer storage. Argument validation and 24 focused existing
 serving regressions passed. FP8 full-model weight refresh, useful optimizer
 updates, and checkpointing remain unqualified until runtime evidence exists.
 
@@ -36,6 +36,14 @@ busiest node). The retry mounts named node-local temporary storage at the run's
 upstream weight backups remain on NAS. The mount checks filesystem type, initial
 free capacity, and an empty project-local destination; seven regressions cover
 these guards. No runtime library or optimizer implementation is modified.
+
+The local-storage attempt completed all 32 parent imports and initialized all
+four FP8 engines, leaving roughly 120 GiB per GPU after serving allocation.
+It failed on the first weight packet because the transaction tracker assigned
+to SGLang's read-only `ModelWeightParameter.weight_loader` property. The
+compatibility tracker now wraps its existing backing loader and restores it
+even on failure. Seven focused regressions and a GPU probe against the pinned
+runtime passed. No rollout or optimizer update completed in that attempt.
 
 The run is bounded to 64 rollouts with checkpoint interval 20. The stock save
 sentinel requests an initial checkpoint after useful updates. Initialization or

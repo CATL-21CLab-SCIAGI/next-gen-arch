@@ -2,6 +2,7 @@
 
 import logging
 import re
+from contextlib import contextmanager
 
 import torch
 
@@ -54,20 +55,7 @@ def update(model, weights, native_loader):
                 ordinary.extend(_stage_compressor(state, name, value, parameters,
                     model.remap_weight_name_to_dpsk_hf_format))
     if ordinary:
-        originals = {name: getattr(p, "weight_loader", None) for name, p in parameters.items()}
-        for name, p in parameters.items():
-            loader = originals[name] or default_weight_loader
-
-            def tracked(*args, _loader=loader, _name=name, **kwargs):
-                result = _loader(*args, **kwargs)
-                model._archlab_live_update["loaded"].add(_name)
-                if "expert_id" in kwargs:
-                    model._archlab_live_update["expert_slices"].add(
-                        (_name, kwargs["expert_id"], kwargs["shard_id"]))
-                return result
-
-            p.weight_loader = tracked
-        try:
+        with _track_loaders(parameters, model._archlab_live_update, default_weight_loader):
             # Partial-bucket warnings are expected here. End-of-transaction
             # parameter coverage remains mandatory and raises on omissions.
             logger = logging.getLogger("sglang.srt.models.deepseek_v4")
@@ -77,15 +65,43 @@ def update(model, weights, native_loader):
                 native_loader(ordinary, is_nextn=False)
             finally:
                 logger.removeFilter(warning_filter)
-        finally:
-            for name, p in parameters.items():
-                if originals[name] is None:
-                    del p.weight_loader
-                else:
-                    p.weight_loader = originals[name]
     if end_version is not None:
         _finish(model, parameters, end_version)
     return set()
+
+
+@contextmanager
+def _track_loaders(parameters, state, default_loader):
+    """Track native loads, including FP8 parameters with a read-only accessor."""
+    originals = []
+    missing = object()
+    try:
+        for name, p in parameters.items():
+            descriptor = getattr(type(p), "weight_loader", None)
+            attribute = "weight_loader"
+            if isinstance(descriptor, property) and descriptor.fset is None:
+                if not hasattr(p, "_weight_loader"):
+                    raise TypeError(f"unsupported read-only weight loader: {type(p).__name__}")
+                attribute = "_weight_loader"
+            original = getattr(p, attribute, missing)
+            loader = getattr(p, "weight_loader", None) or default_loader
+
+            def tracked(*args, _loader=loader, _name=name, **kwargs):
+                result = _loader(*args, **kwargs)
+                state["loaded"].add(_name)
+                if "expert_id" in kwargs:
+                    state["expert_slices"].add((_name, kwargs["expert_id"], kwargs["shard_id"]))
+                return result
+
+            setattr(p, attribute, tracked)
+            originals.append((p, attribute, original))
+        yield
+    finally:
+        for p, attribute, original in reversed(originals):
+            if original is missing:
+                delattr(p, attribute)
+            else:
+                setattr(p, attribute, original)
 
 
 class _PartialBucketWarningFilter(logging.Filter):
