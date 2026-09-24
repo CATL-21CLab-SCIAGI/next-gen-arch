@@ -35,6 +35,7 @@ rollout:
 algorithm: upstream_grpo
 execution:
   maximum_rollouts: 64
-  checkpoint_interval: 2
+  checkpoint_interval: 20
+  initial_checkpoint: upstream_save_trigger_sentinel_after_useful_updates
   status: unqualified
   qualification: useful_finite_updates_stable_policy_gap_checkpoint_and_measured_step_time

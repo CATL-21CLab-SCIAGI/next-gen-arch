@@ -26,7 +26,19 @@ Its performance must be measured. Argument validation and 24 focused existing
 serving regressions passed. FP8 full-model weight refresh, useful optimizer
 updates, and checkpointing remain unqualified until runtime evidence exists.
 
-The run is bounded to 64 rollouts with checkpoint interval 2. Initialization or
+The NAS attempt was retired before any update. Under allocation load a bounded
+four-node probe measured only 20–26 MiB/s writes and 11–18 MiB/s reads per node.
+Inspection of the upstream offload configuration showed that both gradient and
+parameter buffers are discarded, not backed up. Estimated optimizer files plus
+remaining Engram/FP32 offload state fit the local disks (roughly 1.3 TB on the
+busiest node). The retry mounts named node-local temporary storage at the run's
+`offload` path, inside the private execution namespace. Checkpoints and the
+upstream weight backups remain on NAS. The mount checks filesystem type, initial
+free capacity, and an empty project-local destination; seven regressions cover
+these guards. No runtime library or optimizer implementation is modified.
+
+The run is bounded to 64 rollouts with checkpoint interval 20. The stock save
+sentinel requests an initial checkpoint after useful updates. Initialization or
 completed generation alone is not healthy RL. Before leaving it unattended,
 observe multiple finite nonzero updates, reward variation, stable policy-gap
 metrics, a completed checkpoint, and practical measured step times. Status and

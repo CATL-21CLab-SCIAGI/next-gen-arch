@@ -32,7 +32,8 @@ def main():
         "--megatron-to-hf-mode", "raw", "--moe-router-dtype", "fp32",
         "--make-vocab-size-divisible-by", "1", "--global-batch-size", "128",
         "--prompt-data", str(root / "train.jsonl"), "--input-key", "prompt",
-        "--save", str(root / "checkpoints"), "--save-interval", "2",
+        "--save", str(root / "checkpoints"), "--save-interval", "20",
+        "--save-trigger-sentinel", str(root / "SAVE_REQUEST"),
         "--stream-optimizer-state-moment-dtype", "bf16",
         "--sglang-load-format", "dummy", "--sglang-device", "cuda",
         "--sglang-moe-runner-backend", "triton",
@@ -54,7 +55,7 @@ def main():
             rollout_max_response_len=2001, max_tokens_per_gpu=2560,
             load_from_hf=True, disk_offload=True, offload_disk_dir=str(root / "offload"),
             colocate_memory_peak_device="cpu", recompute="full", grad_reduce_bf16=True,
-            rollout_gpus_per_engine=8, sglang_mem_fraction_static=0.80,
+            rollout_gpus_per_engine=8, sglang_mem_fraction_static=0.95,
             sglang_max_running_requests=16, check_weight_update=False,
             extra_args=shlex.join(extra),
         ))

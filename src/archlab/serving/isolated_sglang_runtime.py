@@ -16,6 +16,27 @@ import sys
 from pathlib import Path
 
 
+def scratch_binding(config):
+    scratch = config["scratch_bind"]
+    source = Path(scratch["source"])
+    destination = Path(scratch["destination"]).resolve()
+    project = Path(config["working_directory"]).resolve()
+    if (not source.is_absolute() or not source.name.startswith("evergreen-")
+            or destination == project or not destination.is_relative_to(project)):
+        raise ValueError("scratch requires a named absolute source and a project-local destination")
+    source.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents=True, exist_ok=True)
+    if any(destination.iterdir()):
+        raise ValueError("scratch destination must be empty before mounting")
+    filesystem = subprocess.check_output(
+        ["findmnt", "-T", str(source), "-n", "-o", "FSTYPE"], text=True).strip()
+    if filesystem not in ("overlay", "ext4", "xfs"):
+        raise ValueError(f"scratch must use local disk, not {filesystem}")
+    if shutil.disk_usage(source).free < scratch["minimum_free_bytes"]:
+        raise ValueError("insufficient local scratch capacity")
+    return str(source), str(destination), False
+
+
 def prepare(config):
     rootfs = Path(config["rootfs"])
     manifest = json.loads(Path(config["image_manifest"]).read_text())
@@ -51,6 +72,8 @@ def prepare(config):
         private_tmp = cache / "tmp"
         private_tmp.mkdir(parents=True, exist_ok=True)
         bindings.append((str(private_tmp), "/tmp", False))
+    if config.get("scratch_bind"):
+        bindings.append(scratch_binding(config))
     bindings.extend([(str(cuda_driver), "/run/archlab-cuda-compat", False),
                      (str(nvml), "/run/archlab-driver/libnvidia-ml.so.1", False)])
     if executable := shutil.which("nvidia-smi"):
