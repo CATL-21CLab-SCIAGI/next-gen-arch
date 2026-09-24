@@ -53,3 +53,19 @@ def test_row_shards_may_arrive_out_of_order_but_must_cover_every_owned_row():
         table.load_piece(2, weights[2:5])
     with pytest.raises(ValueError, match="not loaded"):
         table.finish_load("incomplete")
+
+
+def test_streaming_native_bucket_finish_does_not_commit_partial_table():
+    table = BF16EngramEmbedding(4, 2, tp_rank=0, tp_size=1, all_reduce=lambda x: x)
+    table.transaction_open = True
+    table.load_piece(0, torch.ones(2, 2, dtype=torch.bfloat16))
+    table.finish_load("native bucket")
+    assert not table._loaded
+    with pytest.raises(ValueError, match="not loaded"):
+        table.owned_rows(torch.tensor([0]))
+    table.transaction_open = False
+    with pytest.raises(ValueError, match="not loaded"):
+        table.finish_load("premature commit")
+    table.load_piece(2, torch.ones(2, 2, dtype=torch.bfloat16))
+    table.finish_load("complete commit")
+    assert table._loaded

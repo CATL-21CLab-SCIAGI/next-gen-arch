@@ -40,6 +40,7 @@ class DeepseekV4ForCausalLM(NativeV41):
         if not expected or actual != expected:
             raise ValueError("SGLang model source differs from the reviewed runtime fingerprint")
         parallel = get_parallel()
+        self.archlab_tp_rank = parallel.tp_rank
         geometry = (parallel.tp_size, parallel.moe_ep_size, parallel.attn_dp_size,
                     parallel.attn_cp_size, parallel.pp_group.world_size)
         allowed = {(8, 8, 1, 1, 1)}
@@ -114,6 +115,20 @@ class DeepseekV4ForCausalLM(NativeV41):
                 buffer_bytes=sum(b.numel() * b.element_size() for b in self.buffers()),
                 released_cached_bytes=after_free-before_free, free_bytes=after_free,
                 total_bytes=total)), flush=True)
+
+    def post_load_weights(self, is_nextn=False, weight_names=None):
+        if getattr(self, "_archlab_live_update", None) is None:
+            return super().post_load_weights(is_nextn=is_nextn, weight_names=weight_names)
+
+    def _prewarm_mhc_kernels(self):
+        if getattr(self, "_archlab_live_update", None) is None:
+            return super()._prewarm_mhc_kernels()
+
+    def finalize_live_weights(self):
+        # APE conversion and norm caches must see complete weights exactly once
+        # per policy version, not partially initialized streaming buckets.
+        super().post_load_weights(is_nextn=False)
+        super()._prewarm_mhc_kernels()
 
     def load_weights(self, weights, is_nextn=False):
         weights = iter(weights)

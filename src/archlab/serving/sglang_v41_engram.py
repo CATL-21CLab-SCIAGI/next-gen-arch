@@ -26,6 +26,7 @@ class BF16EngramEmbedding(nn.Module):
                                                device=device), requires_grad=False)
         self.weight.weight_loader = self._load_rows
         self._loaded = False
+        self.transaction_open = False
         self._pieces = []
 
     @torch.no_grad()
@@ -56,6 +57,10 @@ class BF16EngramEmbedding(nn.Module):
         self._pieces.append((lo, hi))
 
     def finish_load(self, label):
+        # Native SGLang calls this after every streamed bucket. Only the
+        # explicit full-policy commit may validate a multi-bucket table.
+        if self.transaction_open:
+            return
         if not self._loaded:
             end = 0
             for first, last in sorted(self._pieces):

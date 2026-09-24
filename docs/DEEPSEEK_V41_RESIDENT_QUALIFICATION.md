@@ -107,7 +107,7 @@ remain pending. Production launch fails closed until the selected variant has va
 full-model receipts; startup alone must not create those receipts.
 
 Latest machine-readable status: `results/deepseek-v41-resident-20260924/QUALIFICATION_STATUS.json`.
-Attempt 7 runs the normal arm first with scaled FP16 momentum and frozen Engram.
+Attempt 8 runs the normal arm first with scaled FP16 momentum and frozen Engram.
 It checks initial response-token log-probability parity before any optimizer
 update (mean absolute difference <=0.05, maximum <=0.5). After two pilot rollouts,
 all ranks must demonstrate at least two optimizer updates, >=10% physical free
@@ -115,3 +115,12 @@ HBM, and exact full checkpoint restore. Passing these checks admits an in-place
 7200-second continuation; it does not require reloading the parent or waiting for
 the simplicial pilot. The user explicitly prioritized a healthy baseline.
 Production has not yet been admitted.
+
+Attempt 7 initialized all 32 scaled-FP16 optimizers and reached policy handoff
+with approximately 48 GiB free on the constrained ranks. It failed before any
+rollout because native SGLang finalized Engram after the first weight bucket.
+The project loader now defers Engram validation, APE conversion and norm-cache
+refresh until the full transaction ends; it joins split compressor projection
+pairs within a bounded 128 MiB workspace and verifies every owned expert slice.
+Three new streaming regressions pass, in addition to five parity-gate tests.
+Attempt 8 is exercising these fixes. No production admission is claimed yet.
