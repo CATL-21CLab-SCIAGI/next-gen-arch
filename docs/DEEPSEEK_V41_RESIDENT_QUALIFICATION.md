@@ -123,4 +123,31 @@ The project loader now defers Engram validation, APE conversion and norm-cache
 refresh until the full transaction ends; it joins split compressor projection
 pairs within a bounded 128 MiB workspace and verifies every owned expert slice.
 Three new streaming regressions pass, in addition to five parity-gate tests.
-Attempt 8 is exercising these fixes. No production admission is claimed yet.
+Attempt 8 passed the complete policy-transfer checks on all 32 receivers.
+No production admission is claimed yet.
+
+
+Attempt 8 first-rollout blocker (2026-09-24): all 32 resident optimizers
+initialized, and all 32 serving receivers acknowledged policy version 1 with
+1,003 parameter tensors each. Observed physical free HBM stayed at or above
+13.45895% through transfer and the attempted first rollout. No optimizer update
+completed; full training-peak memory, policy parity and full checkpoint restore
+remain unqualified.
+
+The first eager prefill crashed in native SGLang V4.1: attention-DP preparation
+rounds 100 real tokens up to 104 slots (attention TP size 8), while
+`dsv41_sparse.token_req_indices` passes the padded position count as
+`repeat_interleave(output_size=104)` with request lengths summing to 100.
+PyTorch reports that exact 104-versus-100 mismatch in the CUDA assertion.
+The native eager `_forward_prepare` forwards unsliced tensors to
+`forward_low_ratio_sources`; its separate breakable-graph helper slices to
+`num_token_non_padded_cpu`. This is a serving padding defect encountered before
+any optimizer update, independent of momentum storage. Removing the assertion
+or fabricating requests for padding would not establish correct KV writes.
+A padding-safe serving path must be qualified before another full RL launch.
+
+The failed driver was stopped, and all 32 GPUs were verified at 0 MiB used.
+The four-node allocation and persistent artifacts are retained. Evidence is in
+`pilot-normal-v8.log`, `pilot-normal-v8/BLOCKER.json`, the per-rank resident
+receipts and per-node HBM observations under the run root. No runtime library
+source was modified to bypass this failure.
