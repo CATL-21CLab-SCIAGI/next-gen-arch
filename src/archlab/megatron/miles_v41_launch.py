@@ -1,4 +1,8 @@
-"""Launch the paired MiMo math-RL actors inside the qualified GPU namespace.
+"""Historical execution path; not the supported stock Adam/FP8 baseline.
+
+Use archlab.megatron.miles_v41_stock_launch; see docs/MILES_BASELINE.md.
+
+Launch the paired MiMo math-RL actors inside the qualified GPU namespace.
 
 Run ``head`` on each arm's first node, ``worker`` on its second node, and
 ``train`` on its head. Paths, addresses and the arm identity are explicit.

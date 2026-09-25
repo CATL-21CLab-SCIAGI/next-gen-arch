@@ -42,6 +42,7 @@ jobs:
         run: |
           uv run next-gen-arch render --config recipes/experiments/speedrun_qwen_gdn_100m_seed42.yaml
           uv run next-gen-arch render --config recipes/experiments/megatron_baseline_1b_seed42.yaml --json
+          uv run python -m archlab.megatron.miles_v41_stock_launch render --config recipes/experiments/deepseek_v41_stock_fp8.yaml --run-root /tmp/miles-plan --miles /tmp/miles --address head:17379
       - name: Test
         env:
           NANOCHAT_ATTENTION_BACKEND: sdpa

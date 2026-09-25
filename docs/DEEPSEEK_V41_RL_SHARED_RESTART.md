@@ -1,5 +1,7 @@
 # Shared-GPU RL restart candidate — 2026-09-23
 
+> Historical experiment record. For the supported command and current qualification scope, use [Miles baseline](MILES_BASELINE.md). Statements below refer to their dated attempts, not live health.
+
 **Superseded:** the user withdrew concurrent general evaluation as a requirement.
 See [the training-first restart](DEEPSEEK_V41_RL_TRAINING_PRIORITY.md).
 The failed candidates below are retained as experiment history.

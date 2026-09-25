@@ -17,6 +17,8 @@ We compare capability, stability, memory, and training/inference cost under expl
 
 ## Execution
 
+For the current DeepSeek RL experiment, start with the [Miles baseline runbook](docs/MILES_BASELINE.md): canonical command, pinned contract, hook inventory, and qualification limits.
+
 | Integration | Role |
 | --- | --- |
 | `archlab.speedrun` | Frozen small-model reference |

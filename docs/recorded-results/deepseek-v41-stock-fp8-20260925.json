@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-09-25T02:26:00Z",
+  "run": "deepseek-v41-stock-fp8-resident-policy-20260924",
+  "attempt": 6,
+  "project_commit": "757dcf4",
+  "miles_commit": "6c6858a42b61459467814edc1404b1d9bfa38471",
+  "scope": "Historical operational evidence, not a live health report or proof of the restructured launcher on GPUs",
+  "updates": [
+    {
+      "train/loss": 0.0,
+      "train/pg_loss": 0.0,
+      "train/entropy_loss": 0.0,
+      "train/pg_clipfrac": 0.0,
+      "train/ppo_kl": 0.0,
+      "train/ess_ratio": 1.0,
+      "train/train_rollout_logprob_abs_diff": 0.023152269423007965,
+      "train/train_rollout_kl": 0.001620495575480163,
+      "train/grad_norm": 0.1916075050830841,
+      "train/lr-pg_0": 1e-06,
+      "train/lr-pg_1": 1e-06,
+      "train/lr-pg_2": 1e-06,
+      "train/step": 0
+    },
+    {
+      "train/loss": -1.1641532182693481e-09,
+      "train/pg_loss": -1.1641532182693481e-09,
+      "train/entropy_loss": 0.0,
+      "train/pg_clipfrac": 0.0,
+      "train/ppo_kl": 0.0,
+      "train/ess_ratio": 1.0,
+      "train/train_rollout_logprob_abs_diff": 0.027654079720377922,
+      "train/train_rollout_kl": 0.0018883364973589778,
+      "train/grad_norm": 0.22565923631191254,
+      "train/lr-pg_0": 1e-06,
+      "train/lr-pg_1": 1e-06,
+      "train/lr-pg_2": 1e-06,
+      "train/step": 1
+    },
+    {
+      "train/loss": 0.0,
+      "train/pg_loss": 0.0,
+      "train/entropy_loss": 0.0,
+      "train/pg_clipfrac": 0.0,
+      "train/ppo_kl": 0.0,
+      "train/ess_ratio": 1.0,
+      "train/train_rollout_logprob_abs_diff": 0.030577393248677254,
+      "train/train_rollout_kl": 0.002018172759562731,
+      "train/grad_norm": 0.14849437773227692,
+      "train/lr-pg_0": 1e-06,
+      "train/lr-pg_1": 1e-06,
+      "train/lr-pg_2": 1e-06,
+      "train/step": 2
+    }
+  ],
+  "checkpoint": {
+    "iteration": 0,
+    "saved_updates": 1,
+    "model_bytes": 1499104640226,
+    "optimizer_bucket_bytes": 4450473836544,
+    "save_seconds": 3220.5,
+    "verification": "all model extents; native readback of four adapter tensors; optimizer manifests and sampled finite nonzero moments",
+    "full_training_resume": "not_demonstrated"
+  },
+  "performance": {
+    "warm_cycle_seconds": 1539.34844,
+    "minimum_sampled_host_available_gib": 236.9443,
+    "minimum_gpu_free_gib": 9.109375,
+    "response_truncation_fraction_range": [
+      0.453125,
+      0.78125
+    ]
+  },
+  "receipts": [
+    "QUALIFICATION.json",
+    "full-checkpoint-verification.json",
+    "saved-optimizer-verification.json",
+    "attempt6-checkpoint-hostmem-summary.json"
+  ]
+}

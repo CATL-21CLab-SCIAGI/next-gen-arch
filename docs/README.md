@@ -1,5 +1,7 @@
 # Documentation
 
+**Current DeepSeek RL path:** [Miles baseline](MILES_BASELINE.md). This is the maintained entry for launch commands, runtime pins, custom hooks, and qualification status.
+
 The reader guides are checked in under **[`wiki/`](wiki/Home.md)**. These page sources can also be published to the [GitHub Wiki](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki).
 
 **Publication status:** Wiki is enabled, but its Git repository returned “repository not found” on 2026-09-23. Create the initial Home page on GitHub before publishing this prepared page set. Until then, start with the [Home source](wiki/Home.md).

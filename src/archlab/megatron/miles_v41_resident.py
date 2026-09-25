@@ -1,4 +1,8 @@
-"""GPU-only mixed-precision Muown/Sinkhorn for frozen-Engram RL.
+"""Historical execution path; not the supported stock Adam/FP8 baseline.
+
+Use archlab.megatron.miles_v41_stock_launch; see docs/MILES_BASELINE.md.
+
+GPU-only mixed-precision Muown/Sinkhorn for frozen-Engram RL.
 
 No live tensor is copied to CPU or disk. Checkpoint serialization is the sole
 exception and is explicitly called by Megatron at a checkpoint boundary.

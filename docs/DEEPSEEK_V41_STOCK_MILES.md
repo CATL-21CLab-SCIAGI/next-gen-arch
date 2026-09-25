@@ -1,5 +1,7 @@
 # Stock Miles baseline
 
+> Historical experiment record. For the supported command and current qualification scope, use [Miles baseline](MILES_BASELINE.md). Statements below refer to their dated attempts, not live health.
+
 The baseline passed operational qualification on September 25 in attempt 6:
 three finite, nonzero updates, varied rewards, stable train/rollout policy gap,
 and a complete native checkpoint with readback. The same process continues on

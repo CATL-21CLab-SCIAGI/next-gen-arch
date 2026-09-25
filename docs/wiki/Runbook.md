@@ -1,5 +1,7 @@
 # Runbook
 
+Current DeepSeek RL launch and qualification entry: [Miles baseline](../MILES_BASELINE.md).
+
 ## Before launch
 
 | Check | Required evidence |

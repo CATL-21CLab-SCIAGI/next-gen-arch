@@ -1,5 +1,7 @@
 # DeepSeek Experiments
 
+Current DeepSeek RL launch and qualification entry: [Miles baseline](../MILES_BASELINE.md).
+
 ## Lineages and controls
 
 | Phase | Trainable weights | Comparison |

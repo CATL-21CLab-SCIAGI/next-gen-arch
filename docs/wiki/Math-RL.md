@@ -1,5 +1,7 @@
 # Math RL
 
+Current DeepSeek RL launch and qualification entry: [Miles baseline](../MILES_BASELINE.md).
+
 **Scope:** verifiable math RL from matched DeepSeek V4.1 checkpoints.
 
 ## Original contract

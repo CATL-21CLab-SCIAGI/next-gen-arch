@@ -1,4 +1,8 @@
-"""Four-node resident RL qualification and bounded execution entrypoint."""
+"""Historical execution path; not the supported stock Adam/FP8 baseline.
+
+Use archlab.megatron.miles_v41_stock_launch; see docs/MILES_BASELINE.md.
+
+Four-node resident RL qualification and bounded execution entrypoint."""
 
 import argparse
 import asyncio

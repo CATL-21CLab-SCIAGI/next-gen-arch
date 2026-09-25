@@ -1,5 +1,7 @@
 # Miles / MiMo RL migration — 2026-09-24
 
+> Historical experiment record. For the supported command and current qualification scope, use [Miles baseline](MILES_BASELINE.md). Statements below refer to their dated attempts, not live health.
+
 The user retired the slow AutoModel RLOO backend and selected the
 [MiMo-V2.6 technical report](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL/resolve/main/MiMo_V2_6_technical_report.pdf)
 as the replacement algorithm contract. Restart **both normal and simplicial arms

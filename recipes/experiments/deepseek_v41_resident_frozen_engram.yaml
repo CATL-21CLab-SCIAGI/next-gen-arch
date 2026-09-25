@@ -1,3 +1,4 @@
+# Historical contract. Current Miles baseline: deepseek_v41_stock_fp8.yaml.
 schema_version: 1
 name: deepseek-v41-resident-frozen-engram-scaled-fp16-momentum
 status: qualification_required

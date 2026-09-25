@@ -1,5 +1,7 @@
 # GPU-resident RL qualification
 
+> Historical experiment record. For the supported command and current qualification scope, use [Miles baseline](MILES_BASELINE.md). Statements below refer to their dated attempts, not live health.
+
 The selected contract is `recipes/experiments/deepseek_v41_resident_frozen_engram.yaml`:
 normal then simplicial, four nodes / 32 NVIDIA B300 per arm, BF16 model and gradients,
 FP32 master weights, scaled FP16 momentum and FP32 orthogonalization, frozen Engram tables, trainable Engram projections

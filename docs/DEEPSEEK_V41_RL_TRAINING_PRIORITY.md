@@ -1,5 +1,7 @@
 # DeepSeek V4.1 training-first RL restart
 
+> Historical experiment record. For the supported command and current qualification scope, use [Miles baseline](MILES_BASELINE.md). Statements below refer to their dated attempts, not live health.
+
 **Retired by user request (2026-09-24):** the replacement is Miles using the
 MiMo report's RL recipe, starting from the matched step-4537 SFT parents.
 See [migration status and blockers](DEEPSEEK_V41_MILES_MIMO_MIGRATION.md).
