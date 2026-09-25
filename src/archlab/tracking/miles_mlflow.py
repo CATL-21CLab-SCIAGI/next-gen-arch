@@ -18,7 +18,7 @@ from archlab.tracking.mlflow_sync import configure_client
 from archlab.tracking.rl_mlflow import bootstrap_dns
 
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
-EVENT = re.compile(r'\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+) [^]]+\].*? - (step|perf|rollout) (\d+): (\{.*\})')
+EVENT = re.compile(r'\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+) [^]]+\].*? - (step|perf|rollout|eval) (\d+): (\{.*\})')
 
 
 def parse_event(line):
@@ -66,7 +66,8 @@ class MilesSync:
             run = matches[0] if matches else client.create_run(
                 exp_id, run_name=f'{root.name}/{log.stem}',
                 tags={'archlab.miles_source_id': source_id, 'archlab.source_log': source,
-                      'archlab.phase': 'online-rl', 'archlab.variant': 'normal',
+                      'archlab.phase': 'online-rl', 'archlab.variant': json.loads(
+                          (root / 'model/config.json').read_text())['archlab']['variant'],
                       'archlab.tracking': 'external-log-sidecar',
                       'archlab.metric_timestamps': 'source log UTC; step is native zero-based Miles coordinate',
                       'archlab.full_training_resume': 'not_demonstrated'},
@@ -123,7 +124,8 @@ class MilesSync:
         for first in range(0, len(items), 100):
             self.client.log_batch(self.state['run_id'], params=items[first:first + 100])
         files = [self.root / name for name in (
-            'MANIFEST.json', 'QUALIFICATION.json', 'launch-argv.json',
+            'MANIFEST.json', 'QUALIFICATION.json', 'launch-argv.json', 'resolved-launch.json',
+            'DATA_PROVENANCE.json',
             'full-checkpoint-verification.json', 'saved-optimizer-verification.json',
             'attempt6-checkpoint-hostmem-summary.json', 'attempt6-post-checkpoint-gpu-memory.json',
             'attempt6-qualified-gpu-memory.json', 'backup-io-isolation.json',

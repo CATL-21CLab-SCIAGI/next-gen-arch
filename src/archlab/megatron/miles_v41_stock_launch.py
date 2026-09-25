@@ -6,6 +6,7 @@ Check/train require the pinned runtime. This module never orchestrates RL steps.
 
 import argparse
 import importlib.metadata
+import importlib.util
 import json
 import os
 import runpy
@@ -21,6 +22,22 @@ def git(path, *args):
     return subprocess.check_output(['git', '-C', str(path), *args], text=True).strip()
 
 
+def runtime_version(name):
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        if name != 'megatron-core':
+            raise
+        # The qualified overlay uses an uninstalled, clean MCore source checkout.
+        namespace = importlib.util.find_spec('megatron')
+        if namespace is None or not namespace.submodule_search_locations:
+            raise ValueError('Megatron source checkout is unavailable') from None
+        package = Path(next(iter(namespace.submodule_search_locations)))
+        if git(package.parent, 'status', '--porcelain', '--untracked-files=no'):
+            raise ValueError('Megatron source checkout has tracked modifications') from None
+        return runpy.run_path(str(package / 'core/package_info.py'))['__version__']
+
+
 def verify_runtime(plan, miles, image_manifest):
     """Check identities before importing GPU libraries or connecting to Ray."""
     revision = git(miles, 'rev-parse', 'HEAD')
@@ -29,13 +46,17 @@ def verify_runtime(plan, miles, image_manifest):
     image = json.loads(image_manifest.read_text())
     if plan['runtime_expected']['image'] not in image.get('repo_digests', []):
         raise ValueError('runtime image manifest does not match the contract')
-    versions = {name: importlib.metadata.version(name) for name in plan['runtime_expected']['packages']}
+    versions = {name: runtime_version(name) for name in plan['runtime_expected']['packages']}
     if versions != plan['runtime_expected']['packages']:
         raise ValueError(f'runtime package versions differ from contract: {versions}')
     model_dir = Path(plan['bindings']['MODEL_DIR'])
     model = json.loads((model_dir / 'config.json').read_text())
-    if model.get('archlab', {}).get('variant') != 'normal':
-        raise ValueError('this contract is for the normal finetuned checkpoint')
+    variant = plan['semantics']['variant']
+    if variant not in ('normal', 'simplicial') or model.get('archlab', {}).get('variant') != variant:
+        raise ValueError(f'this contract requires the {variant} finetuned checkpoint')
+    expected_parent = plan['semantics'].get('parent_complete_sha256')
+    if expected_parent and model['archlab'].get('complete_sha256') != expected_parent:
+        raise ValueError('finetuned parent differs from the pinned experiment lineage')
     if model.get('quantization_config') != {
         'quant_method': 'fp8', 'activation_scheme': 'dynamic',
         'fmt': 'e4m3', 'weight_block_size': [128, 128],

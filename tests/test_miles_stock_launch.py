@@ -198,3 +198,55 @@ def test_train_records_identity_before_delegating_to_upstream(tmp_path, monkeypa
                                    '--image-manifest', '/prepared/image.json'])
     main()
     assert events == ['ray', 'upstream_driver']
+
+
+def test_2simplicial_contract_restores_sampling_and_length_budget(tmp_path):
+    config = ROOT / 'recipes/experiments/deepseek_v41_2simplicial_stock_fp8.yaml'
+    resolved = resolve(config, run_root=tmp_path, model_dir=tmp_path / 'model', address='head:17379')
+    args = effective(resolved['argv'])
+    assert resolved['semantics']['variant'] == 'simplicial'
+    assert args['--rollout-max-response-len'] == ['4096']
+    assert args['--sglang-context-length'] == ['5120']
+    assert args['--dynamic-sampling-filter-path'] == ['miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std']
+    assert '--use-tis' in args
+    assert args['--over-sampling-batch-size'] == ['512']
+    assert args['--eval-max-response-len'] == ['4096']
+    assert args['--eval-prompt-data'] == ['heldout', str(tmp_path / 'heldout-32.jsonl')]
+    assert args['--eval-interval'] == args['--save-interval'] == ['20']
+    # Serving requests fit the fixed KV token budget at the configured full context.
+    assert int(args['--sglang-max-running-requests'][0]) * int(args['--sglang-context-length'][0]) <= int(args['--sglang-max-total-tokens'][0])
+
+
+def test_simplicial_runtime_requires_matching_variant_and_lineage(tmp_path, runtime_inputs):
+    resolved, image = runtime_inputs
+    resolved['semantics']['variant'] = 'simplicial'
+    config = tmp_path / 'model/config.json'
+    model = json.loads(config.read_text())
+    with pytest.raises(ValueError, match='simplicial finetuned'):
+        verify_runtime(resolved, tmp_path, image)
+    model['archlab']['variant'] = 'simplicial'
+    config.write_text(json.dumps(model))
+    verify_runtime(resolved, tmp_path, image)
+    resolved['semantics']['parent_complete_sha256'] = 'wrong'
+    with pytest.raises(ValueError, match='lineage'):
+        verify_runtime(resolved, tmp_path, image)
+
+
+def test_source_checkout_megatron_version_is_supported(tmp_path, monkeypatch):
+    import importlib.metadata
+    from types import SimpleNamespace
+
+    from archlab.megatron.miles_v41_stock_launch import runtime_version
+
+    def missing(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    package = tmp_path / 'megatron'
+    (package / 'core').mkdir(parents=True)
+    (package / 'core/package_info.py').write_text("__version__ = '0.19.0+651dd72'\n")
+    monkeypatch.setattr('importlib.metadata.version', missing)
+    monkeypatch.setattr('importlib.util.find_spec', lambda name: SimpleNamespace(submodule_search_locations=[str(package)]))
+    monkeypatch.setattr('archlab.megatron.miles_v41_stock_launch.git', lambda *args: '')
+    assert runtime_version('megatron-core') == '0.19.0+651dd72'
+    with pytest.raises(importlib.metadata.PackageNotFoundError):
+        runtime_version('torch')

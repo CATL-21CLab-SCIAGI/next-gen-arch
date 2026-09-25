@@ -1,4 +1,6 @@
-# Miles baseline: supported execution path
+# Miles RL: supported execution path
+
+**Current relaunch in qualification:** [2-simplicial, 4K responses, native useful-group sampling](DEEPSEEK_V41_2SIMPLICIAL_MILES.md), using `recipes/experiments/deepseek_v41_2simplicial_stock_fp8.yaml` with the same canonical launcher. The normal baseline described below is its historical predecessor; its qualification does not certify the new variant.
 
 Use **`archlab.megatron.miles_v41_stock_launch`** with
 [`deepseek_v41_stock_fp8.yaml`](../recipes/experiments/deepseek_v41_stock_fp8.yaml).
