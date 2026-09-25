@@ -68,3 +68,18 @@ but that is not qualification of our checkpoint on 16 GPUs. The baseline’s Ada
 state alone measured 4.450 TB, exceeding the approximately 3.25 TB combined local
 disk capacity of two retained nodes. Reducing to 16 GPUs would require a different
 storage/memory arrangement and separate qualification; this run retains 32 B300s.
+
+## Router capacity
+
+The native router uses `--miles-router-max-connections 8192`, above the
+2,048 concurrently admitted rollout requests, so health probes can acquire HTTP
+connections while generation is queued. Every node runtime must also set
+`open_files_soft_limit: 65535` before starting Ray. A 1,024-descriptor limit
+failed at the first production request burst; a pool equal to rollout concurrency
+subsequently starved health probes and falsely quarantined healthy engines.
+
+The current run started with the earlier limits. Its one-time router-only repair
+is recorded in `mlflow-evidence/ROUTER_POOL_REPAIR.json` under the run root.
+The training driver, native router actor, model weights, and serving engines were
+retained. The initial resolved launch remains immutable; this receipt records the
+live operational override. CPU tests alone do not qualify the repaired run.

@@ -173,6 +173,8 @@ arguments:
   --stream-optimizer-state-moment-dtype: bf16
   --no-offload-train: null
   --use-miles-router: null
+  # Leave HTTP pool capacity for health checks alongside queued rollout requests.
+  --miles-router-max-connections: '8192'
   --sglang-load-format: dummy
   --sglang-device: cuda
   --sglang-disable-shared-experts-fusion: null
