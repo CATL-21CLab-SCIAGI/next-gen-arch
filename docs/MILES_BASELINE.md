@@ -65,7 +65,7 @@ on team storage. CPU tests cannot replace the missing full-resume experiment.
    not yet documented or qualified.
 4. Choose a **new** `RUN_ROOT`. Supply the prepared `model/` metadata/tokenizer
    bundle and preformatted non-thinking `train.jsonl` from the qualified data
-   preparation, including the disjoint `heldout.jsonl` evaluation data. The model
+   preparation, including the disjoint `heldout-32.jsonl` evaluation data. The model
    config must reference the finetuned parent for the selected variant (currently
    2-simplicial) via
    `archlab.full_checkpoint` and `complete_sha256`, and select
@@ -101,7 +101,7 @@ git -C "$MILES_ROOT" checkout --detach 6c6858a42b61459467814edc1404b1d9bfa38471
 mkdir "$RUN_ROOT"
 cp -a "$QUALIFIED_MODEL_BUNDLE" "$RUN_ROOT/model"
 cp "$QUALIFIED_PROMPTS" "$RUN_ROOT/train.jsonl"
-cp "$QUALIFIED_HELDOUT" "$RUN_ROOT/heldout.jsonl"
+cp "$QUALIFIED_HELDOUT" "$RUN_ROOT/heldout-32.jsonl"
 ```
 
 The recorded per-node namespace configuration is
