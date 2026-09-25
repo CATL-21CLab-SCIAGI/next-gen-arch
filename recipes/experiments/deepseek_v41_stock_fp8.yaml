@@ -1,7 +1,7 @@
 name: deepseek-v41-normal-stock-miles-fp8
 upstream:
   repository: https://github.com/radixark/miles
-  revision: 6c6858a42
+  revision: 6c6858a42b61459467814edc1404b1d9bfa38471
   recipe: scripts/run_deepseek_v41.py
   driver: train.py
   reference_recipe: https://github.com/radixark/miles/blob/main/docs/models/deepseek/deepseek-v4-flash.md
@@ -21,10 +21,12 @@ training:
   stored_moment_dtype: bfloat16
   master_and_optimizer_arithmetic: float32
   optimizer_state_streaming: disk
+  optimizer_storage: node_local_disk
   actor_offload: false
   actor_weight_backup: false
   policy_sync_source: live_gpu_actor
   activation_recompute: full
+  maximum_tokens_per_gpu: 2560
 rollout:
   engine_gpus: 8
   engine_count: 4
@@ -32,13 +34,27 @@ rollout:
   engram_table_dtype: bfloat16
   adapter_dtype: float32
   routing_replay: true
+  router: upstream_miles
   prompts: 16
   samples_per_prompt: 8
   maximum_response_tokens: 2001
+  context_length: 2560
+  maximum_running_requests_per_engine: 16
+  maximum_total_tokens_per_engine: 32768
+  chunked_prefill_tokens: 1024
 algorithm: upstream_grpo
 execution:
   maximum_rollouts: 64
   checkpoint_interval: 20
   initial_checkpoint: upstream_save_trigger_sentinel_after_useful_updates
-  status: unqualified
+  checkpoint_writer:
+    format: torch_dist
+    implementation: native_pytorch_filesystem
+    asynchronous: false
+    threads: 1
+    copy_ahead_bytes: 0
+    single_file_per_rank: false
+    assume_constant_structure: false
+  status: qualified_on_pinned_runtime
+  qualification_run: deepseek-v41-stock-fp8-resident-policy-20260924/attempt6
   qualification: useful_finite_updates_stable_policy_gap_checkpoint_and_measured_step_time

@@ -1,5 +1,13 @@
 # Stock Miles baseline
 
+The baseline passed operational qualification on September 25 in attempt 6:
+three finite, nonzero updates, varied rewards, stable train/rollout policy gap,
+and a complete native checkpoint with readback. The same process continues on
+four nodes / 32 B300 GPUs, with FP8 rollout, frozen BF16 Engram tables, and
+node-local disk optimizer state. The run retains its 64-rollout cap and native
+20-rollout checkpoint interval. Evidence is in `QUALIFICATION.json` under
+`results/deepseek-v41-stock-fp8-resident-policy-20260924`.
+
 This restart consumes the upstream V4.1 recipe and unmodified `train.py` at
 Miles `6c6858a42`. The V4 Flash recipe motivates FP8 rollout, but the finetuned
 checkpoint has V4.1 geometry and requires the V4.1 model plugin. This experiment
@@ -23,8 +31,8 @@ The September 24 attempt uses four nodes / 32 B300 GPUs. All four nodes were
 verified idle before launch. Each initially had about 1.53 TB of local disk free.
 The initial attempt used NAS for offload and checkpoint storage; the retry below
 uses local optimizer storage. Argument validation and 24 focused existing
-serving regressions passed. FP8 full-model weight refresh, useful optimizer
-updates, and checkpointing remain unqualified until runtime evidence exists.
+serving regressions passed. At that initial launch, FP8 full-model weight refresh, useful optimizer
+updates, and checkpointing were still awaiting runtime qualification.
 
 The NAS attempt was retired before any update. Under allocation load a bounded
 four-node probe measured only 20–26 MiB/s writes and 11–18 MiB/s reads per node.
@@ -148,3 +156,36 @@ per-rank writing grew peak RSS by 4.1–4.2 GiB; one-tensor-per-file writing red
 that to 2.1–2.2 GiB with four 1 GiB tensors (`serial-checkpoint-probe-bounded.log`).
 Four dispatch/contract tests and the 17 existing focused regressions passed.
 Attempt 6 uses `train-attempt6.log`, with the stock initial-save sentinel retained.
+
+Attempt 6 ran code `757dcf4` without another restart after qualification:
+
+| RL step | Rewarded samples / 128 | Gradient norm | Train/rollout KL | Training seconds |
+| --- | --- | --- | --- | --- |
+| 0 | 20 | 0.191608 | 0.00162050 | 641.2 |
+| 1 | 10 | 0.225659 | 0.00188834 | 334.6 |
+| 2 | 10 | 0.148494 | 0.00201817 | 320.6 |
+
+Rollouts took 972.2, 991.2, and 1,022.1 seconds; the third complete warm cycle
+was 1,539.3 seconds (25.7 minutes), including weight refresh. All samples in
+each rollout used a single policy version. Native KV request retractions
+occurred under the 32K cache cap in rollout 2; all 128 routing-replay tensors
+still had the expected token length, 40 layers, six experts, and valid IDs.
+The 2,001-token response cap produced 45–78% truncation across these batches.
+These observations qualify operation under the recorded limits.
+
+The checkpoint after step 0 completed in 3,220.5 seconds (53.7 minutes).
+Its 80,366 DCP files total 1.499 TB, with 80 architectural-adapter entries,
+both Engram tables, backbone experts, embeddings, and the output head present.
+All referenced file extents were checked; native PyTorch DCP read back four
+adapter tensors with finite values. Optimizer verification checked all 64
+manifests and 2,696 buckets (4.450 TB), plus 32 resident-FP32 optimizer files.
+Sampled moments were finite and nonzero. This checkpoint contains the first
+update; subsequent updates continue under the native checkpoint cadence.
+
+During the save, ten-second host samples showed at least 236.9 GiB available
+on every node. The highest sampled trainer RSS was 29.8 GiB, resolving the
+previous whole-policy staging OOM. A snapshot during the next rollout showed
+at least 9.1 GiB GPU memory free across the 32 B300s. Optimizer streaming still
+uses local disk. Detailed receipts are `full-checkpoint-verification.json`,
+`saved-optimizer-verification.json`, and
+`attempt6-checkpoint-hostmem-summary.json` in the run directory.
