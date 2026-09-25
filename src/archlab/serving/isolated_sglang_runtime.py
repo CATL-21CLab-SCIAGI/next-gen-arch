@@ -10,10 +10,25 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import resource
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+def configure_open_files(config):
+    """Set an explicit inherited limit before Ray and its router children spawn."""
+    requested = config.get("open_files_soft_limit")
+    if requested is None:
+        return
+    if type(requested) is not int or requested <= 0:
+        raise ValueError("open_files_soft_limit must be a positive integer")
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and requested > hard:
+        raise ValueError("open_files_soft_limit exceeds the existing hard limit")
+    if soft != resource.RLIM_INFINITY and soft < requested:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (requested, hard))
 
 
 def scratch_binding(config):
@@ -104,6 +119,7 @@ def main():
     if len(uid_map) != 3 or uid_map[0] != "0" or uid_map[2] != "1":
         raise ValueError("expected a single-user, unprivileged namespace")
     config = json.loads(args.config.read_text())
+    configure_open_files(config)
     rootfs, environment, bindings = prepare(config)
     for source, destination, recursive in bindings:
         subprocess.run(["/usr/bin/mount", "--rbind" if recursive else "--bind", source,

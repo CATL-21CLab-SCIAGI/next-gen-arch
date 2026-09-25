@@ -76,7 +76,9 @@ on team storage. CPU tests cannot replace the missing full-resume experiment.
 5. Use the existing `archlab.serving.isolated_sglang_runtime` boundary on **each**
    node. Set its `source` to project `src`, the pinned Miles checkout, and the
    overlay's `Megatron-LM`, `site-packages`, and `Emerging-Optimizers` directories.
-   Set `private_tmp: true`, a distinct node cache, and `scratch_bind` from a named
+   Set `open_files_soft_limit: 65535` before starting Ray on every node: the
+   native router inherits this limit and the 512-group request pool exceeds a
+   1,024-descriptor limit. Set `private_tmp: true`, a distinct node cache, and `scratch_bind` from a named
    local directory (e.g. `/tmp/evergreen-NEW_RUN`) to `RUN_ROOT/offload`.
    Use `minimum_free_bytes: 1400000000000` for initial preparation, as in the
    qualified deployment. The destination must be empty before mounting. Ray
