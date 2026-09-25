@@ -20,13 +20,19 @@ are different experiments and must not inherit this qualification.
 
 ## Status and evidence
 
-This is a maintained entry page, not a live monitor. At **2026-09-25 19:10 UTC**,
-the canonical launcher was running the 2-simplicial contract on all 32 B300s.
-All 32 parent imports and local optimizer scratch mounts were verified; initial
-held-out evaluation was generating successfully. **Optimizer-update qualification
-and training performance measurements remain pending for this variant.** Its run
-root is `results/deepseek-v41-2simplicial-miles-fp8-20260926`; its resolved launch
-records source revision `f563957b3c986a4b6d5b7d71712c116c10a5de26`.
+This is a maintained entry page, not a live monitor. At **2026-09-25 22:39 UTC**,
+a clean 32-B300 relaunch is active under
+`results/deepseek-v41-2simplicial-miles-fp8-20260926-retry1`.
+The first attempt was retired with **zero optimizer updates** after router
+failures fragmented its first training rollout. Both router capacity fixes are
+applied before startup in the retry. Its explicit `experiment.yaml` adds native
+`--skip-eval-before-train`: the completed 256-response evaluation is reused only
+because the parent, model configuration, and held-out data are identical and no
+update occurred. Hashes and provenance are in
+`mlflow-evidence/INITIAL_EVALUATION_REUSE.json`.
+**Parent-import verification, optimizer-update qualification, and training
+performance measurements remain pending for this retry.** MLflow run:
+`0ce421ff21574dde94d06fbddf3f717e`.
 
 The normal predecessor was intentionally retired after **34 updates**, with its
 final native checkpoint `iter_0000033` completed at **2026-09-25 17:28 UTC**.

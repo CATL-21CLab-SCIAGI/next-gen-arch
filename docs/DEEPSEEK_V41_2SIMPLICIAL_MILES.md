@@ -78,8 +78,28 @@ connections while generation is queued. Every node runtime must also set
 failed at the first production request burst; a pool equal to rollout concurrency
 subsequently starved health probes and falsely quarantined healthy engines.
 
-The current run started with the earlier limits. Its one-time router-only repair
+The first attempt started with the earlier limits. Its one-time router-only repair
 is recorded in `mlflow-evidence/ROUTER_POOL_REPAIR.json` under the run root.
 The training driver, native router actor, model weights, and serving engines were
 retained. The initial resolved launch remains immutable; this receipt records the
 live operational override. CPU tests alone do not qualify the repaired run.
+
+## Clean retry after disrupted collection
+
+At 2026-09-25 22:34 UTC, the same canonical launcher started
+`results/deepseek-v41-2simplicial-miles-fp8-20260926-retry1` on the retained
+32 B300s. The predecessor had zero optimizer updates: after router recovery,
+only one additional complete group arrived in 70 minutes while 185 groups had
+partial results. Continuing that damaged request collection was not productive.
+The old driver and serving processes were retired, and only their disposable
+node-local optimizer scratch was reclaimed.
+
+The retry applies the 8,192-connection pool and 65,535 file-descriptor limit from
+startup. Its run-local `experiment.yaml` retains the production sampling and
+numerical contract, adding only native `--skip-eval-before-train`. The completed
+initial evaluation is preserved and explicitly reused for the identical,
+unupdated parent; model, data, parent, and evaluation hashes are recorded in
+`mlflow-evidence/INITIAL_EVALUATION_REUSE.json`. Fresh runs should use the
+canonical recipe with initial evaluation enabled. Use the run-local YAML only
+to reproduce this documented recovery. This retry still needs distributed
+update and checkpoint qualification; launch success is not qualification.
