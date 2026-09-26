@@ -103,3 +103,22 @@ unupdated parent; model, data, parent, and evaluation hashes are recorded in
 canonical recipe with initial evaluation enabled. Use the run-local YAML only
 to reproduce this documented recovery. This retry still needs distributed
 update and checkpoint qualification; launch success is not qualification.
+
+## Determinism compatibility and second retry
+
+The first clean retry completed its initial training rollout in 67.8 minutes,
+then failed in actor log-probability computation before any optimizer update.
+The recipe's `--deterministic-mode` conflicted with the checkpoint's simplicial
+kernel, whose backward uses FP32 atomic accumulation. The kernel explicitly
+rejects strict deterministic execution. Ray worker-death messages were secondary;
+the actor traceback identifies the incompatibility.
+
+The corrected simplicial recipe omits that flag, retains seeded execution and
+all sampling, precision, and optimizer settings, and records that execution is
+not bitwise deterministic. The launcher rejects a simplicial contract containing
+the incompatible flag before runtime initialization. The original kernel and
+container libraries remain unchanged. The second retry is recorded under
+`results/deepseek-v41-2simplicial-miles-fp8-20260926-retry2`; its run-local recipe
+preserves the documented reuse of the unupdated parent's initial evaluation.
+CPU launcher tests and a small B300 kernel oracle check precede relaunch; real
+updates, weight synchronization, and checkpoint readback still require qualification.

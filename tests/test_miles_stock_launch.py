@@ -250,3 +250,16 @@ def test_source_checkout_megatron_version_is_supported(tmp_path, monkeypatch):
     assert runtime_version('megatron-core') == '0.19.0+651dd72'
     with pytest.raises(importlib.metadata.PackageNotFoundError):
         runtime_version('torch')
+
+
+def test_simplicial_rejects_deterministic_mode_before_launch(tmp_path):
+    import yaml
+
+    config = ROOT / 'recipes/experiments/deepseek_v41_2simplicial_stock_fp8.yaml'
+    contract = yaml.safe_load(config.read_text())
+    assert '--deterministic-mode' not in contract['arguments']
+    contract['arguments']['--deterministic-mode'] = None
+    incompatible = tmp_path / 'incompatible.yaml'
+    incompatible.write_text(yaml.safe_dump(contract))
+    with pytest.raises(ValueError, match='simplicial atomic backward'):
+        resolve(incompatible, run_root=tmp_path, model_dir=tmp_path / 'model', address='localhost:6379')

@@ -22,6 +22,7 @@ semantics:
   upstream_task_defaults: dapo_aime
   engram_tables: frozen_bfloat16
   adapters: float32
+  determinism: seeded_non_bitwise_simplicial_fp32_atomic_backward
   optimizer: distributed_adam_bf16_stored_moments_fp32_masters
   optimizer_storage: node_local_disk
   actor_storage: resident_gpu_no_backup
@@ -161,7 +162,6 @@ arguments:
   --recompute-method: uniform
   --recompute-num-layers: '1'
   --use-rollout-routing-replay: null
-  --deterministic-mode: null
   --custom-model-provider-path: archlab.megatron.miles_v41_model.model_provider
   --custom-megatron-init-path: archlab.megatron.miles_v41_stock_init.initialize
   --megatron-to-hf-mode: raw

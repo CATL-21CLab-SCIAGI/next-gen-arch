@@ -20,19 +20,16 @@ are different experiments and must not inherit this qualification.
 
 ## Status and evidence
 
-This is a maintained entry page, not a live monitor. At **2026-09-25 22:39 UTC**,
-a clean 32-B300 relaunch is active under
-`results/deepseek-v41-2simplicial-miles-fp8-20260926-retry1`.
-The first attempt was retired with **zero optimizer updates** after router
-failures fragmented its first training rollout. Both router capacity fixes are
-applied before startup in the retry. Its explicit `experiment.yaml` adds native
-`--skip-eval-before-train`: the completed 256-response evaluation is reused only
-because the parent, model configuration, and held-out data are identical and no
-update occurred. Hashes and provenance are in
+This is a maintained entry page, not a live monitor. The first clean retry
+completed one rollout but **zero optimizer updates**: strict deterministic mode
+conflicted with the simplicial atomic kernel during log-probability computation.
+The corrected recipe removes that flag and rejects incompatible configurations
+before initialization. The second retry is being launched under
+`results/deepseek-v41-2simplicial-miles-fp8-20260926-retry2`, with the same
+32-B300 production contract. Its explicit run-local `experiment.yaml` reuses the
+identical unupdated parent's completed initial evaluation, as documented in
 `mlflow-evidence/INITIAL_EVALUATION_REUSE.json`.
-**Parent-import verification, optimizer-update qualification, and training
-performance measurements remain pending for this retry.** MLflow run:
-`0ce421ff21574dde94d06fbddf3f717e`.
+**Distributed numerical and checkpoint qualification remain pending.**
 
 The normal predecessor was intentionally retired after **34 updates**, with its
 final native checkpoint `iter_0000033` completed at **2026-09-25 17:28 UTC**.

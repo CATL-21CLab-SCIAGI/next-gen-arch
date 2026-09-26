@@ -34,6 +34,9 @@ def resolve(config, *, run_root, model_dir, address):
     contract = yaml.load(Path(config).read_text(), Loader=UniqueLoader)
     if contract.get('schema_version') != 1:
         raise ValueError('unsupported Miles contract schema')
+    if (contract.get('semantics', {}).get('variant') == 'simplicial'
+            and '--deterministic-mode' in contract['arguments']):
+        raise ValueError('simplicial atomic backward is incompatible with --deterministic-mode')
     bindings = {'RUN_ROOT': str(Path(run_root).resolve()),
                 'MODEL_DIR': str(Path(model_dir).resolve()), 'RAY_ADDRESS': address}
 
