@@ -70,9 +70,22 @@ rollout, and a completed native checkpoint. Inspect generation cost and cache
 retractions. No positive learning claim follows merely from filtered rewards
 or nonzero gradients; use fixed-set evaluation and total GPU-hours.
 
-The normal baseline is retired only after its requested final native checkpoint
-completes. Its old optimizer scratch can then be reclaimed for the new run;
-its persistent checkpoints, logs, and MLflow record remain separate.
+The [dated corrected-run record](recorded-results/deepseek-v41-2simplicial-stock-fp8-20260926.json)
+records the first completed update at 2026-09-26 05:51 UTC. All 16 selected groups
+had reward contrast; gradient norm was 0.229, train/rollout KL 0.00202, and TIS
+clipping 0.0092%. The first full checkpoint completed at 06:45 UTC, in 54.2
+minutes. All 80,390 model file extents and 64 optimizer manifests were checked;
+native DCP readback of four adapter tensors confirmed changes from the parent,
+and sampled optimizer state was finite. All four rollout engines subsequently
+published policy version 2, and live 8K generation began. The retained batch's
+original generation cost was
+67.8 minutes on 32 GPUs (36.17 GPU-hours), excluding setup and earlier failures.
+Reading it from disk must not be credited as cheap live generation. The first
+update does not qualify live 8K training or demonstrate improved held-out reward.
+
+The normal baseline was retired after its final native checkpoint completed at
+2026-09-25 17:28 UTC. Its persistent checkpoints, logs, and MLflow record remain
+separate from this run.
 
 ## GPU count
 
@@ -136,3 +149,5 @@ container libraries remain unchanged. The second retry is recorded under
 preserves the documented reuse of the unupdated parent's initial evaluation.
 CPU launcher tests and a small B300 kernel oracle check precede relaunch; real
 updates, weight synchronization, and checkpoint readback still require qualification.
+That second retry was stopped before an optimizer update. The corrected run
+described above is the current experiment.

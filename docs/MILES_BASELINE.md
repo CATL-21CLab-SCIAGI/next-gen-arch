@@ -1,6 +1,6 @@
 # Miles RL: supported execution path
 
-**Current contract, qualification pending:** [2-simplicial, 8K responses, filtered partial rollouts](DEEPSEEK_V41_2SIMPLICIAL_MILES.md), using `recipes/experiments/deepseek_v41_2simplicial_stock_fp8.yaml` with the same canonical launcher. The normal baseline described below is its historical predecessor; its qualification does not certify the new variant.
+**Current contract, one update/save/handoff cycle observed:** [2-simplicial, 8K responses, filtered partial rollouts](DEEPSEEK_V41_2SIMPLICIAL_MILES.md), using `recipes/experiments/deepseek_v41_2simplicial_stock_fp8.yaml` with the same canonical launcher. Repeated live 8K updates remain unqualified. The normal baseline described below is its historical predecessor; its qualification does not certify the new variant.
 
 Use **`archlab.megatron.miles_v41_stock_launch`** with
 [`deepseek_v41_2simplicial_stock_fp8.yaml`](../recipes/experiments/deepseek_v41_2simplicial_stock_fp8.yaml).
@@ -30,8 +30,18 @@ identical, unupdated parent. All subsequent batches use native live generation.
 The held-out evaluation stays at 4K for comparison, every four updates; live
 training allows 8K responses. `ROLLOUT_BOOTSTRAP.json` records this distinction.
 `DRIVER_STATUS.json` comes from the child-process supervisor, separately from
-MLflow synchronization. **Distributed update, longer-context execution and full
-checkpoint restoration are not established by parser or bootstrap checks.**
+MLflow synchronization. At **2026-09-26 05:51 UTC**, the corrected run completed
+its first real distributed Adam update on the retained parent rollout: all 16
+groups had reward contrast, gradient norm was 0.229, train/rollout KL was 0.00202,
+and TIS clipping was 0.0092%. All 32 training actors completed successfully.
+The native checkpoint completed at **06:45 UTC** in 54.2 minutes. All model file
+extents and optimizer manifests were checked; four adapter tensors were loaded
+through native DCP and had nonzero changes from the parent. Sampled moments were
+finite and nonzero. All four serving engines then published **policy version 2**,
+and live 8K generation began. The [dated current-run record](recorded-results/deepseek-v41-2simplicial-stock-fp8-20260926.json)
+links the receipts and records the exact scope of these observations.
+**A live 8K training update, full checkpoint restoration, and learning improvement
+are not established by this first retained-batch update.**
 
 The normal predecessor was intentionally retired after **34 updates**, with its
 final native checkpoint `iter_0000033` completed at **2026-09-25 17:28 UTC**.
@@ -192,8 +202,8 @@ They remain compatibility obligations against the pinned runtime.
 | `rl/miles_rollout_metrics.py` | Public logging/all-samples hooks: normalize numeric reward scalar types to fix Miles' integer-key percentage defect, and record reward contrast before and after selection. Reward values and the objective are unchanged. |
 | `tracking/process_status.py` | Supervises one driver without restarting it; records heartbeat and actual exit code. The MLflow sidecar propagates terminal state instead of inferring liveness from its own activity. |
 
-The recipe's environment controls are explicit too, including deterministic
-kernels, native FP8 options, health-check bypass during dummy initialization,
+The recipe's environment controls are explicit too, including kernel selection,
+native FP8 options, health-check bypass during dummy initialization,
 and model source fingerprint. `--use-miles-router` is necessary: the tested
 Rust router stripped routing replay fields. These are not optional silent defaults.
 
