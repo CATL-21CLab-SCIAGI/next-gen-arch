@@ -125,7 +125,7 @@ class MilesSync:
             self.client.log_batch(self.state['run_id'], params=items[first:first + 100])
         files = [self.root / name for name in (
             'MANIFEST.json', 'QUALIFICATION.json', 'launch-argv.json', 'resolved-launch.json',
-            'DATA_PROVENANCE.json',
+            'DATA_PROVENANCE.json', 'DRIVER_STATUS.json', 'ROLLOUT_BOOTSTRAP.json',
             'full-checkpoint-verification.json', 'saved-optimizer-verification.json',
             'attempt6-checkpoint-hostmem-summary.json', 'attempt6-post-checkpoint-gpu-memory.json',
             'attempt6-qualified-gpu-memory.json', 'backup-io-isolation.json',
@@ -161,6 +161,28 @@ class MilesSync:
             self.state['artifacts'][relative] = digest
             self.save()
 
+    def driver_status(self, now=None):
+        """Tracking activity must never stand in for trainer liveness."""
+        path = self.root / 'DRIVER_STATUS.json'
+        if not path.exists():
+            self.client.set_tag(self.state['run_id'], 'archlab.driver_state', 'unobserved')
+            return False
+        status = json.loads(path.read_text())
+        state = status['state']
+        age = (time.time() if now is None else now) - status['observed_at_epoch']
+        if state == 'running' and age > 180:
+            state = 'unobserved_stale_heartbeat'
+        self.client.set_tag(self.state['run_id'], 'archlab.driver_state', state)
+        self.client.set_tag(self.state['run_id'], 'archlab.driver_heartbeat_age_seconds', str(round(age)))
+        if state not in ('failed', 'finished'):
+            return False
+        terminal = 'FINISHED' if state == 'finished' else 'FAILED'
+        if self.state.get('terminal_status') != terminal:
+            self.client.set_terminated(self.state['run_id'], status=terminal)
+            self.state['terminal_status'] = terminal
+            self.save()
+        return True
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -186,10 +208,13 @@ def main():
             try:
                 count = sync.sync()
                 sync.evidence()
+                terminal = sync.driver_status()
                 atomic_write_json(root / 'MLFLOW_STATUS.json', {
                     **sync.state, 'last_sync_utc': datetime.now(timezone.utc).isoformat(), 'error': None})
                 if count or not args.watch:
                     print(json.dumps({'run_id': sync.state['run_id'], 'new_events': count}), flush=True)
+                if terminal:
+                    break
             except Exception as error:
                 atomic_write_json(root / 'MLFLOW_STATUS.json', {'run_id': sync.state['run_id'], 'error': type(error).__name__})
                 if not args.watch:

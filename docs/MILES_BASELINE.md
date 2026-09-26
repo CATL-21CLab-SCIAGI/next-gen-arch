@@ -1,6 +1,6 @@
 # Miles RL: supported execution path
 
-**Current relaunch in qualification:** [2-simplicial, 4K responses, native useful-group sampling](DEEPSEEK_V41_2SIMPLICIAL_MILES.md), using `recipes/experiments/deepseek_v41_2simplicial_stock_fp8.yaml` with the same canonical launcher. The normal baseline described below is its historical predecessor; its qualification does not certify the new variant.
+**Current contract, qualification pending:** [2-simplicial, 8K responses, filtered partial rollouts](DEEPSEEK_V41_2SIMPLICIAL_MILES.md), using `recipes/experiments/deepseek_v41_2simplicial_stock_fp8.yaml` with the same canonical launcher. The normal baseline described below is its historical predecessor; its qualification does not certify the new variant.
 
 Use **`archlab.megatron.miles_v41_stock_launch`** with
 [`deepseek_v41_2simplicial_stock_fp8.yaml`](../recipes/experiments/deepseek_v41_2simplicial_stock_fp8.yaml).
@@ -10,7 +10,7 @@ or implement a training loop. The upstream V4.1 recipe remains the provenance
 for the argument contract. Paths are explicit launch inputs, not machine names
 embedded in the recipe.
 
-The current experiment identity is `deepseek-v41-2simplicial-adam-fp8-grpo-4k-filtered-v1`:
+The current experiment identity is `deepseek-v41-2simplicial-adam-fp8-grpo-8k-partial-v2`:
 32 B300s (TP8/PP4/EP8), BF16 training, distributed Adam with BF16 stored moments
 and FP32 masters/arithmetic, frozen BF16 Engram tables, FP32 adapters, native FP8
 rollout, routing replay, and GRPO. Optimizer states stream to **node-local disk**;
@@ -20,16 +20,18 @@ are different experiments and must not inherit this qualification.
 
 ## Status and evidence
 
-This is a maintained entry page, not a live monitor. The first clean retry
-completed one rollout but **zero optimizer updates**: strict deterministic mode
-conflicted with the simplicial atomic kernel during log-probability computation.
-The corrected recipe removes that flag and rejects incompatible configurations
-before initialization. The second retry is being launched under
-`results/deepseek-v41-2simplicial-miles-fp8-20260926-retry2`, with the same
-32-B300 production contract. Its explicit run-local `experiment.yaml` reuses the
-identical unupdated parent's completed initial evaluation, as documented in
-`mlflow-evidence/INITIAL_EVALUATION_REUSE.json`.
-**Distributed numerical and checkpoint qualification remain pending.**
+This is a maintained entry page, not a live monitor. Retry 1 produced a real
+rollout but failed before its first optimizer update because of deterministic
+mode; retry 2 was stopped by the user during parent import. Both are historical.
+The corrected run root is
+`results/deepseek-v41-2simplicial-miles-fp8-20260926-corrected`.
+Its first batch and initial evaluation can reuse checksum-verified data from the
+identical, unupdated parent. All subsequent batches use native live generation.
+The held-out evaluation stays at 4K for comparison, every four updates; live
+training allows 8K responses. `ROLLOUT_BOOTSTRAP.json` records this distinction.
+`DRIVER_STATUS.json` comes from the child-process supervisor, separately from
+MLflow synchronization. **Distributed update, longer-context execution and full
+checkpoint restoration are not established by parser or bootstrap checks.**
 
 The normal predecessor was intentionally retired after **34 updates**, with its
 final native checkpoint `iter_0000033` completed at **2026-09-25 17:28 UTC**.
@@ -80,8 +82,8 @@ on team storage. CPU tests cannot replace the missing full-resume experiment.
    node. Set its `source` to project `src`, the pinned Miles checkout, and the
    overlay's `Megatron-LM`, `site-packages`, and `Emerging-Optimizers` directories.
    Set `open_files_soft_limit: 65535` before starting Ray on every node: the
-   native router inherits this limit and the 512-group request pool exceeds a
-   1,024-descriptor limit. Set `private_tmp: true`, a distinct node cache, and `scratch_bind` from a named
+   native router inherits this limit. The current client bound is 64 requests
+   across four engines, with 16-group submission increments. Set `private_tmp: true`, a distinct node cache, and `scratch_bind` from a named
    local directory (e.g. `/tmp/evergreen-NEW_RUN`) to `RUN_ROOT/offload`.
    Use `minimum_free_bytes: 1400000000000` for initial preparation, as in the
    qualified deployment. The destination must be empty before mounting. Ray
@@ -186,6 +188,9 @@ They remain compatibility obligations against the pinned runtime.
 | `megatron/miles_v41_checkpoint_writer.py` | Native DCP/MCore strategy with one tensor per file and bounded host staging; prevents demonstrated NUMA OOM, preserves native load format. |
 | `serving/sglang/deepseek_v41.py` and its `sglang_v41_*` helpers | External model registration, trained adapters, BF16 Engram, padding/hash buffers, strict live-weight coverage. Pinned native model source fingerprint checked. FP8 execution remains native. |
 | `serving/isolated_sglang_runtime.py` | Existing image/private-namespace and local-disk mount boundary; no RL orchestration. |
+| `rl/miles_qualified_rollout.py` | Subclasses the native rollout only to reject partial groups older than two published policy versions and optionally consume a verified first parent batch/evaluation. Generation, filtering and continuation remain upstream. |
+| `rl/miles_rollout_metrics.py` | Public logging/all-samples hooks: normalize numeric reward scalar types to fix Miles' integer-key percentage defect, and record reward contrast before and after selection. Reward values and the objective are unchanged. |
+| `tracking/process_status.py` | Supervises one driver without restarting it; records heartbeat and actual exit code. The MLflow sidecar propagates terminal state instead of inferring liveness from its own activity. |
 
 The recipe's environment controls are explicit too, including deterministic
 kernels, native FP8 options, health-check bypass during dummy initialization,

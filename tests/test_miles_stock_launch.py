@@ -205,14 +205,18 @@ def test_2simplicial_contract_restores_sampling_and_length_budget(tmp_path):
     resolved = resolve(config, run_root=tmp_path, model_dir=tmp_path / 'model', address='head:17379')
     args = effective(resolved['argv'])
     assert resolved['semantics']['variant'] == 'simplicial'
-    assert args['--rollout-max-response-len'] == ['4096']
-    assert args['--sglang-context-length'] == ['5120']
+    assert args['--rollout-max-response-len'] == ['8192']
+    assert args['--sglang-context-length'] == ['9216']
     assert args['--dynamic-sampling-filter-path'] == ['miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std']
     assert '--use-tis' in args
-    assert args['--over-sampling-batch-size'] == ['512']
+    assert args['--over-sampling-batch-size'] == ['16']
+    assert '--partial-rollout' in args
+    assert '--observe-training-entropy' in args
+    assert args['--sglang-server-concurrency'] == ['16']
     assert args['--eval-max-response-len'] == ['4096']
     assert args['--eval-prompt-data'] == ['heldout', str(tmp_path / 'heldout-32.jsonl')]
-    assert args['--eval-interval'] == args['--save-interval'] == ['20']
+    assert args['--eval-interval'] == ['4']
+    assert args['--save-interval'] == ['20']
     # Serving requests fit the fixed KV token budget at the configured full context.
     assert int(args['--sglang-max-running-requests'][0]) * int(args['--sglang-context-length'][0]) <= int(args['--sglang-max-total-tokens'][0])
 

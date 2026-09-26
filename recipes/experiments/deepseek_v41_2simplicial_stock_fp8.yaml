@@ -1,6 +1,6 @@
 # Native Miles normal-mode sampling, checkpoint-specific 2-simplex model.
 schema_version: 1
-name: deepseek-v41-2simplicial-adam-fp8-grpo-4k-filtered-v1
+name: deepseek-v41-2simplicial-adam-fp8-grpo-8k-partial-v2
 upstream:
   repository: https://github.com/radixark/miles
   revision: 6c6858a42b61459467814edc1404b1d9bfa38471
@@ -30,9 +30,12 @@ semantics:
   prompts: preformatted_non_thinking
   start: parent_checkpoint_fresh_optimizer
   attention: 2-simplex trained adapters at layers 4,9,14,19,24,29,34,39
-  sampling: native_normal_mode_nonzero_reward_std_filter
+  sampling: native_nonzero_reward_std_filter_bounded_partial_rollout
+  partial_policy_age: at_most_two_published_updates
+  prompt_reason: preserve_finetuned_parent_chat_contract
+  evaluation: fixed_4k_parent_comparison_every_four_updates
   parent_complete_sha256: b60da9ce92b75a163a3aef3bada010eb654870bf6c126267f661661e4ec336a9
-qualification_record: results/deepseek-v41-2simplicial-miles-fp8-20260926/QUALIFICATION.json
+qualification_record: results/deepseek-v41-2simplicial-miles-fp8-20260926-corrected/QUALIFICATION.json
 arguments:
   --disable-bias-linear: null
   --num-layers: '40'
@@ -102,7 +105,7 @@ arguments:
   --rollout-temperature: '0.8'
   --num-steps-per-rollout: '1'
   --balance-data: null
-  --rollout-max-response-len: '4096'
+  --rollout-max-response-len: '8192'
   --prompt-data: ${RUN_ROOT}/train.jsonl
   --input-key: prompt
   --optimizer: adam
@@ -127,7 +130,7 @@ arguments:
   --expert-model-parallel-size: '8'
   --expert-tensor-parallel-size: '1'
   --micro-batch-size: '1'
-  --max-tokens-per-gpu: '5120'
+  --max-tokens-per-gpu: '9216'
   --rollout-num-gpus-per-engine: '8'
   --sglang-tp-size: '8'
   --sglang-dp-size: '1'
@@ -136,6 +139,7 @@ arguments:
   --sglang-moe-runner-backend: triton
   --sglang-disable-cuda-graph: null
   --sglang-max-running-requests: '8'
+  --sglang-server-concurrency: '16'
   --sglang-disable-radix-cache: null
   --sglang-mem-fraction-static: '0.95'
   --router-health-success-threshold: '1'
@@ -180,8 +184,8 @@ arguments:
   --sglang-disable-shared-experts-fusion: null
   --sglang-enable-fp32-lm-head: null
   --sglang-json-model-override-args: '{"architectures": ["DeepseekV4ForCausalLM"]}'
-  --sglang-context-length: '5120'
-  --sglang-max-total-tokens: '40960'
+  --sglang-context-length: '9216'
+  --sglang-max-total-tokens: '73728'
   --sglang-chunked-prefill-size: '1024'
   --sglang-dist-timeout: '7200'
   --distributed-timeout-minutes: '120'
@@ -189,8 +193,14 @@ arguments:
   --tensorboard-dir: ${RUN_ROOT}/tensorboard
   --no-load-optim: null
   --no-load-rng: null
-  --over-sampling-batch-size: '512'
+  --over-sampling-batch-size: '16'
   --dynamic-sampling-filter-path: miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+  --partial-rollout: null
+  --rollout-function-path: archlab.rl.miles_qualified_rollout.QualifiedMathRollout
+  --rollout-all-samples-process-path: archlab.rl.miles_rollout_metrics.record_all_samples
+  --custom-rollout-log-function-path: archlab.rl.miles_rollout_metrics.log_rollout
+  --custom-eval-rollout-log-function-path: archlab.rl.miles_rollout_metrics.log_eval
+  --observe-training-entropy: null
   --use-tis: null
   --tis-clip: '2.0'
   --tis-clip-low: '0.0'
@@ -200,7 +210,7 @@ arguments:
   --eval-max-response-len: '4096'
   --eval-top-p: '0.7'
   --n-samples-per-eval-prompt: '8'
-  --eval-interval: '20'
+  --eval-interval: '4'
 environment:
   SGLANG_SKIP_CHECKPOINT_LOAD_CHECK: '1'
   NCCL_CUMEM_ENABLE: '1'
@@ -226,6 +236,7 @@ environment:
   ARCHLAB_MILES_RESIDENT_POLICY: '1'
   ARCHLAB_MILES_RUN_ROOT: ${RUN_ROOT}
   ARCHLAB_RL_FREEZE_ENGRAM: '1'
+  ARCHLAB_PARTIAL_MAX_POLICY_AGE: '2'
   SGLANG_DIAG_BYPASS_HEALTH_GENERATE: '1'
   SGLANG_SHARED_EXPERT_TP1: '1'
   SGLANG_OPT_FUSE_SWIGLU_INTERLEAVED: '0'
