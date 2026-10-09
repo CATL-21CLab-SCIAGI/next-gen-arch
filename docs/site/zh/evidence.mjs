@@ -45,29 +45,29 @@ export function targetComparison(data, key) {
   };
 }
 
-export function reasoningMetric(data, mode) {
-  if (!['accuracy', 'efficiency'].includes(mode)) throw new RangeError('Unknown reasoning metric');
-  const score = (result) => mode === 'accuracy'
-    ? result.correct_responses / result.responses * 100
-    : result.correct_responses / result.total_generated_tokens * 1e6;
-  return {normal: score(data.results.normal), simplicial: score(data.results.simplicial), ceiling: mode === 'accuracy' ? 30 : 3};
+/** Document scrolling is the only continuous interaction control. */
+export function sceneProgress(top, sceneHeight, panelHeight, stickyTop = 0) {
+  if (![top, sceneHeight, panelHeight, stickyTop].every(Number.isFinite)) return 1;
+  const travel = sceneHeight - panelHeight;
+  return travel <= 0 ? 1 : Math.max(0, Math.min(1, (stickyTop - top) / travel));
 }
-
-export function validateEvidence(data, reasoning) {
+export function scrollCheckpointIndex(data, progress) {
+  const bounded = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 1;
+  return Math.round(bounded * (data.series.points.length - 1));
+}
+export function validateEvidence(data, warmup) {
   const points = data.series.points;
   if (points.length !== 66 || points.some((row, i) => row.length !== 3
     || row.some((v) => !Number.isFinite(v)) || row[2] >= row[1]
     || (i > 0 && row[0] <= points[i - 1][0]))) throw new Error('Invalid paired curve evidence');
-  if (points.at(-1)[0] !== 1e10 || data.comparison.training_seed_pairs !== 1) {
-    throw new Error('Unexpected experiment contract');
+  if (points.at(-1)[0] !== 1e10 || data.comparison.training_seed_pairs !== 1) throw new Error('Unexpected experiment contract');
+  if (!warmup.training.backbone_frozen || warmup.training.rl_updates !== 0
+    || warmup.training.actual_supervised_targets !== 2000158720
+    || warmup.stage !== 'adapter_only_warmup') throw new Error('Unexpected warmup contract');
+  for (const [variant, correct] of [['base', 5], ['normal', 25], ['simplicial', 27]]) {
+    const result = warmup.results[variant];
+    if (result.responses !== 120 || result.correct_responses !== correct || result.rl_updates !== 0) throw new Error('Invalid warmup scores');
   }
-  for (const variant of ['normal', 'simplicial']) {
-    const result = reasoning.results[variant];
-    if (result.responses !== 120 || result.total_generated_tokens <= 0
-      || result.correct_responses < 0 || result.correct_responses > result.responses) {
-      throw new Error('Invalid observed evaluation counts');
-    }
-  }
-  if (reasoning.protocol.native_context_tokens !== 131072) throw new Error('Unexpected evaluation context');
+  if (warmup.protocol.native_context_tokens !== 131072 || warmup.protocol.grader !== 'strict_answer_grader') throw new Error('Unexpected evaluation protocol');
   return true;
 }

@@ -1,0 +1,67 @@
+{
+  "unit": "trillion_tokens",
+  "year_coordinates": "Approximate decimal years reconstructed from PDF vector positions; not exact release dates.",
+  "points": [
+    {
+      "model": "GPT-3",
+      "year": 2020.4,
+      "trillion_tokens": 0.3,
+      "source": "https://arxiv.org/abs/2005.14165"
+    },
+    {
+      "model": "Chinchilla",
+      "year": 2022.2,
+      "trillion_tokens": 1.4,
+      "source": "https://arxiv.org/abs/2203.15556"
+    },
+    {
+      "model": "Llama 2",
+      "year": 2023.55,
+      "trillion_tokens": 2,
+      "source": "https://arxiv.org/abs/2307.09288"
+    },
+    {
+      "model": "Llama 3",
+      "year": 2024.3,
+      "trillion_tokens": 15,
+      "source": "https://ai.meta.com/blog/meta-llama-3/"
+    },
+    {
+      "model": "Qwen2.5",
+      "year": 2024.7,
+      "trillion_tokens": 18,
+      "source": "https://arxiv.org/abs/2412.15115"
+    },
+    {
+      "model": "DeepSeek-V3",
+      "year": 2024.95,
+      "trillion_tokens": 14.8,
+      "source": "https://arxiv.org/abs/2412.19437"
+    },
+    {
+      "model": "Qwen3",
+      "year": 2025.3,
+      "trillion_tokens": 36,
+      "source": "https://qwenlm.github.io/blog/qwen3/"
+    }
+  ],
+  "illustrative_fit": {
+    "log10_tokens_intercept_at_2020": -0.7827821629776428,
+    "log10_tokens_slope_per_year": 0.41581426800104626,
+    "annual_growth": 2.6050392309392296,
+    "crosses_300T_year": 2027.8398065399938
+  },
+  "stock": {
+    "median_trillion_tokens": 300,
+    "confidence_interval_90_percent": [
+      100,
+      1000
+    ],
+    "definition": "Effective human-generated public text, adjusted for quality and repetition",
+    "projected_full_use_interval_80_percent": [
+      2026,
+      2032
+    ],
+    "source": "https://epoch.ai/publications/will-we-run-out-of-data-limits-of-llm-scaling-based-on-human-generated-data"
+  }
+}

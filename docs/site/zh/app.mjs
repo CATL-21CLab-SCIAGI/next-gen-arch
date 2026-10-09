@@ -1,29 +1,40 @@
-import {CHART, chartPoint, curvePath, checkpointAt, targetComparison, reasoningMetric, validateEvidence} from './evidence.mjs';
+import {CHART, chartPoint, curvePath, checkpointAt, targetComparison, validateEvidence, sceneProgress, scrollCheckpointIndex} from './evidence.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const wiki = 'https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki/';
 const motionMedia = window.matchMedia('(prefers-reduced-motion: reduce)');
-let userPaused = false;
-let framePending = false;
-let manualTheory = false;
-let lastScrollY = window.scrollY;
+let userPaused = false, framePending = false, manualTheory = false;
+let lastScrollY = window.scrollY, lastCheckpoint = -1;
+let curveData = null;
+const paused = () => userPaused || motionMedia.matches;
 
 function selectButtons(selector, chosen) {
   $$(selector).forEach((button) => button.setAttribute('aria-pressed', String(button === chosen)));
 }
-
 function setTheoryStep(index) {
   $$('[data-theory-copy]').forEach((p) => { p.hidden = Number(p.dataset.theoryCopy) !== index; });
   selectButtons('[data-theory-step]', $('[data-theory-step="' + index + '"]'));
 }
-
+function progressOf(scene, fallback = 1) {
+  const panel = scene.querySelector('.scene-panel');
+  const style = window.getComputedStyle(panel);
+  if (style.position !== 'sticky') return fallback;
+  const stickyTop = parseFloat(style.top) || 0;
+  return sceneProgress(scene.getBoundingClientRect().top, scene.offsetHeight, panel.offsetHeight, stickyTop);
+}
+function showComparison(progress) {
+  const position = (1 - progress) * 100;
+  $('#comparison-clip').setAttribute('x', String(position * 10));
+  $('#comparison-clip').setAttribute('width', String(1000 - position * 10));
+  $('#comparison-divider').style.left = position + '%';
+}
 function scrollFrame() {
   framePending = false;
   const y = window.scrollY;
   const total = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
   $('#reading-progress').style.transform = 'scaleX(' + Math.min(1, Math.max(0, y / total)) + ')';
-  if (!userPaused && !motionMedia.matches) {
+  if (!paused()) {
     const hero = $('#top');
     hero.style.setProperty('--hero-progress', Math.min(1, y / hero.offsetHeight));
     const theory = $('#theory');
@@ -33,49 +44,42 @@ function scrollFrame() {
     if (Math.abs(y - lastScrollY) > 3) manualTheory = false;
     if (!manualTheory && window.innerWidth > 680 && extent > 100) setTheoryStep(Math.min(2, Math.floor(progress * 3)));
   }
+  showComparison(paused() ? .5 : progressOf($('#interaction'), .5));
+  if (curveData) {
+    const index = paused() ? curveData.series.points.length - 1 : scrollCheckpointIndex(curveData, progressOf($('#learning')));
+    if (index !== lastCheckpoint) { showCheckpoint(curveData, index); lastCheckpoint = index; }
+  }
   lastScrollY = y;
 }
-
 function requestFrame() {
-  if (!framePending) {
-    framePending = true;
-    window.requestAnimationFrame(scrollFrame);
-  }
+  if (!framePending) { framePending = true; window.requestAnimationFrame(scrollFrame); }
 }
-
 function syncMotion() {
-  const paused = userPaused || motionMedia.matches;
-  document.documentElement.classList.toggle('motion-paused', paused);
+  document.documentElement.classList.toggle('motion-paused', paused());
   const button = $('#motion-toggle');
   button.disabled = motionMedia.matches;
-  button.setAttribute('aria-pressed', String(paused));
-  const label = motionMedia.matches ? '系统已开启减少动态效果' : paused ? '启用动态效果' : '暂停动态效果';
-  button.setAttribute('aria-label', label);
-  button.title = label;
-  button.firstElementChild.textContent = paused ? '▷' : 'Ⅱ';
+  button.setAttribute('aria-pressed', String(paused()));
+  const label = motionMedia.matches ? '系统已开启减少动态效果' : paused() ? '启用动态效果' : '暂停动态效果';
+  button.setAttribute('aria-label', label); button.title = label;
+  button.firstElementChild.textContent = paused() ? '▷' : 'Ⅱ';
   requestFrame();
 }
-
 $('#motion-toggle').addEventListener('click', () => { userPaused = !userPaused; syncMotion(); });
 motionMedia.addEventListener('change', syncMotion);
 window.addEventListener('scroll', requestFrame, {passive: true});
 window.addEventListener('resize', requestFrame, {passive: true});
+window.addEventListener('load', requestFrame, {once: true});
 $$('[data-theory-step]').forEach((button) => button.addEventListener('click', () => {
-  manualTheory = true;
-  setTheoryStep(Number(button.dataset.theoryStep));
+  manualTheory = true; setTheoryStep(Number(button.dataset.theoryStep));
 }));
+document.documentElement.classList.add('scroll-enabled');
 syncMotion();
 
 if ('IntersectionObserver' in window) {
   document.documentElement.classList.add('js');
-  const observer = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (entry.isIntersecting) {
-        entry.target.classList.add('revealed');
-        observer.unobserve(entry.target);
-      }
-    });
-  }, {threshold: .08, rootMargin: '0px 0px -24px 0px'});
+  const observer = new IntersectionObserver((entries) => entries.forEach((entry) => {
+    if (entry.isIntersecting) { entry.target.classList.add('revealed'); observer.unobserve(entry.target); }
+  }), {threshold: .08, rootMargin: '0px 0px -24px 0px'});
   $$('[data-reveal]').forEach((el) => observer.observe(el));
 }
 
@@ -87,7 +91,7 @@ const elements = {
   softmax: ['内容寻址', 'Softmax 注意力', '查询与每个键匹配，归一化得到权重，再汇总对应的值。它是普通对照组的基本交互。', 'softmax(qkᵀ) · v', 'Limite-SFT-Comparison', '阅读对照实验'],
   sparse: ['选择性交互', '稀疏注意力', '通过窗口、路由或其他选择机制，限制每次参与计算的历史位置，让交互集中在选定的信息上。', '关注一个子集', 'DeepSeek-Experiments', '阅读架构实验'],
   simplicial: ['三体交互', '2-simplicial', '一个查询，同时对一对历史 token 评分。把两份信息的组合作为直接的交互单元。', 'q · (k ⊙ k′)', 'Limite-SFT-Comparison', '阅读实验设计'],
-  triadic: ['探索中的候选', 'Triadic', '用两个键和一个值写入三阶递归状态，再由两个查询读出。它与 2-simplicial 的状态和历史轴组织不同。', 'S ← S + k ⊗ k′ ⊗ v', 'https://arxiv.org/abs/2609.36529', '阅读 Triadic 论文'],
+  triadic: ['探索中的候选', 'Triadic', '同一个历史 token 的两个键与一个值写入三阶递归状态，再由两个查询读出。它与 2-simplicial 组合两个历史位置的机制不同。', 'S ← S + k ⊗ k′ ⊗ v', 'https://arxiv.org/abs/2609.36529', '阅读 Triadic 论文'],
 };
 $$('[data-element]').forEach((button) => button.addEventListener('click', () => {
   const [kicker, name, description, formula, destination, linkText] = elements[button.dataset.element];
@@ -99,18 +103,6 @@ $$('[data-element]').forEach((button) => button.addEventListener('click', () => 
   $('#element-link').href = destination.startsWith('https://') ? destination : wiki + destination;
   $('#element-link').textContent = linkText + ' ↗';
 }));
-
-function showComparison(value) {
-  const position = Math.max(0, Math.min(100, Number(value)));
-  $('#interaction-range').value = String(position);
-  $('#comparison-clip').setAttribute('x', String(position * 10));
-  $('#comparison-clip').setAttribute('width', String(1000 - position * 10));
-  $('#comparison-handle').style.left = position + '%';
-  $('#interaction-range').setAttribute('aria-valuetext', '普通注意力显示 ' + position + '%，二单纯形显示 ' + (100 - position) + '%');
-}
-$('#interaction-range').addEventListener('input', (event) => showComparison(event.target.value));
-$$('[data-comparison]').forEach((button) => button.addEventListener('click', () => showComparison(button.dataset.comparison)));
-showComparison(50);
 
 const svgNS = 'http://www.w3.org/2000/svg';
 function svgElement(tag, attrs, text) {
@@ -151,9 +143,7 @@ function showCheckpoint(data, index) {
   $('#token-readout').textContent = (point.tokens / 1e9).toFixed(2) + 'B';
   $('#normal-readout').textContent = point.normal.toFixed(6);
   $('#simplicial-readout').textContent = point.simplicial.toFixed(6);
-  $('#token-range').setAttribute('aria-valuetext', (point.tokens / 1e9).toFixed(2) + 'B 训练 token，普通 CE ' + point.normal.toFixed(6) + '，二单纯形 CE ' + point.simplicial.toFixed(6));
 }
-
 function showTarget(data, key) {
   const result = targetComparison(data, key);
   const format = (v) => (v / 1e9).toFixed(2) + 'B';
@@ -173,46 +163,23 @@ function showTarget(data, key) {
   selectButtons('[data-target]', $('[data-target="' + key + '"]'));
 }
 
-function showReasoning(data, mode) {
-  const metric = reasoningMetric(data, mode);
-  for (const variant of ['normal', 'simplicial']) {
-    const output = $('#reasoning-' + variant);
-    output.replaceChildren(document.createTextNode(metric[variant].toFixed(mode === 'accuracy' ? 1 : 2)));
-    if (mode === 'accuracy') {
-      const unit = document.createElement('span');
-      unit.textContent = '%';
-      output.append(unit);
-    }
-    $('#reasoning-' + variant + '-bar').style.height = metric[variant] / metric.ceiling * 100 + '%';
-  }
-  $('#reasoning-unit').textContent = mode === 'accuracy'
-    ? '平均单次正确率 · SFT 10B 终点 · 19/120 与 25/120'
-    : '每百万生成 token 的正确回答数 · 使用全部 120 个回答的实际生成量';
-  selectButtons('[data-reasoning]', $('[data-reasoning="' + mode + '"]'));
-}
 
 async function loadEvidence() {
   try {
-    const [data, reasoning] = await Promise.all(['learning-curves.json', 'reasoning.json'].map(async (name) => {
+    const [data, warmup] = await Promise.all(['learning-curves.json', 'warmup.json'].map(async (name) => {
       const response = await fetch(new URL('./assets/' + name, import.meta.url));
       if (!response.ok) throw new Error('Evidence file unavailable');
       return response.json();
     }));
-    validateEvidence(data, reasoning);
+    validateEvidence(data, warmup);
     renderCurve(data);
-    const range = $('#token-range');
-    range.max = String(data.series.points.length - 1);
-    range.value = range.max;
-    range.disabled = false;
-    range.addEventListener('input', () => showCheckpoint(data, Number(range.value)));
-    showCheckpoint(data, Number(range.value));
+    curveData = data;
     $$('[data-target]').forEach((button) => button.addEventListener('click', () => showTarget(data, button.dataset.target)));
-    $$('[data-reasoning]').forEach((button) => button.addEventListener('click', () => showReasoning(reasoning, button.dataset.reasoning)));
     showTarget(data, 'endpoint');
-    showReasoning(reasoning, 'accuracy');
     document.documentElement.dataset.evidence = 'ready';
+    requestFrame();
   } catch {
-    $('#data-status').textContent = '当前显示已核实的静态快照；交互数据暂未加载，可刷新页面重试。';
+    $('#data-status').textContent = '当前显示已核实的静态图表；完整记录可在实验文档中查看。';
     document.documentElement.dataset.evidence = 'unavailable';
   }
 }
