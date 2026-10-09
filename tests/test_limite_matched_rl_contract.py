@@ -57,3 +57,20 @@ def test_invalid_accumulation_or_async_contract_is_rejected():
     changed["execution"]["max_policy_lag"] = 2
     with pytest.raises(ValueError, match="policy lag"):
         check_matched_recipe(changed, effective, **options)
+
+
+def test_after_update_schedule_is_explicit_and_legacy_recipes_remain_compatible():
+    spec, effective, options = contract()
+    assert check_matched_recipe(spec, effective, **options)["rollout_prefetch_schedule"] == "after_update"
+    del spec["execution"]["rollout_prefetch_schedule"]
+    assert check_matched_recipe(spec, effective, **options)["rollout_prefetch_schedule"] == "before_update"
+    spec["execution"]["rollout_prefetch_schedule"] = "unknown"
+    with pytest.raises(ValueError, match="unknown rollout prefetch schedule"):
+        check_matched_recipe(spec, effective, **options)
+
+
+def test_after_update_schedule_rejects_overlap_even_when_async_is_disabled():
+    spec, effective, options = contract()
+    spec["execution"].update(async_rollouts=False, overlap_actor_learner=True)
+    with pytest.raises(ValueError, match="overlap to be disabled"):
+        check_matched_recipe(spec, effective, **options)

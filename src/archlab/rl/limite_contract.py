@@ -64,6 +64,12 @@ def check_matched_recipe(spec, effective, *, variant, world_size, phase_start,
         or execution.get("max_policy_lag") != 1
     ):
         raise ValueError("matched asynchronous RL requires qualified drain, rendezvous and policy lag")
+    prefetch_schedule = execution.get("rollout_prefetch_schedule", "before_update")
+    if prefetch_schedule not in ("before_update", "after_update"):
+        raise ValueError("unknown rollout prefetch schedule")
+    if prefetch_schedule == "after_update" and execution.get("overlap_actor_learner") is not False:
+        raise ValueError("after-update rollouts require actor/learner overlap to be disabled")
     return dict(variant=variant, world_size=world_size, phase_start=phase_start,
                 checkpoint_steps=checkpoint_steps, correctness_fixture=correctness_fixture,
+                rollout_prefetch_schedule=prefetch_schedule,
                 effective_training={key: effective[key] for key in expected})

@@ -124,3 +124,27 @@ do not bound gradient bias for arbitrary advantages or establish capability.
 Both previous continuation queues were cancelled. New production admission
 still requires the recorded math-rollout checks; live queue and learner status
 are kept in private run receipts rather than inferred from this page.
+
+### After-update rollout scheduling
+
+The v5 matched recipe explicitly sets `rollout_prefetch_schedule: after_update`
+with actor/learner overlap disabled. The previous no-overlap schedule generated
+and drained the next batch before applying the current update. Its first normal
+production update took 11,751.5 seconds, with 2,436.5 seconds in local next-batch
+drain and 4,307.0 seconds in the subsequent host rendezvous on the reporting
+rank. These durations include rank imbalance and are not an architecture
+comparison or a forecast of steady-state speedup.
+
+The revised schedule consumes the current batch and completes the host
+rendezvous before replay; the next generation starts on demand after the
+optimizer publishes its policy snapshot. A retained legacy prefetched batch
+is consumed once with its original probabilities and RNG provenance. Future
+batches use the newly published policy. The 64-response budget, objective,
+native context and checkpoint state format remain unchanged. Recipes without
+the new key retain the historical schedule.
+
+This revision removes unnecessary work before an update and avoids checkpoint
+drains of a future generation. It does not reduce the number of responses per
+update or the cost of long responses; throughput gains require a measured
+post-relaunch comparison. Production qualification and migration receipts are
+kept separately from this source-level description.

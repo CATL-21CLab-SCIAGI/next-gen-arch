@@ -1,6 +1,6 @@
 # Limite: normal versus 2-simplicial attention
 
-**Evidence snapshot: 2026-10-07.** Completed training and endpoint evaluation;
+**Endpoint evidence: 2026-10-07; CE provenance audited 2026-10-09.** Completed training and endpoint evaluation;
 intermediate checkpoint evaluation is outside this snapshot. This page is not a
 live queue or a claim that the architecture comparison is conclusive.
 
@@ -65,8 +65,20 @@ measurements should be presented as a pure FLOP-count comparison.
 
 ## Recorded results
 
-The 10B endpoint's logged training CE is **0.809566 normal / 0.801842 simplicial**.
-These are training-loss measurements, not held-out reasoning scores.
+The 10B endpoint's fixed validation-split diagnostic CE is
+**0.809566 normal / 0.801842 simplicial**. Each saved point scores the same
+32 document-contained windows (65,536 next-token targets across 16 ranks),
+covering 31 normalized problem hashes in the held-out split. Training and
+validation index prefixes are disjoint. This is a small diagnostic sample,
+not a full validation-corpus evaluation or a held-out reasoning score; a
+near-duplicate or pretrained-data exposure audit has not been performed.
+
+Simplicial has lower diagnostic CE at all 66 common saved checkpoints. It first
+reaches CE at most 0.82 at 3.801B supervised targets, versus 5.243B for normal
+(27.5% fewer); at most 0.81 at 5.767B versus 9.044B (36.2% fewer). These are
+post-hoc observed saved-checkpoint thresholds from one training pair. The
+points are correlated; they do not establish seed-level significance, a
+scaling exponent, or GPU-time savings.
 
 AIME26 uses all 30 problems, four fixed seeded responses per problem, temperature
 0.6, top-p 0.95, a strict answer grader, and a total context of 131,072 tokens
