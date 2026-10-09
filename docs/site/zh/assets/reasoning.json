@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-10-09",
+  "benchmark": "AIME 2026",
+  "phase": "SFT 10B",
+  "protocol": {
+    "problems": 30,
+    "responses_per_problem": 4,
+    "responses_per_variant": 120,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "native_context_tokens": 131072,
+    "completion_budget": "native_context_minus_actual_prompt",
+    "paired_problem_sample_seeds": true,
+    "grader": "strict_answer_grader",
+    "training_seed_pairs": 1
+  },
+  "results": {
+    "normal": {
+      "responses": 120,
+      "correct_responses": 19,
+      "mean_pass_at_1": 0.15833333333333333,
+      "total_generated_tokens": 12327575,
+      "mean_generated_tokens": 102729.79166666667,
+      "correct_responses_per_million_generated_tokens": 1.5412601424043253
+    },
+    "simplicial": {
+      "responses": 120,
+      "correct_responses": 25,
+      "mean_pass_at_1": 0.20833333333333334,
+      "total_generated_tokens": 9774678,
+      "mean_generated_tokens": 81455.65,
+      "correct_responses_per_million_generated_tokens": 2.557629008341758
+    }
+  },
+  "comparison": {
+    "token_efficiency_ratio": 1.659440180132034,
+    "pass_at_1_difference_percentage_points": 5.000000000000002,
+    "total_parameters_extra_percent": 2.5699127020753387
+  },
+  "labels_zh": {
+    "metric": "每百万生成 token 的正确回答数",
+    "ratio": "本次观测：1.66×",
+    "accuracy": "平均单次答对率"
+  },
+  "notes_zh": [
+    "AIME 2026：30 题 × 每题 4 次；两组均为 10B SFT，并使用完整原生 131K 上下文预算。",
+    "效率 = 正确回答次数 ÷ 全部回答的生成 token；单组观测、总参数相差约 2.57%，实验设计与统计范围见 Wiki。"
+  ],
+  "source": {
+    "label_zh": "实验设计、评估与统计范围",
+    "url": "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki/Limite-SFT-Comparison"
+  }
+}

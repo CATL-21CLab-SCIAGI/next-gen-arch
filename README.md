@@ -2,7 +2,7 @@
 
 **Architecture search for language models—from controlled component experiments to distributed pretraining, frontier-model adaptation, and reinforcement learning.**
 
-[Documentation](docs/README.md) · [Results](docs/RESULTS.md) · [Recipes](recipes/) · [Contributing](docs/wiki/Contributing.md)
+[中文研究愿景](https://catl-21clab-sciagi.github.io/next-gen-arch/zh/) · [Documentation](docs/README.md) · [Results](docs/RESULTS.md) · [Recipes](recipes/) · [Contributing](docs/wiki/Contributing.md)
 
 ## Research
 
