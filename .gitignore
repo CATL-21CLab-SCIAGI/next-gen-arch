@@ -2,6 +2,8 @@
 /*
 !/.github/
 !/.gitignore
+!/.gitmodules
+!/verl
 !/.python-version
 !/AGENTS.md
 !/CITATION.cff

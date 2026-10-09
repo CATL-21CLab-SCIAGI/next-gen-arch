@@ -309,6 +309,14 @@ class PreludeBackbone(nn.Module):
 
     def _apply_adapter(self, index, hidden):
         if self._bounds is None:
+            replay = getattr(self, "_native_replay", None)
+            if replay and replay["checkpoint"] and self.training and torch.is_grad_enabled():
+                from torch.utils.checkpoint import checkpoint
+
+                # Pass the actual context into the checkpoint. Reading the
+                # mutable self._context during backward would replay a later
+                # response's RoPE/value embeddings when gradients accumulate.
+                return checkpoint(self.adapters[index], hidden, self._context, use_reentrant=False)
             return self.adapters[index](hidden, self._context)
         if self._context["cache"] is not None:
             raise ValueError("generation requires unpadded prompt groups")
@@ -365,6 +373,20 @@ class PreludeBackbone(nn.Module):
     def _masks(self, hidden, positions, mask, cache):
         if hasattr(cache, "decode_masks"):
             return cache.decode_masks()
+        replay = getattr(self, "_native_replay", None)
+        if replay and cache is None:
+            from archlab.architectures.limite_replay import native_replay_masks
+
+            if mask is not None and (
+                not isinstance(mask, torch.Tensor) or mask.shape != hidden.shape[:2] or not bool((mask == 1).all())
+            ):
+                raise ValueError("native replay requires unpadded token rows")
+            expected = torch.arange(hidden.shape[1], device=hidden.device)[None].expand(hidden.shape[0], -1)
+            if positions.shape != expected.shape or not torch.equal(positions, expected):
+                raise ValueError("native replay requires contiguous positions starting at zero")
+            return native_replay_masks(
+                hidden.shape[1], int(self.config.sliding_window), hidden.device, replay["backend"],
+            )
         u = self.adapters[0].upstream
         kw = dict(
             config=self.base.config,

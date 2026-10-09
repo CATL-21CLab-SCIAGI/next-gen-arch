@@ -172,6 +172,7 @@ def main():
     p.add_argument("--oss")
     p.add_argument("--steps", type=int, default=400)
     p.add_argument("--trl-runtime", type=Path)
+    p.add_argument("--verl-root", type=Path)
     p.add_argument("--stop-file", type=Path, action="append", default=[])
     p.add_argument("--test-rollouts", action="store_true")
     p.add_argument("--test-flat-batch", action="store_true")
@@ -212,6 +213,11 @@ def main():
 
     if trl.__version__ != "1.4.0":
         raise RuntimeError("Limite RL requires the qualified TRL 1.4.0 overlay")
+    verl_receipt = None
+    if a.verl_root:
+        from archlab.rl.limite_protocol import configure_verl_repetition
+
+        verl_receipt = configure_verl_repetition(a.verl_root)
     protocol = protocol_spec = curriculum = None
     if a.math_protocol:
         import yaml
@@ -227,6 +233,8 @@ def main():
     if protocol_spec and protocol_spec.get("protocol_transition") and not a.resume and not a.test_rollouts:
         raise ValueError("protocol migration requires its declared source RL checkpoint")
     execution = protocol_spec["execution"] if protocol_spec else {}
+    if execution.get("require_pinned_verl") and verl_receipt is None:
+        raise ValueError("this RL phase requires --verl-root at its pinned revision")
     if execution.get("async_rollouts") and not execution.get("graph_decode"):
         raise ValueError("asynchronous native sampling requires graph decoding")
     if type(execution.get("overlap_actor_learner", True)) is not bool:
@@ -246,6 +254,8 @@ def main():
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
     torch.backends.cuda.matmul.allow_tf32 = False
     a.output.mkdir(parents=True, exist_ok=True)
+    if verl_receipt is not None and rank == 0:
+        (a.output / "VERL_COMPONENTS.json").write_text(json.dumps(verl_receipt, indent=2) + "\n")
     if native_checkpoint:
         from archlab.automodel.limite_native_checkpoint import (
             build_native_model,
@@ -331,7 +341,7 @@ def main():
 
         enable_runtime_sequence_attention(model)
     normal_kernel = getattr(model.model, "normal_kernel", "shared")
-    native_replay_enabled = native_checkpoint and bool(execution.get("native_replay"))
+    native_replay_enabled = bool(execution.get("native_replay"))
     native_replay_backend = model.archlab_native_replay["attention_backend"] if native_replay_enabled else None
     normal_backward = ((native_replay_backend if native_replay_enabled else "publisher") if native_checkpoint
                        else getattr(model.model, "normal_backward", "tilelang"))
@@ -590,6 +600,7 @@ def main():
                             phase_start=a.phase_start if protocol else None,
                             protocol_migration=protocol_migration,
                             rollout_execution=execution,
+                            upstream_components=verl_receipt,
                         ),
                         extra_payloads=payloads,
                         publisher=publisher,
@@ -638,6 +649,8 @@ def main():
         warmup_steps=0,
         bf16=False,
         beta=0.0,
+        epsilon=0.2,
+        epsilon_high=0.2,
         loss_type="dapo",
         scale_rewards="group",
         num_iterations=1,
@@ -648,7 +661,7 @@ def main():
         save_strategy="no",
         eval_strategy="steps",
         eval_steps=100,
-        eval_on_start=not bool(a.resume),
+        eval_on_start=execution.get("eval_on_start", not bool(a.resume)),
         report_to=["mlflow"] if a.credentials else [],
         run_name=("limite-violetto-native-full-rl-grpo" if native_checkpoint
                   else f"limite-base-{a.variant}-{trainable_mode}-grpo")
@@ -664,6 +677,17 @@ def main():
         cache_implementation="dynamic",
         generation_kwargs=dict(use_cache=True, eos_token_id=[151645, 151643]),
     )
+    matched_contract = None
+    if protocol_spec and "variants" in protocol_spec.get("model", {}):
+        from archlab.rl.limite_contract import check_matched_recipe
+
+        if trainable_mode != "full" or attention_backend != "tilelang":
+            raise ValueError("effective model differs from the matched full-weight TileLang recipe")
+        matched_contract = check_matched_recipe(
+            protocol_spec, native, variant=a.variant, world_size=world, phase_start=a.phase_start,
+            checkpoint_steps=a.checkpoint_steps, split_sha256=file_hash(a.data / "SPLIT.json"),
+            heldout_count=len(datasets["heldout"]), correctness_fixture=a.test_rollouts,
+        )
     if trainable_mode == "full":
         native["ddp_timeout"] = execution.get("rollout_timeout_seconds", 1800)
     optimizer = optimizer_for_model(model)
@@ -993,9 +1017,10 @@ def main():
                     normal_kernel=normal_kernel,
                     normal_backward=normal_backward,
                     normal_backward_runtime=(dict(backend=native_replay_backend, replay=model.archlab_native_replay)
-                                             if native_replay_enabled else dict(backend="publisher") if native_checkpoint
+                                             if native_checkpoint and native_replay_enabled else dict(backend="publisher") if native_checkpoint
                                              else model.archlab_normal_attention_backward_contract),
                     attention_kernel=attention_kernel,
+                    backbone_replay=getattr(model, "archlab_native_replay", None),
                     **parent_contract,
                     **identity,
                     communication=communication,
@@ -1017,6 +1042,7 @@ def main():
                         async_oss_publication=publisher is not None,
                         math_protocol=protocol.contract() if protocol else None,
                         protocol_spec=protocol_spec,
+                        upstream_components=verl_receipt,
                         curriculum_sha256=file_hash(a.curriculum) if a.curriculum else None,
                         phase_start=a.phase_start if protocol else None,
                     ),
@@ -1024,6 +1050,7 @@ def main():
                                 protocol_migration=protocol_migration) if a.resume else None,
                     config=native,
                     correctness_fixture=a.test_rollouts,
+                    matched_contract=matched_contract,
                     runtime=runtime_contract(),
                     split_sha256=file_hash(a.data / "SPLIT.json"),
                     dataset_counts={name: len(data) for name, data in datasets.items()},

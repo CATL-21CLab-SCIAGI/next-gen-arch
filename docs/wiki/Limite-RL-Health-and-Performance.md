@@ -79,3 +79,48 @@ recipe or establish equivalence to our GRPO/DAPO experiments.
 
 Raw run evidence remains in team storage. Public aggregates are in
 [recorded results](../recorded-results/limite-comparison-20261007.json).
+
+## Matched restart contract, 2026-10-09
+
+The [new matched protocol](../../recipes/limite/full_math_rl_native_context.yaml)
+restarts normal and simplicial from their respective matched 10B SFT weights,
+with fresh full-weight RL optimizers and identical data, seed, curriculum,
+sampling and loss settings. Each variant uses eight B300 GPUs. The response
+budget is the native 131,072-token context minus the actual prompt; an exhausted
+budget is recorded explicitly and never relabeled as a natural EOS.
+
+The root [`verl` submodule](https://github.com/XiaomiMiMo/verl/tree/a2ad9f6160b03ff2d47e59832bfb6b289f37c917)
+pins XiaomiMiMo's code. The native Limite executor loads its repetition detector
+directly and records the component hash. This is reuse of upstream components;
+the complete verl Ray/FSDP execution stack is not qualified for these custom
+adapters.
+
+Admission separates exact graph/cache migration checks and independent FP32
+attention oracles from BF16 differences between decoding and uncached replay.
+The denominator is the actual sampled actor probability. Distribution-wide
+importance-ratio clipping mass, finite gradients, fresh-Adam updates, full-context
+resident memory, and distributed checkpoint/resume behavior are checked
+separately. Full-context resource probes passed for both variants with about
+184 GiB peak reserved memory per GPU; these disposable probes do not establish
+production learning health or benchmark improvement.
+
+For complete sampled trajectories, health uses clipping frequency, effective
+sample size and mean importance weight, following the pinned upstream rollout
+correction diagnostics. The recipe requires at most 5% clipped tokens, at least
+95% effective sample fraction and mean weight between 0.5 and 2. Individual
+ratio extrema remain reported: a single low-weight tail token is not an
+importance-sampling correctness failure. Short-canary precision targets are
+kept separate from these full-trajectory health criteria.
+
+The conditional distribution check averages exact full-vocabulary clipping
+mass over active token rows within each canary. This estimates its expected
+clipped-token fraction and follows the summed-token objective; it is not the
+worst individual position. Both actor and native mean mass must remain below
+5%, every conditional effective sample fraction must exceed 95%, and
+normalization and exact cache/math checks must pass. Worst-position mass and
+the earlier failed worst-position verdict remain recorded. These diagnostics
+do not bound gradient bias for arbitrary advantages or establish capability.
+
+Both previous continuation queues were cancelled. New production admission
+still requires the recorded math-rollout checks; live queue and learner status
+are kept in private run receipts rather than inferred from this page.

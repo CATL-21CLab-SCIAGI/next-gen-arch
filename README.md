@@ -48,3 +48,8 @@ Compact evidence is versioned under `docs/recorded-results/` and `src/archlab/da
 [Apache 2.0 license](LICENSE) · [Attribution](docs/NOTICE.md) · [Citation](CITATION.cff)
 
 Publication uses a curated source snapshot; earlier experiment revisions remain in a private archive. See the [workspace and publication policy](docs/PUBLICATION.md).
+
+The pinned [XiaomiMiMo/verl](https://github.com/XiaomiMiMo/verl) dependency is a
+root submodule. Run `git submodule update --init verl` for the matched RL recipe.
+[Upstream pins](docs/upstreams.json) record the integration scope; GPU framework
+packages remain owned by the validated container.

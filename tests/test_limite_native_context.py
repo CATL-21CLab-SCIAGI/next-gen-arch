@@ -108,6 +108,18 @@ def test_chunked_softcapped_scores_match_full_values_entropy_and_parameter_gradi
         torch.testing.assert_close(got, want)
 
 
+def test_chunked_fp32_head_uses_the_same_fused_logsoftmax_values_and_derivatives():
+    logits = torch.tensor([[[6., 4., -1.], [23., 22., 0.], [-.1, -.2, -.3]]], requires_grad=True)
+    labels = torch.tensor([[0, 1, 2]])
+    weights = torch.tensor([[.5, -1., 1.5]])
+    expected = logits.log_softmax(-1).gather(-1, labels[..., None]).squeeze(-1)
+    expected_gradient = torch.autograd.grad((expected * weights).sum(), logits, retain_graph=True)[0]
+    actual, _ = chunked_policy_scores(lambda value: value, logits, labels, chunk_size=2)
+    actual_gradient = torch.autograd.grad((actual * weights).sum(), logits)[0]
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(actual_gradient, expected_gradient, rtol=0, atol=0)
+
+
 def test_owned_forward_preserves_normal_forward_and_causal_shift_without_state_changes():
     class Backbone(torch.nn.Embedding):
         def forward(self, input_ids, **kwargs):
@@ -134,6 +146,59 @@ def test_owned_forward_preserves_normal_forward_and_causal_shift_without_state_c
     assert entropy is None and before.keys() == model.state_dict().keys()
     for name in before:
         torch.testing.assert_close(before[name], model.state_dict()[name])
+
+
+def test_verified_adapter_chunked_replay_preserves_head_values_all_gradients_and_state():
+    from archlab.architectures.limite_adapter import PreludeBackbone
+
+    class Backbone(PreludeBackbone):
+        def __init__(self):
+            torch.nn.Module.__init__(self)
+            self.embedding = torch.nn.Embedding(11, 5)
+            self.adapters = torch.nn.Linear(5, 5)
+
+        def forward(self, input_ids, **kwargs):
+            hidden = self.embedding(input_ids)
+            return SimpleNamespace(last_hidden_state=hidden + self.adapters(hidden))
+
+    class Model(torch.nn.Module):
+        archlab_base_snapshot_sha256 = "verified-publisher"
+
+        def __init__(self):
+            super().__init__()
+            self.model = Backbone()
+            self.lm_head = torch.nn.Linear(5, 11)
+
+        def _softcapped_logits(self, hidden):
+            return 30 * (self.lm_head(hidden) / 10).sigmoid()
+
+        def forward(self, input_ids, **kwargs):
+            return self._softcapped_logits(self.model(input_ids).last_hidden_state)
+
+    torch.manual_seed(7)
+    model = Model()
+    before = deepcopy(model.state_dict())
+    parameters = tuple(model.parameters())
+    ids = torch.tensor([[1, 2, 3, 4, 5, 6]])
+    full = model(ids)
+    expected = full[:, 1:-1].log_softmax(-1).gather(-1, ids[:, -4:, None]).squeeze(-1)
+    advantages = torch.tensor([[1., -1., .5, 2.]])
+    expected_gradients = torch.autograd.grad((expected * advantages).sum(), parameters)
+    enable_chunked_policy_scores(model, chunk_size=2)
+    actual, entropy = model(input_ids=ids, use_cache=False, archlab_replay=(4, 1., False))
+    actual_gradients = torch.autograd.grad((actual * advantages).sum(), parameters)
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(model(ids), full)
+    assert entropy is None and before.keys() == model.state_dict().keys()
+    assert all(a is b for a, b in zip(parameters, model.parameters(), strict=True))
+    for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients, strict=True):
+        torch.testing.assert_close(actual_gradient, expected_gradient)
+    for name in before:
+        torch.testing.assert_close(before[name], model.state_dict()[name])
+    model.archlab_base_snapshot_sha256 = None
+    del model.archlab_chunked_policy_scores
+    with pytest.raises(ValueError, match="verified Limite checkpoint"):
+        enable_chunked_policy_scores(model)
 
 
 def test_native_replay_strips_only_padding_and_restores_original_grpo_geometry():

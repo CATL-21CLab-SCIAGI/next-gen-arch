@@ -20,6 +20,86 @@ def test_decode_gate_requires_distribution_greedy_cache_and_finite_oracles():
         assert not qualification.decode_admitted(report | {key: value})
 
 
+def test_full_vocabulary_importance_control_measures_behavior_clip_mass_and_support():
+    identical = torch.tensor([[1., 2., 3.]])
+    result = qualification.importance_distribution_control(identical, identical)
+    assert result["passed"] and result["max_actor_clip_mass"] == 0
+    assert result["min_effective_sample_fraction"] == pytest.approx(1.)
+    actor = torch.tensor([[.9, .1]]).log()
+    native = torch.tensor([[.99, .01]]).log()
+    result = qualification.importance_distribution_control(actor, native)
+    assert result["max_actor_clip_mass"] == pytest.approx(.1)
+    assert result["max_native_clip_mass"] == pytest.approx(.01)
+    assert result["max_normalization_error"] < 1e-6
+    assert not result["passed"]
+    # A tiny vocabulary tail can have a large ratio while its exact clipped
+    # mass is small. Selected-token safeguards remain a separate admission.
+    result = qualification.importance_distribution_control(
+        torch.tensor([[.99, .01]]).log(), torch.tensor([[.999, .001]]).log(),
+    )
+    assert result["passed"] and result["max_actor_clip_mass"] == pytest.approx(.01)
+    assert not qualification.importance_distribution_control(
+        torch.full_like(identical, float("nan")), identical,
+    )["passed"]
+
+
+def importance_row(**changes):
+    return dict(finite_full_support=True, mean_actor_clip_mass=.01, max_actor_clip_mass=.01,
+                mean_native_clip_mass=.02, max_native_clip_mass=.02,
+                min_effective_sample_fraction=.99, max_normalization_error=1e-7,
+                passed=True) | changes
+
+
+def test_importance_summary_weights_actual_token_opportunities_and_keeps_worst_case_diagnostics():
+    rows = [importance_row(), importance_row(
+        mean_actor_clip_mass=.09, max_actor_clip_mass=.09,
+        mean_native_clip_mass=.10, max_native_clip_mass=.10, passed=False,
+    )]
+    result = qualification.summarize_importance_controls(rows, [4, 1])
+    assert result["passed"]
+    assert result["mean_actor_clip_mass"] == pytest.approx(.026)
+    assert result["mean_native_clip_mass"] == pytest.approx(.036)
+    assert result["active_row_token_comparisons"] == 5
+    assert result["max_native_clip_mass"] == .10
+    assert not result["per_conditional_max_bound_passed"]
+    assert result["comparisons"] == rows
+    # A sustained excess fails the same 5% clipped-token bound.
+    assert not qualification.summarize_importance_controls([rows[1], rows[1]], [4, 1])["passed"]
+
+
+def test_importance_summary_accepts_fp32_mean_reduction_roundoff_above_maximum():
+    row = importance_row(mean_native_clip_mass=1.8461036233929917e-5,
+                         max_native_clip_mass=1.8461034414940514e-5)
+    assert qualification.summarize_importance_controls([row], [3])["passed"]
+
+
+@pytest.mark.parametrize('changes', [
+    dict(mean_actor_clip_mass=.051, max_actor_clip_mass=.051),
+    dict(mean_native_clip_mass=.051, max_native_clip_mass=.051),
+    dict(min_effective_sample_fraction=.949),
+    dict(max_normalization_error=1.1e-5),
+    dict(finite_full_support=False),
+    dict(mean_actor_clip_mass=float('nan')),
+    dict(max_native_clip_mass=float('inf')),
+    dict(min_effective_sample_fraction=float('nan')),
+    dict(max_normalization_error=float('nan')),
+    dict(mean_actor_clip_mass=-.01),
+    dict(mean_native_clip_mass=.02, max_native_clip_mass=.01),
+])
+def test_importance_summary_rejects_corrupted_or_unhealthy_controls(changes):
+    assert not qualification.summarize_importance_controls([importance_row(**changes)], [1])["passed"]
+
+
+@pytest.mark.parametrize('rows,counts', [
+    ([], []), ([importance_row()], []), ([importance_row()], [1, 2]),
+    ([importance_row()], [0]), ([importance_row()], [-1]),
+    ([importance_row()], [1.5]), ([importance_row()], [True]),
+])
+def test_importance_summary_rejects_missing_or_invalid_active_row_counts(rows, counts):
+    with pytest.raises(ValueError, match='active-row count'):
+        qualification.summarize_importance_controls(rows, counts)
+
+
 def test_gradient_oracle_catches_missing_zero_and_nonfinite_tensors():
     model = nn.Linear(2, 2)
     for parameter in model.parameters():

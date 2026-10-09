@@ -38,8 +38,15 @@ class DecodeCache(DynamicCache):
         self.global_layers = set(config.global_layers)
         for i, layer in enumerate(source.layers):
             size = capacity if i in config.global_layers else self.local_capacity
-            shape = (*layer.keys.shape[:2], size, layer.keys.shape[-1])
-            self.buffers.append([layer.keys.new_zeros(shape), layer.values.new_zeros(shape)])
+            # Keep the publisher's [B,H,L,D] cache interface while owning
+            # [B,L,H,D] storage. Both TileLang and FlashAttention consume the
+            # latter: transposing these views avoids copying the entire global
+            # context on every generated token, including unused cache slots.
+            shape = (layer.keys.shape[0], size, layer.keys.shape[1], layer.keys.shape[-1])
+            self.buffers.append([
+                layer.keys.new_zeros(shape).transpose(1, 2),
+                layer.values.new_zeros(shape).transpose(1, 2),
+            ])
         self.load(source)
 
     def load(self, source):

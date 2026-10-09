@@ -8,9 +8,11 @@ benchmark questions, or production learner state is involved.
 from __future__ import annotations
 
 import argparse
+import copy
 import gc
 import hashlib
 import json
+import math
 import time
 from pathlib import Path
 
@@ -75,19 +77,116 @@ def decode_admitted(report):
     )
 
 
-def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
+def importance_distribution_control(actor_logits, native_logits, *, clip_epsilon=.2):
+    """Measure conditional PPO clipping mass over the complete vocabulary.
+
+    Actual graph sampling is the behavior distribution in the denominator.
+    Log-space second moments avoid 0*inf in negligible-probability tails.
+    """
+    if actor_logits.shape != native_logits.shape or not 0 < clip_epsilon < 1:
+        raise ValueError("importance controls require matching logits and a valid clipping epsilon")
+    actor = actor_logits.float().log_softmax(-1)
+    native = native_logits.float().log_softmax(-1)
+    log_ratio = native - actor
+    outside = (log_ratio < math.log1p(-clip_epsilon)) | (log_ratio > math.log1p(clip_epsilon))
+    actor_clip = (actor.exp() * outside).sum(-1)
+    native_clip = (native.exp() * outside).sum(-1)
+    normalization = (actor + log_ratio).logsumexp(-1).exp()
+    ess = (-(2 * native - actor).logsumexp(-1)).exp()
+    finite = bool(torch.isfinite(actor).all() and torch.isfinite(native).all()
+                  and torch.isfinite(ess).all() and torch.isfinite(normalization).all())
+    result = dict(
+        finite_full_support=finite, clip_epsilon=clip_epsilon,
+        max_actor_clip_mass=float(actor_clip.max()), mean_actor_clip_mass=float(actor_clip.mean()),
+        max_native_clip_mass=float(native_clip.max()), mean_native_clip_mass=float(native_clip.mean()),
+        min_effective_sample_fraction=float(ess.min()), mean_effective_sample_fraction=float(ess.mean()),
+        max_normalization_error=float((normalization - 1).abs().max()),
+        ratio_direction="native numerator / actual graph behavior denominator",
+        scope="exact full-vocabulary conditional distribution at identical forced histories",
+        tolerance=dict(clipped_probability_mass=.05, normalization_error=1e-5),
+    )
+    result["passed"] = (finite and result["max_actor_clip_mass"] <= .05
+                        and result["max_native_clip_mass"] <= .05
+                        and result["max_normalization_error"] <= 1e-5)
+    return result
+
+
+def summarize_importance_controls(comparisons, active_row_counts):
+    """Bound expected clipped-token mass over the tested forced histories.
+
+    Each active row contributes one token opportunity. Weighting each step's
+    exact conditional clipping mass by its row count therefore estimates the
+    same token fraction bounded by the sampled GRPO health check. Conditional
+    maxima remain diagnostics; support, normalization and ESS stay worst-case.
+    This is a numerical-health check, separate from graph/cache correctness and
+    the required actual full-completion behavior/replay test.
+    """
+    if not comparisons or len(comparisons) != len(active_row_counts):
+        raise ValueError("importance controls require one active-row count per comparison")
+    if any(type(count) is not int or count <= 0 for count in active_row_counts):
+        raise ValueError("importance control active-row counts must be positive integers")
+    keys = ("mean_actor_clip_mass", "max_actor_clip_mass", "mean_native_clip_mass",
+            "max_native_clip_mass", "min_effective_sample_fraction", "max_normalization_error")
+    finite = all(row["finite_full_support"] and all(math.isfinite(row[key]) for key in keys)
+                 for row in comparisons)
+    # FP32 mean reduction can round one ULP above an identical row maximum.
+    valid_mass = all(
+        0 <= row[f"mean_{kind}_clip_mass"] <= 1 and 0 <= row[f"max_{kind}_clip_mass"] <= 1
+        and (row[f"mean_{kind}_clip_mass"] <= row[f"max_{kind}_clip_mass"]
+             or math.isclose(row[f"mean_{kind}_clip_mass"], row[f"max_{kind}_clip_mass"],
+                             rel_tol=4 * torch.finfo(torch.float32).eps))
+        for row in comparisons for kind in ("actor", "native")
+    )
+    total = sum(active_row_counts)
+    result = dict(
+        finite_full_support=finite,
+        mean_actor_clip_mass=sum(row["mean_actor_clip_mass"] * count
+                                 for row, count in zip(comparisons, active_row_counts, strict=True)) / total,
+        mean_native_clip_mass=sum(row["mean_native_clip_mass"] * count
+                                  for row, count in zip(comparisons, active_row_counts, strict=True)) / total,
+        max_actor_clip_mass=max(row["max_actor_clip_mass"] for row in comparisons),
+        max_native_clip_mass=max(row["max_native_clip_mass"] for row in comparisons),
+        min_effective_sample_fraction=min(row["min_effective_sample_fraction"] for row in comparisons),
+        max_normalization_error=max(row["max_normalization_error"] for row in comparisons),
+        active_row_counts=list(active_row_counts), active_row_token_comparisons=total,
+        aggregation="sum(active_rows * conditional_mean_clip_mass) / sum(active_rows)",
+        scope="exact expected clipped-token fraction on tested forced histories; full-completion IS required separately",
+        per_conditional_max_bound_passed=all(row["passed"] for row in comparisons),
+        comparisons=comparisons,
+        tolerance=dict(clipped_probability_mass=.05, minimum_effective_sample_fraction=.95,
+                       normalization_error=1e-5),
+    )
+    result["passed"] = (
+        finite and valid_mass
+        and result["mean_actor_clip_mass"] <= .05 and result["mean_native_clip_mass"] <= .05
+        and .95 <= result["min_effective_sample_fraction"] <= 1 + 1e-5
+        and all(0 <= row["max_normalization_error"] <= 1e-5 for row in comparisons)
+    )
+    return result
+
+
+def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
+                  reference_name="unmodified_publisher_eager_dynamic_cache",
+                  native_gqa_backend="flash_attn_kvcache", teacher_forcing="greedy", seed=1234,
+                  clip_epsilon=.2):
     from archlab.architectures.limite_decode import GraphDecoderPool
     from archlab.architectures.limite_decode_state import cache_rows
     from archlab.architectures.limite_gqa import set_native_decode_gqa
-    from archlab.automodel.limite_decode_qualification import distribution_error
+    from archlab.automodel.limite_decode_qualification import distribution_error, select_native_rows
 
+    if teacher_forcing not in ("greedy", "sampled"):
+        raise ValueError("decode qualification requires greedy or sampled teacher forcing")
+    if not 0 < clip_epsilon < 1:
+        raise ValueError("decode clipping epsilon must be in (0, 1)")
+    generator = torch.Generator(device=ids.device).manual_seed(seed)
     reference.eval()
     optimized.eval()
-    set_native_decode_gqa(optimized, backend="flash_attn_kvcache")
+    set_native_decode_gqa(optimized, backend=native_gqa_backend)
     with torch.no_grad():
         reference_output = reference(input_ids=ids, use_cache=True, logits_to_keep=1)
         optimized_output = optimized(input_ids=ids, use_cache=True, logits_to_keep=1)
         native_cache, source = reference_output.past_key_values, optimized_output.past_key_values
+        compact_native_cache = copy.deepcopy(native_cache)
         tokens = reference_output.logits[:, -1].argmax(-1, keepdim=True)
         del reference_output, optimized_output
         pool = GraphDecoderPool(optimized)
@@ -96,13 +195,15 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
         reused = pool.get(source, tokens, capacity)
         same_graph = reused is decoder
         rows = torch.arange(ids.shape[0], device=ids.device)
-        metrics, compact_metrics, greedy = [], [], []
+        metrics, compact_metrics, greedy, selected_logprob_deltas, batch_shape_controls = [], [], [], [], []
+        selected_tokens, importance_controls, importance_row_counts = [], [], []
         max_logit_error, finite = 0.0, True
         prefix = ids.shape[1]
         for step in range(steps):
             if step in (2, 4, 6) and rows.numel() > 1:
                 kept = torch.arange(1, len(rows), device=ids.device)
                 view = cache_rows(decoder.cache, kept, length=prefix + step)
+                select_native_rows(compact_native_cache, kept)
                 rows = rows[1:]
                 pool.synchronize()
                 decoder = pool.get(view, tokens[rows], capacity)
@@ -110,7 +211,12 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
             expected = reference(
                 input_ids=tokens, past_key_values=native_cache, use_cache=True, logits_to_keep=1,
             ).logits[:, -1]
-            target = expected.index_select(0, rows)
+            target = reference(
+                input_ids=tokens[rows], past_key_values=compact_native_cache, use_cache=True, logits_to_keep=1,
+            ).logits[:, -1]
+            batch_shape_controls.append(distribution_error(target, expected.index_select(0, rows)))
+            importance_controls.append(importance_distribution_control(actual, target, clip_epsilon=clip_epsilon))
+            importance_row_counts.append(len(rows))
             error = distribution_error(actual, target)
             metrics.append(error)
             if len(rows) != ids.shape[0]:
@@ -118,16 +224,37 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
             max_logit_error = max(max_logit_error, float((actual.float() - target.float()).abs().max()))
             finite = finite and bool(torch.isfinite(actual).all()) and bool(torch.isfinite(target).all())
             actual_greedy, target_greedy = actual.argmax(-1), target.argmax(-1)
+            forced_all = expected.argmax(-1, keepdim=True)
+            if teacher_forcing == "sampled":
+                # Draw real active tokens from the actual actor distribution;
+                # all reference caches replay this same history. Retired rows
+                # continue only for the full-batch rounding diagnostic.
+                forced_all.index_copy_(0, rows, torch.multinomial(actual.float().softmax(-1), 1,
+                                                                 generator=generator))
+            forced = forced_all.index_select(0, rows)
+            actual_selected = actual.float().log_softmax(-1).gather(-1, forced).flatten()
+            target_selected = target.float().log_softmax(-1).gather(-1, forced).flatten()
+            selected_logprob_deltas.append(actual_selected - target_selected)
+            selected_tokens.append(dict(
+                step=step, active_rows=rows.tolist(), token_ids=forced.flatten().tolist(),
+                graph_logprobs=actual_selected.tolist(), native_same_batch_logprobs=target_selected.tolist(),
+            ))
             greedy.append(dict(step=step, rows=rows.tolist(),
                                optimized=actual_greedy.tolist(), publisher=target_greedy.tolist(),
                                exact=torch.equal(actual_greedy, target_greedy)))
-            # Teacher-force the same publisher-greedy tokens into both caches.
+            # Teacher-force identical publisher-selected tokens into all caches.
             # Any distribution error therefore cannot hide behind divergent histories.
-            tokens = expected.argmax(-1, keepdim=True)
+            tokens = forced_all
         torch.cuda.synchronize()
+        selected_delta = torch.cat(selected_logprob_deltas)
+        # The learner/native distribution is the numerator, while the actual
+        # graph distribution supplies the recorded behavior denominator.
+        selected_ratio = (-selected_delta).exp()
         report = dict(
             steps=steps, batch_size=ids.shape[0], prompt_length=prefix, capacity=capacity,
-            backend="flash_attn_kvcache", reference="unmodified_publisher_eager_dynamic_cache",
+            backend=native_gqa_backend, reference=reference_name,
+            teacher_forcing=teacher_forcing, teacher_forcing_seed=seed if teacher_forcing == "sampled" else None,
+            teacher_forcing_source="actual graph behavior policy" if teacher_forcing == "sampled" else "native greedy",
             max_abs_logit_error=max_logit_error,
             mean_weighted_error=sum(x["weighted_error"] for x in metrics) / len(metrics),
             mean_kl=sum(x["kl"] for x in metrics) / len(metrics),
@@ -135,6 +262,26 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
             compaction_max_kl=max(x["kl"] for x in compact_metrics),
             greedy_ids_exact=all(row["exact"] for row in greedy), greedy_ids=greedy,
             pool_reuse_same_graph=same_graph, pool_hits=pool.hits, finite_logits=finite,
+            teacher_forced_mean_logprob_error=float(selected_delta.abs().mean()),
+            teacher_forced_max_logprob_error=float(selected_delta.abs().max()),
+            teacher_forced_min_ratio=float(selected_ratio.min()),
+            teacher_forced_max_ratio=float(selected_ratio.max()),
+            teacher_forced_clip_fraction=float(((selected_ratio < 1 - clip_epsilon)
+                                                | (selected_ratio > 1 + clip_epsilon)).float().mean()),
+            teacher_forced_clip_epsilon=clip_epsilon,
+            teacher_forced_tokens=selected_delta.numel(),
+            teacher_forced_token_scores=selected_tokens,
+            importance_distribution_controls=summarize_importance_controls(
+                importance_controls, importance_row_counts,
+            ),
+            native_batch_shape_control=dict(
+                mean_weighted_error=sum(x["weighted_error"] for x in batch_shape_controls) / len(batch_shape_controls),
+                max_weighted_error=max(x["weighted_error"] for x in batch_shape_controls),
+                max_kl=max(x["kl"] for x in batch_shape_controls),
+                comparisons=batch_shape_controls,
+                interpretation="native DynamicCache compact batch versus native full batch; diagnostic only",
+            ),
+            optimization_reference="native DynamicCache with identical active batch and teacher-forced history",
             tolerance=dict(weighted_error=.02, kl=.001, greedy_ids="exact"),
             oracle="archlab.automodel.limite_decode_qualification.distribution_error",
         )

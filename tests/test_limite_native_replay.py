@@ -181,6 +181,68 @@ def test_publisher_replay_is_unpadded_and_decode_binding_survives():
     assert second.last_hidden_state.shape == (1, 1, 32)
 
 
+@pytest.mark.parametrize("variant,path", [("normal", "native"), ("normal", "tilelang"), ("simplicial", "tilelang")])
+@pytest.mark.parametrize("backend", ["sdpa_native", "sdpa_bounded"])
+def test_prelude_replay_retains_geometry_causality_and_accumulated_gradients(monkeypatch, variant, path, backend):
+    from archlab.architectures import limite_adapter as adapters
+    from archlab.architectures.simplicial_attention import reference_simplicial
+
+    def reference_reduction(module, q, k, v, mask, *, scaling, **kwargs):
+        long = q.shape[2] if module.is_global else module.window_span
+        short = getattr(module, "_short_values", None)
+        if short is None:
+            output = replay_attention(q, k, v, scaling=scaling, window_span=long, backend="sdpa")
+        else:
+            q, k, v = [value.transpose(1, 2) for value in (q, k, v)]
+            output = reference_simplicial(
+                q * (scaling * q.shape[-1] ** .5), short[0], k, short[1], v,
+                min(module._short_window, long), long,
+            )
+        return output, None
+
+    # CPU oracle qualifies the wrapper and recomputation contract. Real
+    # TileLang arithmetic and native-context memory need separate GPU probes.
+    monkeypatch.setattr(adapters, "_tilelang_reduce", reference_reduction)
+    torch.manual_seed(97)
+    expected = adapters.install_adapters(
+        tiny_publisher(), adapters.LimiteAdapterConfig(variant=variant, attention_backend=path, short_window=3),
+    )
+    adapters.set_trainable_mode(expected, "full")
+    with torch.no_grad():
+        for adapter in expected.model.adapters:
+            adapter.native.o_proj.weight.normal_(std=.1)
+    actual = adapters.install_adapters(
+        tiny_publisher(), adapters.LimiteAdapterConfig(variant=variant, attention_backend=path, short_window=3),
+    )
+    adapters.set_trainable_mode(actual, "full")
+    actual.load_state_dict(expected.state_dict())
+    before = {name: value.clone() for name, value in actual.state_dict().items()}
+    parameter_ids = [id(parameter) for parameter in actual.parameters()]
+    enable_native_replay(actual, attention_backend=backend)
+    assert actual.model.adapter_config == expected.model.adapter_config
+    assert [id(parameter) for parameter in actual.parameters()] == parameter_ids
+    for name, value in actual.state_dict().items():
+        torch.testing.assert_close(value, before[name], rtol=0, atol=0)
+    # Retain two forwards before backward: the prelude's mutable live context
+    # then belongs to the second response, so checkpointing must capture each
+    # response's actual RoPE/value-embedding context rather than reread it.
+    sequences = [torch.randint(1, 37, (1, length)) for length in (7, 11)]
+    values = []
+    for model in (expected, actual):
+        outputs = [model.model(input_ids=ids, use_cache=False, return_dict=True).last_hidden_state
+                   for ids in sequences]
+        values.append(outputs)
+        sum(output.square().mean() + output[..., ::2].mean() for output in outputs).backward()
+    for got, want in zip(values[1], values[0], strict=True):
+        torch.testing.assert_close(got, want, rtol=1e-5, atol=1e-6)
+    for (name, want), (other_name, got) in zip(expected.named_parameters(), actual.named_parameters(), strict=True):
+        assert name == other_name and (got.grad is None) == (want.grad is None)
+        if want.grad is not None:
+            torch.testing.assert_close(got.grad, want.grad, rtol=2e-4, atol=2e-6)
+    with pytest.raises(ValueError, match="unpadded"):
+        actual.model(input_ids=sequences[0], attention_mask=torch.tensor([[0, 1, 1, 1, 1, 1, 1]]), use_cache=False)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="B300 official FA4 qualification")
 @pytest.mark.parametrize("window", [None, 1025])
 @pytest.mark.parametrize("backend", ["fa4", "sdpa_bounded", "sdpa_native"])
