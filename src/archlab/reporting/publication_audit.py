@@ -11,9 +11,10 @@ from pathlib import Path, PurePosixPath
 
 ROOTS = frozenset({".github", "src", "tests", "recipes", "scripts", "docs"})
 ROOT_FILES = frozenset({
-    ".gitignore", ".python-version", "AGENTS.md", "CITATION.cff",
+    ".gitignore", ".gitmodules", ".python-version", "AGENTS.md", "CITATION.cff",
     "LICENSE", "README.md", "pyproject.toml", "uv.lock",
 })
+REGISTERED_SUBMODULES = {"verl": "https://github.com/XiaomiMiMo/verl.git"}
 FORBIDDEN_PARTS = frozenset({
     ".runtime", "results", "result", ".git", ".aws", ".ssh", ".agents", ".codex",
     "__pycache__", ".venv", "node_modules", "checkpoints", "mlruns", "wandb",
@@ -57,15 +58,18 @@ def audit_tree(root: Path, revision: str = "HEAD") -> dict:
                               capture_output=True, check=True).stdout
 
     resolved = git("rev-parse", "--verify", f"{revision}^{{commit}}").decode().strip()
-    entries = []
+    entries, gitlinks = [], []
     for record in git("ls-tree", "-rz", resolved).split(b"\0"):
         if not record:
             continue
         header, path = record.split(b"\t", 1)
         mode, kind, oid = header.decode().split()
-        if kind != "blob":
-            raise ValueError("publication tree contains a submodule or unsupported object")
-        entries.append((mode, oid, path.decode()))
+        if kind == "commit" and mode == "160000":
+            gitlinks.append((path.decode(), oid))
+        elif kind == "blob":
+            entries.append((mode, oid, path.decode()))
+        else:
+            raise ValueError("publication tree contains an unsupported object")
     objects = git("cat-file", "--batch", payload="".join(oid + "\n" for _, oid, _ in entries).encode())
     cursor = 0
     manifest, findings = [], []
@@ -82,6 +86,29 @@ def audit_tree(root: Path, revision: str = "HEAD") -> dict:
         reasons = inspect_blob(path, mode, content)
         if reasons:
             findings.append({"path": path, "reasons": reasons})
+    submodules = []
+    if gitlinks or any(path == ".gitmodules" for _, _, path in entries):
+        expected_config = []
+        for path, oid in gitlinks:
+            url = REGISTERED_SUBMODULES.get(path)
+            if url is None:
+                findings.append({"path": path, "reasons": ["unapproved_submodule"]})
+                continue
+            expected_config.extend([
+                (f"submodule.{path}.path", path),
+                (f"submodule.{path}.url", url),
+            ])
+            submodules.append({"name": path, "path": path, "url": url, "revision": oid})
+        try:
+            config = git("config", "--null", "--no-includes", "--blob",
+                         f"{resolved}:.gitmodules", "--list")
+            actual_config = [tuple(row.decode().split("\n", 1))
+                             for row in config.split(b"\0") if row]
+            config_matches = bool(gitlinks) and sorted(actual_config) == sorted(expected_config)
+        except (subprocess.CalledProcessError, UnicodeDecodeError):
+            config_matches = False
+        if not config_matches:
+            findings.append({"path": ".gitmodules", "reasons": ["invalid_submodule_registration"]})
     return {
         "revision": resolved,
         "passed": not findings,
@@ -89,7 +116,9 @@ def audit_tree(root: Path, revision: str = "HEAD") -> dict:
         "bytes": sum(row["bytes"] for row in manifest),
         "findings": findings,
         "manifest": manifest,
-        "scope": "Selected Git tree only; excludes historical/remote surfaces and ignored local data.",
+        "submodules": submodules,
+        "scope": "Selected Git tree and registered submodule pins only; excludes upstream source, "
+                 "historical/remote surfaces and ignored local data.",
     }
 
 

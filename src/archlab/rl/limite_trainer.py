@@ -79,6 +79,10 @@ class BehaviorGRPO(GRPOTrainer):
         )
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        return super().compute_loss(
+        result = super().compute_loss(
             model, with_behavior_logprobs(inputs), return_outputs, num_items_in_batch
         )
+        loss = result[0] if isinstance(result, tuple) else result
+        if not bool(torch.isfinite(loss).all()):
+            raise FloatingPointError("nonfinite GRPO loss; refusing backward and optimizer update")
+        return result

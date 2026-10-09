@@ -75,7 +75,9 @@ def decode_admitted(report):
     )
 
 
-def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
+def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
+                  reference_name="unmodified_publisher_eager_dynamic_cache",
+                  native_gqa_backend="flash_attn_kvcache"):
     from archlab.architectures.limite_decode import GraphDecoderPool
     from archlab.architectures.limite_decode_state import cache_rows
     from archlab.architectures.limite_gqa import set_native_decode_gqa
@@ -83,7 +85,7 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
 
     reference.eval()
     optimized.eval()
-    set_native_decode_gqa(optimized, backend="flash_attn_kvcache")
+    set_native_decode_gqa(optimized, backend=native_gqa_backend)
     with torch.no_grad():
         reference_output = reference(input_ids=ids, use_cache=True, logits_to_keep=1)
         optimized_output = optimized(input_ids=ids, use_cache=True, logits_to_keep=1)
@@ -96,7 +98,7 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
         reused = pool.get(source, tokens, capacity)
         same_graph = reused is decoder
         rows = torch.arange(ids.shape[0], device=ids.device)
-        metrics, compact_metrics, greedy = [], [], []
+        metrics, compact_metrics, greedy, selected_logprob_errors = [], [], [], []
         max_logit_error, finite = 0.0, True
         prefix = ids.shape[1]
         for step in range(steps):
@@ -118,6 +120,10 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
             max_logit_error = max(max_logit_error, float((actual.float() - target.float()).abs().max()))
             finite = finite and bool(torch.isfinite(actual).all()) and bool(torch.isfinite(target).all())
             actual_greedy, target_greedy = actual.argmax(-1), target.argmax(-1)
+            selected_logprob_errors.append((
+                actual.float().log_softmax(-1).gather(-1, target_greedy[:, None])
+                - target.float().log_softmax(-1).gather(-1, target_greedy[:, None])
+            ).abs().flatten())
             greedy.append(dict(step=step, rows=rows.tolist(),
                                optimized=actual_greedy.tolist(), publisher=target_greedy.tolist(),
                                exact=torch.equal(actual_greedy, target_greedy)))
@@ -127,7 +133,7 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
         torch.cuda.synchronize()
         report = dict(
             steps=steps, batch_size=ids.shape[0], prompt_length=prefix, capacity=capacity,
-            backend="flash_attn_kvcache", reference="unmodified_publisher_eager_dynamic_cache",
+            backend=native_gqa_backend, reference=reference_name,
             max_abs_logit_error=max_logit_error,
             mean_weighted_error=sum(x["weighted_error"] for x in metrics) / len(metrics),
             mean_kl=sum(x["kl"] for x in metrics) / len(metrics),
@@ -135,6 +141,8 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8):
             compaction_max_kl=max(x["kl"] for x in compact_metrics),
             greedy_ids_exact=all(row["exact"] for row in greedy), greedy_ids=greedy,
             pool_reuse_same_graph=same_graph, pool_hits=pool.hits, finite_logits=finite,
+            teacher_forced_mean_logprob_error=float(torch.cat(selected_logprob_errors).mean()),
+            teacher_forced_max_logprob_error=float(torch.cat(selected_logprob_errors).max()),
             tolerance=dict(weighted_error=.02, kl=.001, greedy_ids="exact"),
             oracle="archlab.automodel.limite_decode_qualification.distribution_error",
         )

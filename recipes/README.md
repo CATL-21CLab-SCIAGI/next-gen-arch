@@ -57,3 +57,9 @@ their presence does not indicate a current queue or production recommendation.
 Supply machine paths and runtime identities through the declared environment
 bindings. Changes to geometry, optimizer, budget or data order require a new
 experiment contract. The folder cleanup preserves those settings.
+
+The matched Limite RL successor is
+[`limite/full_math_rl_native_context.yaml`](limite/full_math_rl_native_context.yaml):
+fresh RL optimizers from both matched 10B SFT checkpoints, full-weight updates,
+native 131K total context and the pinned root `verl` components. Historical
+16K recipes remain records of previous experiments.

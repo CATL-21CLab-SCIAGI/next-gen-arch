@@ -9,7 +9,21 @@ from pathlib import Path
 
 
 def with_behavior_logprobs(inputs):
-    return dict(inputs, old_per_token_logps=inputs["sampling_per_token_logps"].detach())
+    import torch
+
+    behavior, mask = inputs["sampling_per_token_logps"], inputs["completion_mask"]
+    if behavior.ndim != 2 or behavior.shape != mask.shape or behavior.device != mask.device:
+        raise ValueError("behavior probabilities must match the completion mask")
+    if not behavior.is_floating_point() or not bool(((mask == 0) | (mask == 1)).all()):
+        raise ValueError("behavior probabilities require floating scores and a binary mask")
+    active = behavior[mask.bool()]
+    if not bool(torch.isfinite(active).all()) or bool((active > 1e-5).any()):
+        raise FloatingPointError("invalid sampled behavior log probabilities")
+    # Padding never had a sampled distribution. Give it a neutral denominator
+    # so the upstream exp-ratio followed by multiplication by zero cannot turn
+    # an ignored NaN/-inf padding score into a nonfinite loss.
+    old = behavior.detach().masked_fill(~mask.bool(), 0.0)
+    return dict(inputs, old_per_token_logps=old)
 
 
 class SamplingLogprobs:
@@ -25,12 +39,23 @@ class SamplingLogprobs:
         if any(getattr(generation_config, key, value) != value for key, value in expected.items()):
             raise ValueError("streamed behavior probabilities require native unwarped sampling")
         if (
+            getattr(generation_config, "do_sample", True) is False
+            or
             getattr(generation_config, "num_beams", None) not in (None, 1)
             or
             any(getattr(generation_config, key, None) is not None for key in ("min_p", "top_h", "watermarking_config"))
             or getattr(generation_config, "typical_p", None) not in (None, 1.0)
             or any(getattr(generation_config, key, None) not in (None, 0.0) for key in ("epsilon_cutoff", "eta_cutoff"))
             or getattr(generation_config, "renormalize_logits", False)
+            or getattr(generation_config, "repetition_penalty", None) not in (None, 1.0)
+            or getattr(generation_config, "encoder_repetition_penalty", None) not in (None, 1.0)
+            or any(getattr(generation_config, key, None) not in (None, 0) for key in (
+                "min_length", "min_new_tokens", "no_repeat_ngram_size", "encoder_no_repeat_ngram_size",
+            ))
+            or any(getattr(generation_config, key, None) is not None for key in (
+                "forced_bos_token_id", "forced_eos_token_id", "bad_words_ids",
+                "suppress_tokens", "begin_suppress_tokens", "sequence_bias", "guidance_scale",
+            ))
         ):
             raise ValueError("sampling processors would change recorded behavior probabilities")
         self.previous = None

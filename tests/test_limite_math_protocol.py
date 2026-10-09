@@ -45,6 +45,20 @@ def test_claimed_eos_must_match_sampled_token():
         score_math_rollout("42", "42", [42], "eos", MathRolloutProtocol(), training=True)
 
 
+@pytest.mark.parametrize("reason,tokens", [
+    ("length", [42, 151645]), ("stop", [42, 151643]),
+    ("repetition", [42, 151645]), ("eos", [151645, 42, 151645]),
+])
+def test_finish_receipt_cannot_hide_sampled_eos_or_tokens_after_eos(reason, tokens):
+    with pytest.raises(ValueError, match="sampled token"):
+        score_math_rollout("42", "42", tokens, reason, MathRolloutProtocol(), training=True)
+
+
+def test_unknown_finish_reason_fails_instead_of_changing_reward():
+    with pytest.raises(ValueError, match="finish reason"):
+        score_math_rollout("42", "42", [42], "server_error", MathRolloutProtocol(), training=True)
+
+
 @pytest.mark.parametrize("text", [
     "</think><think>" + r"\boxed{42}",
     "<think><think>42</think>" + r"\boxed{42}",

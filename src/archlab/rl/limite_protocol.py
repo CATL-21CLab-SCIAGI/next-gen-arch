@@ -45,8 +45,22 @@ class MathRolloutProtocol:
         )
 
 
+_VERL_REPETITION = None
+
+
+def configure_verl_repetition(root):
+    """Bind the pinned upstream implementation before starting actor threads."""
+    global _VERL_REPETITION
+    from archlab.rl.verl_components import repetition_component
+
+    _VERL_REPETITION, receipt = repetition_component(root)
+    return receipt
+
+
 def degenerate_repetition(text, *, min_words=500, uniq4_threshold=0.15):
     """MiMo web-dev's word 4-gram detector; provenance in docs/NOTICE.md."""
+    if _VERL_REPETITION is not None:
+        return _VERL_REPETITION(text, min_words=min_words, uniq4_threshold=uniq4_threshold)
     words = text.split()
     if len(words) < min_words:
         return False
@@ -71,8 +85,10 @@ def response_budget(config, prompt_tokens, context_limit):
 def score_math_rollout(text, answer, token_ids, finish_reason, protocol, *, training, completion_budget=None):
     # A safety stop, a user pause, or a token cap must never become a successful
     # answer simply because an intermediate calculation contains a boxed value.
+    if finish_reason not in ("eos", "length", "stop", "repetition"):
+        raise ValueError("unknown rollout finish reason")
     natural_eos = bool(token_ids) and token_ids[-1] in (151643, 151645)
-    if finish_reason == "eos" and not natural_eos:
+    if (finish_reason == "eos") != natural_eos or any(token in (151643, 151645) for token in token_ids[:-1]):
         raise ValueError("EOS receipt does not match the actually sampled token")
     content = text[-1]["content"] if isinstance(text, list) else text
     closed = reasoning_complete(content)

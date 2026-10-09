@@ -1,4 +1,4 @@
-"""Memory-bounded native publisher log-probabilities for GRPO replay.
+"""Memory-bounded native Limite log-probabilities for GRPO replay.
 
 Retain the publisher backbone and softcapped head, checkpointing each head
 chunk so backward never retains a sequence-by-vocabulary tensor. The owned
@@ -36,8 +36,17 @@ def chunked_policy_scores(head, hidden, targets, *, chunk_size=512, temperature=
 
 
 def enable_chunked_policy_scores(model, *, chunk_size=512):
-    if not getattr(model, "archlab_native_checkpoint", False) or chunk_size < 1:
-        raise ValueError("chunked native replay requires a publisher checkpoint")
+    # The inserted-attention comparisons keep the same publisher LM head and
+    # backbone output interface. Admit their verified wrapper too; otherwise
+    # an uncapped adapter rollout falls back to a sequence-by-vocabulary tensor.
+    from archlab.architectures.limite_adapter import PreludeBackbone
+
+    verified_adapter = (
+        isinstance(getattr(model, "model", None), PreludeBackbone)
+        and bool(getattr(model, "archlab_base_snapshot_sha256", None))
+    )
+    if not (getattr(model, "archlab_native_checkpoint", False) or verified_adapter) or chunk_size < 1:
+        raise ValueError("chunked native replay requires a verified Limite checkpoint")
     if getattr(model, "archlab_chunked_policy_scores", False):
         raise ValueError("native policy scoring already configured")
     original = model.forward

@@ -66,6 +66,15 @@ def _shared_window_mask(length, window_span, device):
     return allowed.logical_and_(keys > queries - window_span)
 
 
+def native_replay_masks(length, window_span, device, backend):
+    """Share native replay descriptors between the backbone and its preludes."""
+    allowed = _shared_window_mask(length, window_span, device) if backend == "sdpa_native" else None
+    return {
+        "full_attention": NativeReplayMask(None),
+        "sliding_attention": NativeReplayMask(window_span, allowed),
+    }
+
+
 def _sdpa_tile(q, k, v, *, scaling, window_span, query_start=0, key_start=0):
     mask = None
     if window_span is not None:
@@ -187,9 +196,18 @@ def enable_native_replay(model, *, attention_backend="sdpa_native", checkpoint_l
     requires padding to have been removed by the execution adapter. This avoids
     silently changing masked tokens or allocating an enormous fallback mask.
     """
-    backbone = model.model
-    if not getattr(model, "archlab_native_checkpoint", False) or hasattr(backbone, "adapters"):
-        raise ValueError("native replay requires an unmodified publisher model topology")
+    wrapper = model.model
+    adapted = hasattr(wrapper, "adapters")
+    if adapted:
+        from archlab.architectures.limite_adapter import PreludeBackbone
+
+        if not isinstance(wrapper, PreludeBackbone):
+            raise ValueError("native replay requires the publisher or native prelude model topology")
+        backbone = wrapper.base
+    else:
+        backbone = wrapper
+        if not getattr(model, "archlab_native_checkpoint", False):
+            raise ValueError("native replay requires an unmodified publisher model topology")
     if getattr(model, "archlab_native_replay", False):
         raise ValueError("native replay already configured")
     if attention_backend not in ("sdpa_native", "sdpa_bounded", "fa4", "sdpa") or not isinstance(checkpoint_layers, bool):
@@ -203,6 +221,18 @@ def enable_native_replay(model, *, attention_backend="sdpa_native", checkpoint_l
         )
         if checkpoint_layers:
             _checkpoint_layer(layer)
+    if adapted:
+        wrapper._native_replay = dict(backend=attention_backend, checkpoint=checkpoint_layers)
+        wrapper._native_context_cache.invalidate()
+        for adapter in wrapper.adapters:
+            # TileLang and simplicial preludes already own causal/window masks
+            # inside their reductions. The native normal prelude uses the same
+            # descriptor interface as the unchanged publisher attention.
+            if adapter.config.variant == "normal" and adapter.config.attention_backend == "native":
+                attention = adapter.native
+                attention.forward = MethodType(
+                    _bound_attention(attention.forward.__func__, attention_backend), attention,
+                )
     original = backbone.forward
 
     @wraps(original)
@@ -217,7 +247,13 @@ def enable_native_replay(model, *, attention_backend="sdpa_native", checkpoint_l
         if not 0 < ids.shape[1] <= self.config.max_position_embeddings:
             raise ValueError("native replay sequence exceeds the publisher context")
         mask = kwargs.get("attention_mask")
-        if mask is not None and (
+        descriptors = adapted and isinstance(mask, dict) and (
+            set(mask) == {"full_attention", "sliding_attention"}
+            and all(isinstance(item, NativeReplayMask) for item in mask.values())
+            and mask["full_attention"].window_span is None
+            and mask["sliding_attention"].window_span == int(self.config.sliding_window)
+        )
+        if mask is not None and not descriptors and (
             not isinstance(mask, torch.Tensor) or mask.shape != ids.shape or not bool((mask == 1).all())
         ):
             raise ValueError("native replay requires unpadded token rows")
@@ -225,13 +261,10 @@ def enable_native_replay(model, *, attention_backend="sdpa_native", checkpoint_l
         supplied = kwargs.get("position_ids")
         if supplied is not None and (supplied.shape != positions.shape or not torch.equal(supplied, positions)):
             raise ValueError("native replay requires contiguous positions starting at zero")
-        window_span = int(self.config.sliding_window)
-        shared_mask = (_shared_window_mask(ids.shape[1], window_span, ids.device)
-                       if attention_backend == "sdpa_native" else None)
-        kwargs = dict(kwargs, position_ids=positions, attention_mask={
-            "full_attention": NativeReplayMask(None),
-            "sliding_attention": NativeReplayMask(window_span, shared_mask),
-        })
+        masks = mask if descriptors else native_replay_masks(
+            ids.shape[1], int(self.config.sliding_window), ids.device, attention_backend,
+        )
+        kwargs = dict(kwargs, position_ids=positions, attention_mask=masks)
         return original(*args, **kwargs)
 
     backbone.forward = MethodType(forward, backbone)
@@ -242,5 +275,6 @@ def enable_native_replay(model, *, attention_backend="sdpa_native", checkpoint_l
         local_query_tile=1024 if attention_backend == "sdpa_bounded" else None,
         window="publisher span including current token",
         publisher_functions="owned bindings; unchanged bytecode and model state keys",
+        inserted_preludes=adapted,
     )
     return model

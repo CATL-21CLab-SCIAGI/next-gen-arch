@@ -1,0 +1,9 @@
+{
+  "verl": {
+    "url": "https://github.com/XiaomiMiMo/verl.git",
+    "path": "verl",
+    "revision": "a2ad9f6160b03ff2d47e59832bfb6b289f37c917",
+    "runtime": "native Limite executor with pinned upstream repetition detector; full verl serving/training stack not qualified",
+    "patches": []
+  }
+}

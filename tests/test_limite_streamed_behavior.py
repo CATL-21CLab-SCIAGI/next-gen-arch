@@ -29,7 +29,14 @@ def test_streamed_probabilities_match_full_scores_including_eos_padding():
 
 
 @pytest.mark.parametrize("setting", [dict(temperature=0.7), dict(top_k=50), dict(top_p=0.9),
-                                    dict(min_p=0.1), dict(renormalize_logits=True), dict(num_beams=2)])
+                                    dict(min_p=0.1), dict(renormalize_logits=True), dict(num_beams=2),
+                                    dict(do_sample=False), dict(repetition_penalty=1.1),
+                                    dict(encoder_repetition_penalty=1.1), dict(min_new_tokens=10),
+                                    dict(min_length=10), dict(no_repeat_ngram_size=3),
+                                    dict(encoder_no_repeat_ngram_size=3), dict(forced_eos_token_id=3),
+                                    dict(forced_bos_token_id=2), dict(bad_words_ids=[[3]]),
+                                    dict(suppress_tokens=[3]), dict(begin_suppress_tokens=[3]),
+                                    dict(sequence_bias={(1, 2): -1.}), dict(guidance_scale=2.)])
 def test_streaming_rejects_post_processor_distribution_changes(setting):
     with pytest.raises(ValueError, match="probabilities|sampling"):
         SamplingLogprobs(SimpleNamespace(**setting))
@@ -40,4 +47,6 @@ def test_streaming_accepts_transformers_unset_identity_processors():
     SamplingLogprobs(SimpleNamespace(
         temperature=1.0, top_p=1.0, top_k=0, num_beams=None, typical_p=None,
         epsilon_cutoff=None, eta_cutoff=None, min_p=None, top_h=None,
+        do_sample=True, repetition_penalty=1., encoder_repetition_penalty=1.,
+        no_repeat_ngram_size=0, encoder_no_repeat_ngram_size=0, min_length=0,
     ))

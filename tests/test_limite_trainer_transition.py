@@ -55,3 +55,20 @@ def test_post_eval_training_prepares_one_training_microbatch(monkeypatch, signal
     assert forwards == ([1] if signal else [])
     assert trainer.model.training and trainer._step == 1
     assert getattr(trainer, "_archlab_prepared_once", None) is None
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_grpo_loss_fails_before_backward(monkeypatch, value):
+    class UpstreamTrainer:
+        def compute_loss(self, model, inputs, *args):
+            assert inputs["old_per_token_logps"].tolist() == [[-1.]]
+            return torch.tensor(value)
+
+    monkeypatch.setitem(sys.modules, "trl", SimpleNamespace(GRPOTrainer=UpstreamTrainer))
+    path = Path(__file__).parents[1] / "src/archlab/rl/limite_trainer.py"
+    spec = importlib.util.spec_from_file_location("_limite_nonfinite_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    inputs = dict(sampling_per_token_logps=torch.tensor([[-1.]]), completion_mask=torch.ones(1, 1))
+    with pytest.raises(FloatingPointError, match="refusing backward"):
+        module.BehaviorGRPO().compute_loss(None, inputs)
