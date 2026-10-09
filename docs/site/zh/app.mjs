@@ -1,4 +1,4 @@
-import {CHART, chartPoint, curvePath, checkpointAt, targetComparison, validateEvidence, sceneProgress, scrollCheckpointIndex} from './evidence.mjs';
+import {CHART, chartPoint, curvePath, checkpointAt, targetComparison, validateEvidence, sceneProgress, scrollCheckpointIndex} from './evidence.mjs?v=20261010-2';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];

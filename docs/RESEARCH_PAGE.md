@@ -58,6 +58,8 @@ Run from the repository root with Node.js 24:
     node --test tests/site/*.test.mjs
 
 When changing JSON evidence, update the static SVG/HTML from the same data.
+When changing the page's DOM or JavaScript/CSS contract, bump the shared asset
+version query in the HTML and module import so cached assets cannot mix revisions.
 Tests verify numeric anchors, static fallbacks, scroll mapping, and project
 asset paths. The Chinese research page workflow validates pull requests and
 deploys only docs/site/ from main to the repository's native GitHub Pages.
