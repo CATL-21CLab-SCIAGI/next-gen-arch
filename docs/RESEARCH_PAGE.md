@@ -8,7 +8,7 @@ or third-party runtime requests.
 
 ## Editorial and evidence contract
 
-The narrative, original headings and two illustrations are adapted from
+The narrative, original headings and illustrations are adapted from
 Changqing Fu's supplied presentation, *从炼金术到材料学*. The internet-data
 slide is reconstructed as a responsive vector chart using its seven reported
 model data points and illustrative log-linear fit. The roughly 2028 crossing
@@ -45,7 +45,7 @@ queue state, infrastructure receipts, or model payloads belong here.
 
 ## Interaction and publication
 
-Page scrolling drives the attention comparison and saved-checkpoint cursor;
+The attention comparison uses the original vector artwork from PDF page 20,\nwith named SVG views for the two diagrams so the source artwork is stored once.\nPage scrolling drives the attention comparison and saved-checkpoint cursor;
 there are no manual drag handles. Keyboard and touch page scrolling work
 through the native document. Discrete component and CE-preset buttons remain.
 Motion can be paused and respects reduced-motion preferences. Static figures

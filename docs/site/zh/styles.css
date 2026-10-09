@@ -138,7 +138,7 @@ figure{margin:0}
 .scene-panel .eyebrow{margin-bottom:16px}
 .scene-panel h2{font-size:clamp(32px,4vw,55px);line-height:1.18}
 .scene-panel .source-note{margin-top:17px;font-size:10px;max-width:1050px}
-.comparison{position:relative;border:1px solid #ffffff12;border-radius:12px;background:#101417;overflow:hidden;margin-top:28px;max-width:min(100%,calc(38svh * 2.1276596));margin-inline:auto}
+.comparison{position:relative;border:1px solid #ffffff12;border-radius:12px;background:#0b0d10;overflow:hidden;margin-top:28px;max-width:min(100%,calc(38svh * 2.1276596));margin-inline:auto}
 .comparison-labels{display:flex;justify-content:space-between;align-items:center;height:51px;padding:0 25px;font-size:12px;color:var(--blue)}
 .comparison svg{width:100%;height:auto}
 .comparison svg text{font-size:24px;fill:#d2d7db}
