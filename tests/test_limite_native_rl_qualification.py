@@ -67,6 +67,12 @@ def test_importance_summary_weights_actual_token_opportunities_and_keeps_worst_c
     assert not qualification.summarize_importance_controls([rows[1], rows[1]], [4, 1])["passed"]
 
 
+def test_importance_summary_accepts_fp32_mean_reduction_roundoff_above_maximum():
+    row = importance_row(mean_native_clip_mass=1.8461036233929917e-5,
+                         max_native_clip_mass=1.8461034414940514e-5)
+    assert qualification.summarize_importance_controls([row], [3])["passed"]
+
+
 @pytest.mark.parametrize('changes', [
     dict(mean_actor_clip_mass=.051, max_actor_clip_mass=.051),
     dict(mean_native_clip_mass=.051, max_native_clip_mass=.051),

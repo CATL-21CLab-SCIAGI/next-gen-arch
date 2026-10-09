@@ -129,8 +129,14 @@ def summarize_importance_controls(comparisons, active_row_counts):
             "max_native_clip_mass", "min_effective_sample_fraction", "max_normalization_error")
     finite = all(row["finite_full_support"] and all(math.isfinite(row[key]) for key in keys)
                  for row in comparisons)
-    valid_mass = all(0 <= row[f"mean_{kind}_clip_mass"] <= row[f"max_{kind}_clip_mass"] <= 1
-                     for row in comparisons for kind in ("actor", "native"))
+    # FP32 mean reduction can round one ULP above an identical row maximum.
+    valid_mass = all(
+        0 <= row[f"mean_{kind}_clip_mass"] <= 1 and 0 <= row[f"max_{kind}_clip_mass"] <= 1
+        and (row[f"mean_{kind}_clip_mass"] <= row[f"max_{kind}_clip_mass"]
+             or math.isclose(row[f"mean_{kind}_clip_mass"], row[f"max_{kind}_clip_mass"],
+                             rel_tol=4 * torch.finfo(torch.float32).eps))
+        for row in comparisons for kind in ("actor", "native")
+    )
     total = sum(active_row_counts)
     result = dict(
         finite_full_support=finite,
