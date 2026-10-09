@@ -13,8 +13,8 @@
   <link rel="canonical" href="https://catl-21clab-sciagi.github.io/next-gen-arch/zh/">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="preload" as="image" href="./assets/particle-field.png">
-  <link rel="stylesheet" href="./styles.css">
-  <script type="module" src="./app.mjs"></script>
+  <link rel="stylesheet" href="./styles.css?v=20261010-2">
+  <script type="module" src="./app.mjs?v=20261010-2"></script>
   <title>从炼金术到材料学 · 科学大模型</title>
 </head>
 <body>
@@ -136,33 +136,20 @@
         <div class="comparison" id="comparison">
           <div class="comparison-labels"><span>二体 · 常规注意力</span><span class="accent">三体 · 2-单纯形注意力</span></div>
 <svg viewBox="0 0 1000 470" role="img" aria-labelledby="comparison-svg-title comparison-svg-desc">
-            <title id="comparison-svg-title">普通与二单纯形注意力结构对比</title>
-            <desc id="comparison-svg-desc">同一个查询连接两个历史 token；随页面滚动，展示逐个配对和对一对 token 联合评分的区别。</desc>
-            <defs>
-              <pattern id="dot-grid" width="34" height="34" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#323941"/></pattern>
-              <clipPath id="simplicial-clip"><rect id="comparison-clip" x="500" y="0" width="500" height="470"/></clipPath>
-              <linearGradient id="triangle-fill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ff743b" stop-opacity=".21"/><stop offset="1" stop-color="#ff743b" stop-opacity=".03"/></linearGradient>
-            </defs>
-            <rect width="1000" height="470" fill="url(#dot-grid)" opacity=".4"/>
-            <g class="normal-diagram">
-              <path d="M305 105L500 350L695 105" fill="none" stroke="#7b9cbd" stroke-width="2.5"/>
-              <circle cx="305" cy="105" r="13" fill="#7b9cbd"/><circle cx="695" cy="105" r="13" fill="#7b9cbd"/><circle cx="500" cy="350" r="15" fill="#e5e9eb"/>
-              <text x="282" y="72">k</text><text x="680" y="72">k′</text><text x="527" y="362">q</text>
-            </g>
+            <title id="comparison-svg-title">PDF 原图：二体与三体相互作用</title>
+            <desc id="comparison-svg-desc">演示文稿第20页的原始效果图。常规注意力用蓝色边连接查询与历史位置，2-单纯形注意力用橙色三角面表示查询与历史位置对的交互。随滚动切换。</desc>
+            <defs><clipPath id="simplicial-clip"><rect id="comparison-clip" x="500" y="0" width="500" height="470"/></clipPath></defs>
+            <image href="./assets/attention-illustrations.svg#pairwise" x="265" y="0" width="470" height="470"/>
             <g clip-path="url(#simplicial-clip)">
-              <rect width="1000" height="470" fill="#101417"/>
-              <rect width="1000" height="470" fill="url(#dot-grid)" opacity=".4"/>
-              <path d="M305 105H695L500 350Z" fill="url(#triangle-fill)" stroke="#ff743b" stroke-width="2.5"/>
-              <path d="M305 105Q500 186 695 105" fill="none" stroke="#ff743b" stroke-width="1.2" stroke-dasharray="5 7" opacity=".5"/>
-              <circle cx="305" cy="105" r="13" fill="#ff743b"/><circle cx="695" cy="105" r="13" fill="#ff743b"/><circle cx="500" cy="350" r="15" fill="#e5e9eb"/>
-              <text x="282" y="72">k</text><text x="680" y="72">k′</text><text x="527" y="362">q</text>
+              <rect width="1000" height="470" fill="#0b0d10"/>
+              <image href="./assets/attention-illustrations.svg#simplicial" x="265" y="0" width="470" height="470"/>
             </g>
           </svg>
           <div class="comparison-divider" id="comparison-divider" aria-hidden="true"></div>
         </div>
         <div class="comparison-questions"><p>“哪个 token 与我相关？”</p><p class="accent">“哪一对 token 放在一起与我相关？”</p></div>
         <p class="scroll-note">随页面滚动展示交互结构的变化</p>
-        <p class="source-note">机制示意。其中一个键轴使用 16-token 局部窗口。<a href="https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki/Limite-SFT-Comparison">完整架构与对照条件 ↗</a></p>
+        <p class="source-note">效果图直接取自原演示文稿第 20 页。实验中其中一个键轴使用 16-token 局部窗口。<a href="https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki/Limite-SFT-Comparison">完整架构与对照条件 ↗</a></p>
       </div></div>
     </section>
 

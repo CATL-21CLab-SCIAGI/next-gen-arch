@@ -8,7 +8,7 @@ or third-party runtime requests.
 
 ## Editorial and evidence contract
 
-The narrative, original headings and two illustrations are adapted from
+The narrative, original headings and illustrations are adapted from
 Changqing Fu's supplied presentation, *从炼金术到材料学*. The internet-data
 slide is reconstructed as a responsive vector chart using its seven reported
 model data points and illustrative log-linear fit. The roughly 2028 crossing
@@ -45,7 +45,7 @@ queue state, infrastructure receipts, or model payloads belong here.
 
 ## Interaction and publication
 
-Page scrolling drives the attention comparison and saved-checkpoint cursor;
+The attention comparison uses the original vector artwork from PDF page 20,\nwith named SVG views for the two diagrams so the source artwork is stored once.\nPage scrolling drives the attention comparison and saved-checkpoint cursor;
 there are no manual drag handles. Keyboard and touch page scrolling work
 through the native document. Discrete component and CE-preset buttons remain.
 Motion can be paused and respects reduced-motion preferences. Static figures
@@ -58,6 +58,8 @@ Run from the repository root with Node.js 24:
     node --test tests/site/*.test.mjs
 
 When changing JSON evidence, update the static SVG/HTML from the same data.
+When changing the page's DOM or JavaScript/CSS contract, bump the shared asset
+version query in the HTML and module import so cached assets cannot mix revisions.
 Tests verify numeric anchors, static fallbacks, scroll mapping, and project
 asset paths. The Chinese research page workflow validates pull requests and
 deploys only docs/site/ from main to the repository's native GitHub Pages.

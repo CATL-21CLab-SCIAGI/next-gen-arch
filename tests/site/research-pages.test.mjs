@@ -136,7 +136,7 @@ test('published tree contains only reviewed static assets and compact aggregates
   const allowed = new Set([
     '.nojekyll', 'index.html', 'zh/index.html', 'zh/styles.css', 'zh/favicon.svg',
     'zh/app.mjs', 'zh/evidence.mjs', 'zh/assets/learning-curves.json',
-    'zh/assets/warmup.json', 'zh/assets/internet-data.json', 'zh/assets/particle-field.png', 'zh/assets/action-landscape.jpg',
+    'zh/assets/warmup.json', 'zh/assets/internet-data.json', 'zh/assets/attention-illustrations.svg', 'zh/assets/particle-field.png', 'zh/assets/action-landscape.jpg',
   ]);
   const base = fileURLToPath(site);
   for (const name of await readdir(site, {recursive: true})) {
@@ -151,4 +151,13 @@ test('published tree contains only reviewed static assets and compact aggregates
     }
   }
   assert.equal(allowed.size, 0);
+});
+
+test('attention scene uses original PDF artwork for both scroll states', async () => {
+  assert.match(html, /attention-illustrations\.svg#pairwise/);
+  assert.match(html, /attention-illustrations\.svg#simplicial/);
+  const svg = await readFile(new URL('assets/attention-illustrations.svg', zh), 'utf8');
+  assert.match(svg, /<view id="pairwise" viewBox="130 140 280 280"/);
+  assert.match(svg, /<view id="simplicial" viewBox="550 140 280 280"/);
+  assert.doesNotMatch(svg, /<script|https?:\/\/(?!www\.w3\.org|www\.inkscape\.org)/);
 });
