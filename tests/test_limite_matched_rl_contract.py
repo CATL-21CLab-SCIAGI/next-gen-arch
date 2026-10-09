@@ -12,7 +12,7 @@ def contract():
     effective = dict(learning_rate=1e-5, seed=42, data_seed=42, num_generations=4,
                      generation_batch_size=64, max_completion_length=131072, max_steps=400,
                      gradient_accumulation_steps=8, loss_type="dapo", scale_rewards="group",
-                     beta=0., num_iterations=1, temperature=1., top_p=1., top_k=0,
+                     beta=0., epsilon=.2, epsilon_high=.2, num_iterations=1, temperature=1., top_p=1., top_k=0,
                      mask_truncated_completions=False)
     options = dict(variant="normal", world_size=8, phase_start=0, checkpoint_steps=10,
                    split_sha256=spec["data"]["split_sha256"], heldout_count=128)
@@ -33,7 +33,8 @@ def test_matched_recipe_binds_effective_training_settings_and_allows_small_probe
 @pytest.mark.parametrize("change", [dict(learning_rate=1e-6), dict(seed=43), dict(num_generations=8),
                                     dict(generation_batch_size=32), dict(max_steps=300),
                                     dict(max_completion_length=16384), dict(beta=.1),
-                                    dict(loss_type="grpo"), dict(mask_truncated_completions=True)])
+                                    dict(loss_type="grpo"), dict(mask_truncated_completions=True),
+                                    dict(epsilon=.1), dict(epsilon_high=.3)])
 def test_ignored_recipe_knobs_or_changed_objective_are_rejected(change):
     spec, effective, options = contract()
     with pytest.raises(ValueError, match="differs from the recipe"):

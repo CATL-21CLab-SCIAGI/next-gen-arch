@@ -10,6 +10,8 @@ training:
   world_size_per_variant: 8
   max_steps: 400
   learning_rate: 1.0e-5
+  epsilon: 0.2
+  epsilon_high: 0.2
   responses_per_update: 64
   num_generations: 4
   seed: 42
@@ -58,5 +60,6 @@ evaluation:
 admission:
   full_context_backward: 131072
   finite_adapter_and_backbone_gradients: true
-  rollout_behavior_replay_logprob_parity: true
+  rollout_behavior_probabilities_recorded: true
+  replay_importance_ratios_healthy: true
   distributed_optimizer_checkpoint_resume: true

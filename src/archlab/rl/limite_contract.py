@@ -23,6 +23,8 @@ def check_matched_recipe(spec, effective, *, variant, world_size, phase_start,
         raise ValueError("matched RL requires the native context budget")
     expected = {
         "learning_rate": training["learning_rate"],
+        "epsilon": training["epsilon"],
+        "epsilon_high": training["epsilon_high"],
         "seed": training["seed"],
         "data_seed": training["seed"],
         "num_generations": training["num_generations"],

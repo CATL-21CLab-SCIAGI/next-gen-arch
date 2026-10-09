@@ -52,6 +52,12 @@ asynchronous rollouts of at most one policy version of lag. The newer
 [Violetto native-context recipe](../../recipes/limite/violetto_math_rl_native_context.yaml)
 is a separate successor; it did not produce the historical comparison below.
 
+The [fresh matched RL restart](../../recipes/limite/full_math_rl_native_context.yaml)
+starts each variant from its own matched 10B SFT endpoint with a fresh optimizer,
+eight GPUs per variant, and 131,072 total tokens minus each actual prompt.
+It removes the historical extra length and unfinished-response penalties. This
+is a new experiment; it does not replace the historical results below.
+
 Normal and simplicial share the scientific geometry, but their qualified kernel
 and graph optimizations differ. The full-finetuning recipe records these
 performance contracts. Neither timing differences nor kernel-level admission

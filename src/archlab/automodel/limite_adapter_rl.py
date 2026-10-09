@@ -649,6 +649,8 @@ def main():
         warmup_steps=0,
         bf16=False,
         beta=0.0,
+        epsilon=0.2,
+        epsilon_high=0.2,
         loss_type="dapo",
         scale_rewards="group",
         num_iterations=1,

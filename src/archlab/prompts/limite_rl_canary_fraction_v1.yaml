@@ -1,0 +1,4 @@
+messages:
+  - role: user
+    content: "Compute 7/12 + 5/18 as a reduced fraction. Give your final answer in a box."
+expected_answer: "31/36"

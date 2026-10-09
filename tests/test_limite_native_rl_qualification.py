@@ -20,6 +20,29 @@ def test_decode_gate_requires_distribution_greedy_cache_and_finite_oracles():
         assert not qualification.decode_admitted(report | {key: value})
 
 
+def test_full_vocabulary_importance_control_measures_behavior_clip_mass_and_support():
+    identical = torch.tensor([[1., 2., 3.]])
+    result = qualification.importance_distribution_control(identical, identical)
+    assert result["passed"] and result["max_actor_clip_mass"] == 0
+    assert result["min_effective_sample_fraction"] == pytest.approx(1.)
+    actor = torch.tensor([[.9, .1]]).log()
+    native = torch.tensor([[.99, .01]]).log()
+    result = qualification.importance_distribution_control(actor, native)
+    assert result["max_actor_clip_mass"] == pytest.approx(.1)
+    assert result["max_native_clip_mass"] == pytest.approx(.01)
+    assert result["max_normalization_error"] < 1e-6
+    assert not result["passed"]
+    # A tiny vocabulary tail can have a large ratio while its exact clipped
+    # mass is small. Selected-token safeguards remain a separate admission.
+    result = qualification.importance_distribution_control(
+        torch.tensor([[.99, .01]]).log(), torch.tensor([[.999, .001]]).log(),
+    )
+    assert result["passed"] and result["max_actor_clip_mass"] == pytest.approx(.01)
+    assert not qualification.importance_distribution_control(
+        torch.full_like(identical, float("nan")), identical,
+    )["passed"]
+
+
 def test_gradient_oracle_catches_missing_zero_and_nonfinite_tensors():
     model = nn.Linear(2, 2)
     for parameter in model.parameters():

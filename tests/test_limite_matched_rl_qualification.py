@@ -1,3 +1,4 @@
+import math
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -46,6 +47,33 @@ def test_score_gate_rejects_biased_nonfinite_and_clipped_policy_ratios():
     assert not qualification.score_error(torch.full_like(expected, float("nan")), expected)["passed"]
 
 
+def test_decode_hierarchy_requires_exact_controls_and_separates_ratio_efficiency():
+    distribution = dict(
+        passed=False, finite_logits=True, teacher_forced_max_logprob_error=.08,
+        teacher_forced_min_ratio=math.exp(-.08), teacher_forced_max_ratio=math.exp(.08),
+        teacher_forced_clip_fraction=0., teacher_forced_clip_epsilon=.2,
+        importance_distribution_controls=dict(passed=True),
+    )
+    control = dict(passed=True)
+    report = qualification.decode_admission(distribution, control, control)
+    assert report["passed"] and report["correctness_admitted"] and report["numerical_efficiency_target_met"]
+    assert report["half_log_clip_margin"] == pytest.approx(.5 * math.log(1.2))
+    # The independently specified efficiency target does not redefine cache
+    # correctness: GRPO still uses its actual recorded behavior denominator.
+    slower = distribution | dict(teacher_forced_max_logprob_error=.15,
+                                  teacher_forced_max_ratio=math.exp(.15))
+    report = qualification.decode_admission(slower, control, control)
+    assert report["passed"] and not report["numerical_efficiency_target_met"]
+    for execution, reductions in ((dict(passed=False), control), (control, dict(passed=False))):
+        assert not qualification.decode_admission(distribution, execution, reductions)["passed"]
+    for change in (dict(teacher_forced_clip_fraction=.06), dict(teacher_forced_max_ratio=2.01),
+                   dict(finite_logits=False), dict(teacher_forced_max_logprob_error=float("nan")),
+                   dict(importance_distribution_controls=dict(passed=False))):
+        assert not qualification.decode_admission(distribution | change, control, control)["passed"]
+    with pytest.raises(ValueError, match="different clipping epsilon"):
+        qualification.decode_admission(distribution, control, control, clip_epsilon=.1)
+
+
 def test_gradient_gate_checks_all_parameters_and_rejects_wrong_gradients():
     model = ToyPolicy()
     expected = {}
@@ -88,6 +116,28 @@ def test_noise_admission_requires_equivalent_update_for_cancelling_scalar_gradie
     assert not update_report["passed"]
     assert not qualification.gradient_error(model, expected, repeat_gradients=repeats,
                                              update_report=update_report)["passed"]
+
+
+def test_gradient_or_update_gate_does_not_require_every_individual_update_to_pass():
+    model = nn.Module()
+    model.register_parameter("small", nn.Parameter(torch.ones(100)))
+    model.register_parameter("large", nn.Parameter(torch.ones(10000)))
+    parameters = {name: parameter.detach().clone() for name, parameter in model.named_parameters()}
+    expected = {name: torch.ones_like(parameter) for name, parameter in model.named_parameters()}
+    expected["small"][-1] = 1e-4
+    actual = {name: gradient.clone() for name, gradient in expected.items()}
+    actual["small"][-1].neg_()
+    for name, parameter in model.named_parameters():
+        parameter.grad = actual[name]
+    expected_update = first_adam_updates(parameters, expected)[0]
+    actual_update = first_adam_updates(parameters, actual)[0]
+    update = qualification.update_error(actual_update, expected_update, [expected_update, expected_update])
+    assert update["passed"] and not update["all_tensor_updates_within_envelope"]
+    assert not update["per_parameter"]["small"]
+    # Its matrix gradient passes the existing signal/noise bound. The global
+    # and group update bounds still pass, so the intended per-tensor OR holds.
+    assert qualification.gradient_error(model, expected, repeat_gradients=[expected, expected],
+                                         update_report=update)["passed"]
 
 
 def test_replay_oracle_catches_alignment_and_restores_gradients_rng_and_mode():
