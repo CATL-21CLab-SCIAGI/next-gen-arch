@@ -266,12 +266,12 @@ def replay_oracle(reference, optimized, ids, length):
                          for name, parameter in reference.named_parameters() if parameter.requires_grad}
             repeats.append(gradients)
             repeat_updates.append(first_adam_updates(parameters, gradients)[0])
-        # A held-out repeat-eager diagnostic found cancellation in FP32
-        # normalization scales at length257. Predetermine twelve full eager
-        # backwards there, retaining the extra scalar observations only. The
+        # Cancellation in FP32 normalization scales affects every sequence
+        # length. Predetermine twelve full eager backwards per case, retaining
+        # the extra scalar observations only. The
         # matrix/global update baseline stays at the stricter three repeats;
         # no candidate-dependent retries or threshold changes are involved.
-        repeat_count = 12 if length == 257 else 3
+        repeat_count = 12
         for _ in range(repeat_count - 3):
             reference.zero_grad(set_to_none=True)
             restore_rng(rng)

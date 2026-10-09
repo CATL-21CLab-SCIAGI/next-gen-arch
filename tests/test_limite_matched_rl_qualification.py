@@ -153,7 +153,11 @@ def test_replay_oracle_catches_alignment_and_restores_gradients_rng_and_mode():
     rng = capture_rng()
     report = qualification.replay_oracle(reference, optimized, torch.tensor([[1, 2, 3]]), 13)
     assert report["passed"]
-    assert report["repeat_reference_backwards"] == 3
+    assert report["repeat_reference_backwards"] == 12
+    assert report["repeat_reference_scope"] == {
+        "all_parameter_gradients_and_updates": 3,
+        "fp32_scalar_gradients": 12,
+    }
     assert report["prompt_tokens"] == 7 and report["completion_tokens"] == 6
     assert report["gradients"]["relative_l2"] < 1e-5
     assert_state_equal(capture_rng(), rng)
