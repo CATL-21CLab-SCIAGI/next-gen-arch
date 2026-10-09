@@ -505,7 +505,7 @@ def main():
     parser.add_argument("--chunk-size", type=int, default=512)
     parser.add_argument("--replay-backend", choices=("sdpa_native", "sdpa_bounded", "fa4", "sdpa"),
                         default="sdpa_native")
-    parser.add_argument("--native-gqa-backend", choices=("sdpa", "sdpa_math", "flash_attn_kvcache"),
+    parser.add_argument("--native-gqa-backend", choices=("sdpa", "flash_attn_kvcache"),
                         default="flash_attn_kvcache")
     parser.add_argument("--full-context-stress", action="store_true")
     parser.add_argument("--stress-length", type=int, default=131072)

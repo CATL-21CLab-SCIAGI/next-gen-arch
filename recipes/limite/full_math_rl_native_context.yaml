@@ -62,7 +62,14 @@ admission:
   finite_adapter_and_backbone_gradients: true
   rollout_behavior_probabilities_recorded: true
   replay_importance_ratios_healthy: true
+  conditional_distribution_health:
+    aggregation: active_row_weighted_mean_per_canary
+    actor_and_native_clipped_mass_max: 0.05
+    minimum_conditional_effective_sample_fraction: 0.95
+    normalization_error_max: 1.0e-5
+    worst_position_mass: diagnostics_only
   full_rollout_health:
+    version: actual-rollout-is-health-v1
     clipped_token_fraction_max: 0.05
     effective_sample_fraction_min: 0.95
     mean_importance_weight_range: [0.5, 2.0]

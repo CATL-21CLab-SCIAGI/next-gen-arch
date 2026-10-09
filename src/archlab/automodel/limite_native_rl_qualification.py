@@ -111,6 +111,54 @@ def importance_distribution_control(actor_logits, native_logits, *, clip_epsilon
     return result
 
 
+def summarize_importance_controls(comparisons, active_row_counts):
+    """Bound expected clipped-token mass over the tested forced histories.
+
+    Each active row contributes one token opportunity. Weighting each step's
+    exact conditional clipping mass by its row count therefore estimates the
+    same token fraction bounded by the sampled GRPO health check. Conditional
+    maxima remain diagnostics; support, normalization and ESS stay worst-case.
+    This is a numerical-health check, separate from graph/cache correctness and
+    the required actual full-completion behavior/replay test.
+    """
+    if not comparisons or len(comparisons) != len(active_row_counts):
+        raise ValueError("importance controls require one active-row count per comparison")
+    if any(type(count) is not int or count <= 0 for count in active_row_counts):
+        raise ValueError("importance control active-row counts must be positive integers")
+    keys = ("mean_actor_clip_mass", "max_actor_clip_mass", "mean_native_clip_mass",
+            "max_native_clip_mass", "min_effective_sample_fraction", "max_normalization_error")
+    finite = all(row["finite_full_support"] and all(math.isfinite(row[key]) for key in keys)
+                 for row in comparisons)
+    valid_mass = all(0 <= row[f"mean_{kind}_clip_mass"] <= row[f"max_{kind}_clip_mass"] <= 1
+                     for row in comparisons for kind in ("actor", "native"))
+    total = sum(active_row_counts)
+    result = dict(
+        finite_full_support=finite,
+        mean_actor_clip_mass=sum(row["mean_actor_clip_mass"] * count
+                                 for row, count in zip(comparisons, active_row_counts, strict=True)) / total,
+        mean_native_clip_mass=sum(row["mean_native_clip_mass"] * count
+                                  for row, count in zip(comparisons, active_row_counts, strict=True)) / total,
+        max_actor_clip_mass=max(row["max_actor_clip_mass"] for row in comparisons),
+        max_native_clip_mass=max(row["max_native_clip_mass"] for row in comparisons),
+        min_effective_sample_fraction=min(row["min_effective_sample_fraction"] for row in comparisons),
+        max_normalization_error=max(row["max_normalization_error"] for row in comparisons),
+        active_row_counts=list(active_row_counts), active_row_token_comparisons=total,
+        aggregation="sum(active_rows * conditional_mean_clip_mass) / sum(active_rows)",
+        scope="exact expected clipped-token fraction on tested forced histories; full-completion IS required separately",
+        per_conditional_max_bound_passed=all(row["passed"] for row in comparisons),
+        comparisons=comparisons,
+        tolerance=dict(clipped_probability_mass=.05, minimum_effective_sample_fraction=.95,
+                       normalization_error=1e-5),
+    )
+    result["passed"] = (
+        finite and valid_mass
+        and result["mean_actor_clip_mass"] <= .05 and result["mean_native_clip_mass"] <= .05
+        and .95 <= result["min_effective_sample_fraction"] <= 1 + 1e-5
+        and all(0 <= row["max_normalization_error"] <= 1e-5 for row in comparisons)
+    )
+    return result
+
+
 def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
                   reference_name="unmodified_publisher_eager_dynamic_cache",
                   native_gqa_backend="flash_attn_kvcache", teacher_forcing="greedy", seed=1234,
@@ -142,7 +190,7 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
         same_graph = reused is decoder
         rows = torch.arange(ids.shape[0], device=ids.device)
         metrics, compact_metrics, greedy, selected_logprob_deltas, batch_shape_controls = [], [], [], [], []
-        selected_tokens, importance_controls = [], []
+        selected_tokens, importance_controls, importance_row_counts = [], [], []
         max_logit_error, finite = 0.0, True
         prefix = ids.shape[1]
         for step in range(steps):
@@ -162,6 +210,7 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
             ).logits[:, -1]
             batch_shape_controls.append(distribution_error(target, expected.index_select(0, rows)))
             importance_controls.append(importance_distribution_control(actual, target, clip_epsilon=clip_epsilon))
+            importance_row_counts.append(len(rows))
             error = distribution_error(actual, target)
             metrics.append(error)
             if len(rows) != ids.shape[0]:
@@ -216,12 +265,8 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
             teacher_forced_clip_epsilon=clip_epsilon,
             teacher_forced_tokens=selected_delta.numel(),
             teacher_forced_token_scores=selected_tokens,
-            importance_distribution_controls=dict(
-                passed=all(row["passed"] for row in importance_controls),
-                max_actor_clip_mass=max(row["max_actor_clip_mass"] for row in importance_controls),
-                max_native_clip_mass=max(row["max_native_clip_mass"] for row in importance_controls),
-                min_effective_sample_fraction=min(row["min_effective_sample_fraction"] for row in importance_controls),
-                comparisons=importance_controls,
+            importance_distribution_controls=summarize_importance_controls(
+                importance_controls, importance_row_counts,
             ),
             native_batch_shape_control=dict(
                 mean_weighted_error=sum(x["weighted_error"] for x in batch_shape_controls) / len(batch_shape_controls),

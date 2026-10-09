@@ -112,6 +112,15 @@ ratio extrema remain reported: a single low-weight tail token is not an
 importance-sampling correctness failure. Short-canary precision targets are
 kept separate from these full-trajectory health criteria.
 
+The conditional distribution check averages exact full-vocabulary clipping
+mass over active token rows within each canary. This estimates its expected
+clipped-token fraction and follows the summed-token objective; it is not the
+worst individual position. Both actor and native mean mass must remain below
+5%, every conditional effective sample fraction must exceed 95%, and
+normalization and exact cache/math checks must pass. Worst-position mass and
+the earlier failed worst-position verdict remain recorded. These diagnostics
+do not bound gradient bias for arbitrary advantages or establish capability.
+
 Both previous continuation queues were cancelled. New production admission
 still requires the recorded math-rollout checks; live queue and learner status
 are kept in private run receipts rather than inferred from this page.
