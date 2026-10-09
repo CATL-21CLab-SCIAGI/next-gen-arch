@@ -1,0 +1,138 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+profiles:
+  base:
+    schema_version: 1
+    prompts: package:prompts/smoke.yaml
+    seed: 42
+  backends_megatron:
+    backend: megatron
+    paths:
+      train_data: env:NGA_TRAIN_DATA
+      valid_data: env:NGA_VALID_DATA
+      data_cache: env:NGA_DATA_CACHE
+      tokenizer: env:NGA_TOKENIZER
+      output_dir: env:NGA_OUTPUT_DIR
+    parallelism:
+      nodes: 1
+      gpus_per_node: 8
+      tensor: 1
+      pipeline: 1
+      context: 1
+  backends_speedrun:
+    backend: speedrun
+    paths:
+      data_root: env:NGA_DATA_ROOT
+    parallelism:
+      nodes: 1
+      gpus_per_node: 1
+  scales_megatron_1b:
+    model:
+      num_layers: 24
+      hidden_size: 2048
+      ffn_hidden_size: 8192
+      num_attention_heads: 32
+      sequence_length: 2048
+    training:
+      precision: bf16
+      optimizer: muon
+      muon_momentum: 0.95
+      micro_batch_size: 2
+      global_batch_size: 256
+      target_train_tokens: 12000000000
+      learning_rate: 0.0004
+      minimum_learning_rate: 4.0e-05
+      lr_decay_style: cosine
+      lr_warmup_fraction: 0.01
+      weight_decay: 0.1
+      clip_grad: 1.0
+      eval_interval: 250
+      eval_iters: 20
+      save_interval: 1000
+      log_interval: 1
+  scales_megatron_native_100m:
+    model:
+      num_layers: 10
+      hidden_size: 384
+      ffn_hidden_size: 1536
+      num_attention_heads: 6
+      sequence_length: 2048
+      transformer_impl: transformer_engine
+      attention_dropout: 0.0
+      hidden_dropout: 0.0
+      init_method_std: 0.02
+    training:
+      precision: bf16
+      optimizer: adam
+      adam_beta1: 0.9
+      adam_beta2: 0.95
+      adam_epsilon: 1.0e-08
+      micro_batch_size: 1
+      global_batch_size: 180
+      target_train_tokens: 73728000
+      learning_rate: 0.0006
+      minimum_learning_rate: 6.0e-05
+      lr_decay_style: cosine
+      lr_warmup_fraction: 0.1
+      weight_decay: 0.1
+      clip_grad: 1.0
+      calculate_per_token_loss: true
+      log_throughput: true
+      deterministic: true
+      save: false
+      tensorboard: false
+      eval_interval: 50
+      eval_iters: 5
+      save_interval: 10000
+      log_interval: 1
+  scales_megatron_qwen2p5_1p5b:
+    model:
+      num_layers: 28
+      hidden_size: 1536
+      ffn_hidden_size: 8960
+      num_attention_heads: 12
+      num_query_groups: 2
+      sequence_length: 2048
+      max_position_embeddings: 131072
+      rotary_base: 1000000
+      layernorm_epsilon: 1.0e-06
+      tie_word_embeddings: true
+      add_qkv_bias: true
+      make_vocab_size_divisible_by: 151936
+      transformer_impl: transformer_engine
+      attention_backend: flash
+      attention_dropout: 0.0
+      hidden_dropout: 0.0
+      init_method_std: 0.02
+    training:
+      precision: bf16
+      optimizer: adam
+      adam_beta1: 0.9
+      adam_beta2: 0.95
+      adam_epsilon: 1.0e-08
+      micro_batch_size: 32
+      global_batch_size: 1024
+      target_train_tokens: 100000000000
+      require_at_least_target_tokens: true
+      learning_rate: 0.0003
+      minimum_learning_rate: 3.0e-05
+      lr_decay_style: cosine
+      lr_warmup_fraction: 0.01
+      weight_decay: 0.1
+      clip_grad: 1.0
+      calculate_per_token_loss: true
+      log_throughput: true
+      use_distributed_optimizer: true
+      overlap_grad_reduce: true
+      overlap_param_gather: true
+      create_attention_mask: false
+      checkpoint_format: torch_dist
+      async_save: true
+      save: true
+      tensorboard: true
+      eval_interval: 1000
+      eval_iters: 10
+      save_interval: 10000
+      log_interval: 10
+  scales_speedrun_100m:
+    selection:
+      size: 100m

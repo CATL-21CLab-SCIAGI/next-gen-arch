@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Install CPU environment
+        run: uv sync --locked --extra cpu --extra tracking --group dev
+      - name: Lint
+        run: uv run --no-sync ruff check src/archlab tests
+      - name: Audit publication tree
+        run: uv run --no-sync python -m archlab.reporting.publication_audit --output /tmp/publication-audit.json
+      - name: Test
+        env:
+          NANOCHAT_ATTENTION_BACKEND: sdpa
+        run: uv run --no-sync pytest -m "not slow" -q

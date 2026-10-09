@@ -1,0 +1,419 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+profiles:
+  global_simplicial_math:
+    name: deepseek-v41-frozen-windowed-softmax-simplicial-math
+    proposal_revision: 4
+    status: automodel-components-recipe-implemented-full-qualification-pending
+    execution_recipe: recipes/deepseek_v41/simplicial_math_1b.yaml
+    execution_guide: docs/DEEPSEEK_V41_TRAINING.md
+    audit: docs/DEEPSEEK_V41_SIMPLICIAL_AUDIT.md
+    reference_report_sha256: ba68e2e40408125ae6d2f63a9a241b61c73910691c74ec1a2a7023c851eac08d
+    model:
+      id: deepseek-ai/DeepSeek-V4.1-Flash
+      revision: df42c109f1defefcbfcedbe7d905718a12266e40
+      checkpoint: env:ARCHLAB_DEEPSEEK_V41_CHECKPOINT
+      download_weights: transferred-all-48-shards-structurally-verified
+      freeze_existing_parameters: true
+      freeze_existing_mutable_training_state: true
+      frozen_state_exceptions:
+      - per-request-caches
+      - native-input-dependent-quantization
+      router_bias_updates: disabled
+      base_auxiliary_losses: disabled
+      preserve:
+      - CED
+      - CSA2
+      - shared-KV
+      - hierarchical-indexer
+      - single-pass-mHC
+      - Engram
+      - MoE
+      - norms
+      - gates
+      - positional-encoding
+      backbone_hidden_size: 5120
+      backbone_layers: 40
+      backbone_residual_streams: 4
+      backbone_routed_experts: 384
+      backbone_active_routed_experts: 6
+      backbone_shared_experts: 1
+      vision: preserve-checkpoint-inactive-for-text-only-training
+      dspark_mtp: preserve-checkpoint-no-auxiliary-objective
+      speculative_decoding: disabled-until-adapter-aware-requalification
+      bounded_replay: disabled-for-initial-training-and-evaluation
+    adapter_proposal:
+      implemented: true
+      insertion: after-original-attention-hc-post-before-original-ffn-mixes
+      layers_1based:
+      - 5
+      - 10
+      - 15
+      - 20
+      - 25
+      - 30
+      - 35
+      - 40
+      input_output_width: 5120
+      query_heads: 8
+      kv_heads: 2
+      head_dim: 128
+      geometry_status: adapter-budget-choice-GQA4-not-paper-GQA64-performance-qualified
+      q_k1_k2_rmsnorm: true
+      input_rmsnorm: true
+      rms_norm_eps: 1.0e-06
+      output_gate: sigmoid-learned-linear
+      residual_read: softmax-over-four-learned-scalar-stream-logits
+      residual_write: two-times-sigmoid-of-four-learned-stream-logits
+      additional_rope: false
+      positional_note: backbone-position-encoding-unchanged-no-additional-adapter-rotation
+      additional_ffn: false
+      score: sum_d(q_i_d*k1_j_d*k2_k_d)/sqrt(head_dim)
+      probability: one-joint-softmax-over-all-allowed-j-k-pairs
+      value: v1_j-elementwise-times-v2_k
+      visibility: i-32<j<=i-and-i-512<k<=i-and-same-document
+      include_diagonal_pairs: true
+      key_axis_windows:
+      - 32
+      - 512
+      window_counts_include_current_token: true
+      global_pair_coverage: false
+      approximation: local-pair-selection-exact-joint-softmax-within-window-no-linearization
+      complexity: O(B*adapter_layers*query_heads*N*32*512*head_dim)
+      whole_model_linear_complexity_claim: false
+      additive_kv_bias: disabled-explicitly-in-both-forward-and-backward
+      workspace: tiled-online-softmax-no-materialized-N-cubed-scores
+      core_precision: float32
+      projection_precision: bfloat16
+      precision_reason: production-window-gradient-oracle-requires-FP32-internal-products
+      parameters_per_adapter: 20977032
+      total_trainable_parameters: 167816256
+      initialization:
+        qkv_and_output_gate_std: 0.02
+        output_projection_std: 0.0
+        output_projection_zero: true
+        rmsnorm_effective_scale: 1.0
+        stream_read_logits: 0.0
+        stream_write_logits: 0.0
+        effective_stream_write_coefficients: 1.0
+        parity_test: active-zero-initialized-adapter-and-explicit-bypass-both-match-base
+        first_backward: output-projection-task-gradient-only-other-branch-task-gradients-zero
+        subsequent_backward: verify-Q-K1-K2-V1-V2-gate-and-stream-gradients-after-output-update
+        provenance: identity-preserving-adapter-design-not-a-DeepSeek-report-init-prescription
+    data_preparation:
+      entrypoint: archlab.preprocessing.nemotron_math
+      source: env:ARCHLAB_NEMOTRON_MATH_SOURCE
+      tokenizer_assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+      output: env:ARCHLAB_NEMOTRON_MATH_TOKENIZED
+      stage: env:ARCHLAB_NEMOTRON_MATH_STAGE
+      tokenizer_format: deepseek-v41
+      official_encoder_sha256: b4bd8a06f94a06a61564156c7a543d649ed86ecdd72a4dfb94b064e16d9c572f
+      source_representation: parquet-only-no-duplicate-jsonl-mirror
+      expected_conversations: 7085839
+      workers: 32
+      batch_size: 16
+      row_groups_per_part: 1
+      reasoning_effort: 75
+      source_effort_mapping: none-original-effort-retained-in-metadata
+      keep_source_variants:
+      - low
+      - medium
+      - high
+      - tools
+      - no-tools
+      drop_thinking: false
+      truncation: false
+      execute_tools: false
+      document: complete-conversation
+      dtype: int32
+      validation_basis_points: 100
+      validation_group: normalized-problem-hash-across-all-variants
+      loss_metadata: half-open-assistant-token-spans-before-next-token-shift
+      ready_gate: DATA_READY.json-or-individually-checksummed-READY.json-parts
+      current_status: complete-versioned-recovery-v4
+      completed_conversations: 7085839
+      completed_tokens: 46215390550
+      completed_parts: 3545
+      completed_contract_sha256: 4cb2bfdd9289fcf1d426f6a06e7f16ca917e9ecc7aab5168ff26a5f3e822855d
+      schema_version: 4
+      assistant_message_policy: lossless-assistant-sequences-and-terminal-calls-v2
+      unsafe_to_merge_adjacent_assistants: preserve-individually-with-official-native-encoder-and-flag
+      terminal_assistant_tool_calls: preserve-and-flag-complete_answer-false-no-fabricated-results
+      nonassistant_endings: preserve-native-no-extra-EOS-no-suffix-supervision-flag-incomplete
+      source_quality_training_selection: sealed-1b-pilot-retains-all-modes-tools-and-trajectory-flags
+      repair_metadata: original-message-indices-reasoning-lengths-sha256-and-separator
+      reused_parts: 215
+      reused_conversations: 430000
+      reused_tokens: 7791512843
+      reuse_validation: pinned-v1-v3-code-identical-source-tokenizer-split-runtime-and-payload-checksums
+      reproduced_source_structure: high_part00.parquet-row-group-184-row-63-assistant-reasoning-fragment
+      repair_policy: preserve-v1-parts-no-silent-row-dropping-or-manifest-hash-rewrite
+    training_proposal:
+      launch_now: false
+      jobs: 1
+      baseline_training_jobs: 0
+      loss: assistant-only-next-token-cross-entropy-including-reasoning
+      exclude_loss_on:
+      - user-prompts
+      - system-prompts
+      - tool-results
+      - padding
+      corpus_target: initial-1b-supervised-token-pilot-from-complete-math-corpus
+      target_supervised_tokens: 1000000000
+      token_budget_unit: nonignored-next-token-targets-including-assistant-reasoning
+      token_budget_scope: global-unique-data-not-summed-over-EP-replicas
+      token_budget_excludes:
+      - validation
+      - prompts
+      - tool-results
+      - padding
+      - duplicated-model-parallel-work
+      stop_policy: sealed-pilot-clips-last-selected-window-before-shuffle-exact-one-pass
+      report_counters:
+      - processed-input-tokens
+      - supervised-training-tokens
+      - validation-target-tokens
+      checkpoint_interval_supervised_tokens: 50000000
+      validation_interval_supervised_tokens: 10000000
+      checkpoint_at_budget_end: true
+      production_context: target-16384-only-after-full-backbone-profile
+      long_document_policy: sealed-independent-contiguous-16k-windows-with-explicit-context-resets
+      silent_truncation_or_long-example-discard: forbidden
+      smoke_contexts:
+      - 128
+      - 256
+      - 512
+      - 1024
+      - 2048
+      conditional_profile_contexts:
+      - 4096
+      - 8192
+      - 16384
+      packing: disabled-first-then-document-isolated-only
+      optimizer: headwise-Muon-QK-plus-matrix-Muon-plus-AdamW-nonmatrix
+      optimizer_implementation_status: implemented-CPU-tested-full-model-qualification-pending
+      muon:
+        headwise:
+        - Q
+        - K1
+        - K2
+        head_matrix_shape:
+        - 128
+        - 5120
+        heads_per_parameter:
+          Q: 8
+          K1: 2
+          K2: 2
+        full_matrix:
+        - V1
+        - V2
+        - output_projection
+        - output_gate
+        momentum: 0.95
+        nesterov: true
+        momentum_buffer_rule: M=momentum*M+G
+        nesterov_direction: momentum*M+G
+        update_rms: 0.18
+        update_rms_scope: each-head-block-or-full-matrix-as-grouped-above
+        update_scale_rule: orthogonalized-direction-times-sqrt(max(rows,cols))-times-0.18
+        force_measured_rms_renormalization: false
+        qk_clip: false
+        zero_gradient_update: zero-with-finite-state
+        weight_decay: 0.1
+        orthogonalization:
+          source: https://arxiv.org/html/2606.19348v1#S2.SS4
+          algorithm: hybrid-Newton-Schulz
+          initial_normalization: Frobenius-norm-with-explicit-zero-input-guard
+          fast_steps: 8
+          fast_coefficients:
+          - 3.4445
+          - -4.775
+          - 2.0315
+          stabilization_steps: 2
+          stabilization_coefficients:
+          - 2.0
+          - -1.5
+          - 0.5
+      adamw:
+        parameters:
+        - input_rmsnorm
+        - q_rmsnorm
+        - k1_rmsnorm
+        - k2_rmsnorm
+        - stream_read_logits
+        - stream_write_logits
+        betas:
+        - 0.9
+        - 0.95
+        eps: 1.0e-20
+        norm_weight_decay: 0.1
+        scalar_weight_decay: 0.0
+      sinkhorn_balanced_embedding_optimizer: not-applicable-all-base-tables-and-lm-head-frozen
+      learning_rate: 1.0e-05
+      learning_rate_provenance: adapter-pilot-choice-not-report-pretraining-schedule
+      warmup_steps: 100
+      schedule_after_warmup: cosine-to-0.1-times-peak-over-finalized-supervised-token-budget
+      gradient_clip: 1.0
+      micro_batch_per_rank: 1
+      global_batch_and_accumulation: 32-unique-windows-no-accumulation-admitted-only-after-16k-profile
+      checkpoint: adapters-optimizer-scheduler-RNG-data-cursor-base-revision
+      validation: fixed-heldout-problems-plus-effort-tool-and-length-breakdowns
+      evaluation: same-DeepSeek-checkpoint-adapter-disabled-vs-enabled
+    parallelism_proposal:
+      world_size: 32
+      weight_sharding: native-EP-experts-and-Engram-rows-replicated-nonexpert-base
+      expert_parallel_size: 8
+      expert_parallel_scope: node-local
+      expert_fsdp_shards_across_nodes: 1
+      fsdp_base_wrapping: false
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      context_parallel_size: 1
+      note: EP-overlays-the-32-rank-mesh-not-32-times-8-GPUs
+      engram: retain-all-tables-with-explicit-row-sharding-audit
+      status: automodel-mesh-tested-full-model-and-32-rank-qualification-pending
+    runtime:
+      container: frozen-nemo-26.06
+      container_python: env:ARCHLAB_CONTAINER_PYTHON
+      upstream_automodel: env:ARCHLAB_AUTOMODEL_ROOT
+      package_installations: forbidden
+      container_or_controller_restart: forbidden
+      vendor_runtime_modifications: forbidden
+      subagents: forbidden
+    qualification:
+      backend_search_first: true
+      official_reference_is_inference_only: true
+      exact_V41_training_backend_found: false
+      gates:
+      - source-quality-selection-policy-including-terminal-calls
+      - complete-model-tensor-map-and-native-forward-parity
+      - CED-next-token-causality-and-shared-KV-index-cache-correctness
+      - preserve-single-pass-mHC-coefficient-flow
+      - all-Engram-rows-and-routing-preserved
+      - dInput-backward-through-frozen-quantized-attention-and-MoE
+      - no-inference-mode-or-detach-cutting-early-adapter-gradients
+      - windowed-core-forward-and-all-five-input-gradients-match-FP32-oracle
+      - window-edges-prefixes-diagonal-pairs-and-GQA4-coverage
+      - zero-init-identity-and-two-step-gradient-onset
+      - headwise-QK-Muon-complete-head-not-shard-local-orthogonalization
+      - Muon-update-RMS-and-zero-update-numerics-and-optimizer-reload
+      - base-router-biases-and-other-mutable-training-state-frozen
+      - exact-prefill-decode-adapter-cache-parity-without-bounded-replay
+      - document-boundaries-and-assistant-label-shift
+      - 32-rank-DP-with-node-local-EP8-gradient-and-checkpoint-roundtrip
+      - measured-GPU-memory-node-RSS-and-throughput
+      - original-weights-unchanged-and-excluded-from-optimizer
+  miles_mimo:
+    schema_version: 1
+    status: production_admission_in_progress
+    backend: miles
+    source:
+      report: https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL/resolve/main/MiMo_V2_6_technical_report.pdf
+      report_sha256: fb81e6e083801b3358f084ed6be953dc23b0d2e434690f4541d5eae03e01e7af
+      sections:
+      - '4.1'
+      - 4.3.3
+      - '5.1'
+      - '5.4'
+      miles_repository: https://github.com/radixark/miles.git
+      miles_revision: 6c6858a42b61459467814edc1404b1d9bfa38471
+      miles_upstream_branch: zczeng/dsv41-rl-support
+      miles_root: env:ARCHLAB_MILES_ROOT
+    parents:
+      normal:
+        checkpoint: env:ARCHLAB_RL_PARENT_NORMAL
+        marker_sha256: 3f946519f860a516345cd80cfff2764be6e1aa0095b791cddcc92aa3a06769fc
+      simplicial:
+        checkpoint: env:ARCHLAB_RL_PARENT_SIMPLICIAL
+        marker_sha256: b60da9ce92b75a163a3aef3bada010eb654870bf6c126267f661661e4ec336a9
+      supervised_step: 4537
+      supervised_tokens: 756364650
+      rl_initialization: fresh
+      resume_old_rl: false
+    data:
+      manifest: env:ARCHLAB_NEMOTRON_RL_DATA_MANIFEST
+      manifest_sha256: 588525114edeffcc57c6ff723a63d5ac55351ff2b403eb4514985c7109255a17
+      prompt_template: package:prompts/deepseek_v41_math_rl_v1.yaml
+      reward_backend: exact-rational-scalar-v1
+      train_count: 8192
+      heldout_count: 512
+    algorithm:
+      name: GRPO
+      advantage: reward_minus_group_mean
+      standardize_advantage: false
+      loss: detached_importance_ratio_times_mask_times_advantage_times_negative_logprob
+      normalization: prompt_mean_of_group_token_means
+      replay: all_response_tokens
+      behavior_logprobs: recorded_at_generation_never_recomputed
+      importance_ratio: per_token_stop_gradient
+      ratio_mask_bounds:
+        positive:
+        - 0.2
+        - 5.0
+        negative:
+        - 0.2
+        - 5.0
+      bound_adjustment: explicit_recorded_updates_only
+      freeze_router: true
+      freeze_router_bias: true
+      reference_kl_coefficient: 0.0
+      entropy_loss_coefficient: 0.0
+    optimizer:
+      name: Muown
+      learning_rate: 3.0e-06
+      weight_decay: 0.0
+      warmup_steps: 0
+      gradient_clip: 1.0
+      muon_momentum: 0.95
+      nesterov: true
+      newton_schulz_steps: 10
+      update_scale: 0.5
+      adam_betas:
+      - 0.95
+      - 0.95
+      adam_epsilon: 1.0e-08
+      restore_sft_muown_row_state: false
+      require_qualified_muown_implementation: true
+      master_precision: float32
+      state_storage: persistent_streamed
+      gradient_accumulation_precision: bfloat16
+    rollout:
+      samples_per_prompt: 16
+      target_max_policy_staleness: 4
+      admission_max_policy_staleness: 0
+      temperature: 1.0
+      top_p: 1.0
+      context_limit: 2560
+      max_new_tokens: 2001
+    length_penalty:
+      enabled: true
+      minimum_pass_rate: 0.25
+      reference_quantile: 0.5
+      maximum_deduction: 0.1
+      tolerated_excess: 0.1
+      saturation_excess: 1.0
+      exponent: 1.0
+    task_specific_grading:
+      code_agent_gar: false
+      tool_call_segment_penalties: false
+    local_scale_defaults:
+      nodes_total: 4
+      gpus_per_node: 8
+      gpu_model: NVIDIA_B300
+      gpus_per_arm: 16
+      prompts_per_rollout_batch: 16
+      seed: 20260922
+      max_rollout_batches: 128
+      pilot_updates: 2
+      eval_count: 64
+      eval_interval_updates: 8
+      checkpoint_interval_updates: 16
+    launch_requirements:
+    - compatible_amd64_container_with_v41_sglang_and_megatron_apis
+    - qualified_muown_optimizer_with_distributed_state_and_checkpoint_tests
+    - both_custom_attention_adapters_preserved_in_trainer_and_rollout
+    - complete_sft_checkpoint_conversion_and_parameter_coverage
+    - qualified_weight_sync_including_adapters_and_engram
+    - actual_parent_rollout_training_numerical_admission
+    - full_response_backward_memory_admission
+    - generation_logprob_and_staleness_provenance
+    - distributed_prompt_group_loss_normalization

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-26T16:21:14+08:00",
+  "hardware": "one NVIDIA B300 node with NVLink",
+  "software": {
+    "cuda": "13",
+    "pytorch": "2.11.0+cu130",
+    "nccl": "2.28.9",
+    "cudnn": "9.19",
+    "transformer_engine": "2.11.0",
+    "megatron_commit": "55ac7082517c3878ae653c07c09c534b8aed49f6"
+  },
+  "contract": {
+    "seed": 42,
+    "sequence_length": 2048,
+    "precision": "bf16",
+    "global_batch_sequences": 180,
+    "tokens_per_step": 368640,
+    "train_steps": 200,
+    "training_tokens": 73728000,
+    "data": "indexed FineWeb-Edu native-Megatron control",
+    "tokenizer": "matching DeepSeek-V3 tokenizer artifact",
+    "metric": "validation language-model loss",
+    "metric_warning": "This is not BPB and is not directly comparable with the ClimbMix/nanochat campaign."
+  },
+  "throughput_ratios": {
+    "pp5_over_dp5": 0.6172960577,
+    "tp2_dp2_over_dp4_unfused": 0.3890038198,
+    "dp4_fused_over_dp4_unfused": 1.2741022713,
+    "cp2_dp2_over_dp4_fused": 0.3657517844,
+    "dp5_per_gpu_scaling_efficiency_from_dp4": 0.9816644262,
+    "moe_ep2_over_ep1": 0.9801266511
+  },
+  "moe_ep2_over_ep1": {
+    "lifecycle_ratio": 1.0524934505,
+    "peak_allocated_memory_ratio": 0.9286580530,
+    "final_validation_set_loss_delta": -0.014448,
+    "interpretation": "EP2 saves 7.1% peak allocated memory but has no throughput advantage at this scale. The one-seed loss delta is not a causal quality result."
+  },
+  "safety": {
+    "accepted_runs": 8,
+    "completed_steps_per_run": 200,
+    "nonzero_returncodes": 0,
+    "skipped_iterations": 0,
+    "nan_iterations": 0
+  }
+}

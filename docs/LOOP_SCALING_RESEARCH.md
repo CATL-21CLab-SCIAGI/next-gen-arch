@@ -1,0 +1,123 @@
+# Recurrence research and the repeated-data sweep
+
+Research completed on 2026-09-27 before implementing the addition. The user
+expanded the initial single Loop-Grow request into the repeated-data sweep for
+Figure 5. The original eight fixed-token width runs keep their qualified source.
+A separate 222-cell sweep starts after baseline d120, before baseline d320. Each
+cell uses two nodes; the simplicial queue advances independently.
+
+## Repositories reviewed
+
+| Primary source | Relevant implementation or experiment | Consequence here |
+| --- | --- | --- |
+| [Q Labs scaling-exponents](https://github.com/qlabs-eng/scaling-exponents) | `models/transformer.py`, `models/config.py`, `train.py`, `ladder_scripts/loop_grow.sh`, `plotting_scripts/figure5.py`, released grid data | Main reference; pin `9139c396957a57b6de9a1e7efe7e35a4a863f1a6`. |
+| [Huginn recurrent-pretraining](https://github.com/seal-rg/recurrent-pretraining) | Large recurrent-depth model training and inference; prelude/core/coda architecture | Reference for recurrence and evaluation, with a substantially different training system. |
+| [Parcae](https://github.com/sandyresearch/parcae) | Stable loop parameterization and compute/token/recurrence sweeps | Stability is an empirical admission requirement; changing to Parcae's operator would be another treatment. |
+| [Iso-depth looped-lm-scaling](https://github.com/kschwethelm/looped-lm-scaling) | Recurrence comparisons at matched executed depth; truncation and hyperconnection controls | Track stored and executed depth separately; use full backpropagation. |
+| [Mixture-of-Recursions](https://github.com/raymin0223/mixture_of_recursions) | Token/expert-choice depth routers and recursion-aware KV caching | Adaptive token routing is a separate mechanism and is outside this fixed-recursion grid. |
+| [Timestep-Modulated Looped Transformers](https://github.com/kevin671/tmlt) | Per-step conditioning of shared loops | No timestep embeddings are introduced into this reproduction. |
+| [Slowrun](https://github.com/qlabs-eng/slowrun) | Repeated-data experiments on a limited unique-token pool | Reference for the repeated-data controls in this regularization sweep. |
+| [nanochat](https://github.com/karpathy/nanochat) | Training/evaluation infrastructure acknowledged by Q Labs | Reference for experiment accounting and downstream evaluation. |
+| [modded-nanogpt](https://github.com/KellerJordan/modded-nanogpt) | Efficient training and residual/input-injection mechanisms acknowledged by Q Labs | Performance and injection reference; do not copy its optimizer into one arm of the controlled study. |
+| [FBGEMM simplicial attention](https://github.com/pytorch/FBGEMM/tree/main/fbgemm_gpu/experimental/simplicial_attention) | Primary implementation of efficient simplicial attention | Relevant to the existing paired attention experiment; preserve its numerical oracle. |
+
+Also reviewed [SMELT](https://arxiv.org/abs/2609.01343), which explicitly matches
+MoE compute, non-embedding parameters, and cache costs. Its controls reinforce
+that extra layer executions cannot be treated as free. No official SMELT
+training repository was established in this search.
+
+## Paper result and scope of this transfer
+
+[Figure 5](https://github.com/qlabs-eng/scaling-exponents/blob/9139c396957a57b6de9a1e7efe7e35a4a863f1a6/plotting_scripts/figure5.py)
+compares separately trained, fixed-recursion models on 100M unique tokens replayed
+ten times. Its six selected weight decays and measured depth/recursion grid give
+222 cells. The preferred training recursion changes across compute budgets; this
+is distinct from prescribing growth inside a single run. The original repository
+uses dense models, GPT-2-tokenized FineWeb, and its own optimizer recipe.
+
+This study transfers that repeated-data protocol to native DeepSeek V4.1 and the
+existing sealed FineWeb-Edu/tokenizer/Adafactor setup. It does not claim numerical
+replication of the dense paper model. The primary compute axis is measured B300
+training GPU-seconds, excluding evaluation and checkpoint IO. Stored parameters,
+executed depth, supervised tokens, and cumulative block-token executions are also
+recorded. Block-token counts are not FLOPs.
+
+## Preregistered geometry and budget
+
+The reference depth-8 cell maps to the existing hidden-width-120, 20-layer anchor.
+Other size controls scale both width and depth around that anchor. Round width to
+multiples of 40 to retain intermediate width 128 per expert and active FFN width /
+model width exactly 3.2, including the always-active shared expert.
+
+| Reference depth | Hidden width | Stored blocks | Routed top-k |
+| --- | --- | --- | --- |
+| 4 | 80 | 10 | 1 |
+| 6 | 80 | 15 | 1 |
+| 8 | 120 | 20 | 2 |
+| 10 | 160 | 25 | 3 |
+| 12 | 200 | 30 | 4 |
+| 14 | 200 | 35 | 4 |
+| 16 | 240 | 40 | 5 |
+| 18 | 280 | 45 | 6 |
+
+The exact 222 cells are versioned in
+[the portable recipe](../recipes/deepseek_v41/loop_regularization.yaml)
+and generated by `archlab.automodel.loop_regularization`. Start with the d120,
+20-layer, K=2, WD=0.8 cell. All cells use seed 42, the identical 100M-target prefix,
+ten epochs, and the same held-out validation set. A partial final window is
+masked and replayed identically each epoch. The main width study keeps fresh data.
+
+Each cell consumes exactly 1B supervised tokens within its 10B allowance:
+222B planned sweep tokens, plus 80B for the original eight runs. Each has five
+full OSS checkpoints at 200M, 400M, 600M, 800M, and 1B targets, with NAS symlinks.
+Qualification checkpoints and recovery saves are separate. Validation runs after
+each 100M-target interval, providing trajectories as well as final losses.
+
+Recursion remains fixed within each cell. The grid measures the optimum; it does
+not enforce an increasing optimum. Matrix weight decay is swept over
+{0.05,0.2,0.4,0.8,1.2,1.6}. In our Adafactor transfer, decay is decoupled and uses
+`min(relative_lr, optimizer_step**-0.5) * weight_decay`; vectors are exempt.
+This definition is recorded explicitly and is not assumed equivalent to the
+reference Muon/AdamW coefficient. All learning-rate schedules end at 1B targets.
+
+## Exact architecture and qualification
+
+Split stored blocks into thirds, allocating the first remainder to the core and
+the second to the coda. All core parameters are tied; gradients flow through
+all passes. Native compression/source/Engram schedules scale with stored depth.
+The 20-layer anchor reproduces the original categorical layer schedule exactly.
+
+The released code feeds the raw prelude into the first core. Each core exit,
+including the one before the coda, applies parameter-free feature RMSNorm plus
+the prelude scaled by 1/sqrt(2). This follows the released forward implementation;
+its first-entry behavior differs from the zero-state notation in the paper.
+
+V4.1 adaptation normalizes each mHC stream's features in FP32 and retains the
+carried FP32 pre-mix. Each core entry restores the immutable CSA2 state owned by
+the prelude, preserving physical KV/index ownership while residual streams recur.
+The coda receives the final core's CSA2 state. Indexer auxiliary loss is averaged
+over executed indexers; router coefficients scale by stored/executed blocks to
+keep aggregate auxiliary strength constant across K at each stored model size.
+
+Every production cell requires its own full-model, two-node qualification,
+including sparse/optimizer numerical oracles, full-context gradients, empty
+ranks, exact checkpoint restoration and identical next-update loss. CPU tests
+compare full tied gradients against an independent unroll with activation
+checkpointing and multiple live forward graphs. Native configuration validation
+covers every size control. No container runtime package is modified.
+
+Analysis reads only this sweep's completed measurements. It never substitutes
+bundled paper losses when cells are missing. Partial results remain explicitly
+partial; any claimed regularizing effect must follow from the new measurements.
+
+Run `python -m archlab.tracking.loop_regularization_report --plan SWEEP_PLAN.json
+--output REPORT_DIRECTORY --watch` on the CPU monitor host. It updates standalone
+PNG/PDF panels and CSV measurements after new validation/completion records.
+The four panels show matched-compute cuts, marginal gain, scaling recipes, and
+optimal weight decay. `preferred-recursion.csv` records the measured/interpolated
+argmin at each compute cut; no increasing trend is imposed. Interpolation is
+linear in measured GPU-seconds and never extrapolates. Tuning requires all six
+weight decays for a cell. Recipe tuning uses each size's K=1 choice for all K,
+matching the reference analysis. The fixed-WD frontier excludes reference d4/K6
+as in Figure 5; the raw CSV and other panels retain that cell. Every incomplete
+report is explicitly marked partial.

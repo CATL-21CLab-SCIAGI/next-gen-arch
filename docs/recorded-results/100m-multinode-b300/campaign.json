@@ -1,0 +1,63 @@
+{
+  "campaign": "100m-multinode-backend-comparison",
+  "completed_at": "2026-08-26T08:41:12+08:00",
+  "status": "complete",
+  "hardware": {
+    "accelerator": "NVIDIA B300",
+    "nodes": 3,
+    "gpus_per_node": 5,
+    "world_size": 15,
+    "intra_node_transport": "NVLink",
+    "inter_node_transport": "RoCE with GPU Direct RDMA",
+    "physical_gpu_allowlist_per_node": [0, 2, 4, 5, 7]
+  },
+  "runtime": {
+    "torch": "2.9.1+cu128",
+    "cuda_runtime": "12.8",
+    "ptxas": "CUDA 13.0",
+    "nccl": "2.27.5"
+  },
+  "source": {
+    "repository_commit": "ebb2fc2c8d74d8dd13256231b372b139a91abfbd",
+    "megatron_submodule_commit": "55ac7082517c3878ae653c07c09c534b8aed49f6",
+    "source_dirty": false
+  },
+  "contract": {
+    "scale": "100m",
+    "variant": "baseline",
+    "seed": 42,
+    "parameters": 105775510,
+    "sequence_length": 2048,
+    "precision": "BF16",
+    "steps": 3228,
+    "training_tokens": 1269301248,
+    "effective_global_batch_sequences": 192,
+    "effective_global_batch_tokens": 393216,
+    "static_local_batch_sequences": 13,
+    "scheduled_batch_sequences": 195,
+    "active_rows_by_rank": [13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 12, 12, 12],
+    "ignored_padding_rows": 3,
+    "eval_interval": 250,
+    "eval_tokens": 3932160,
+    "optimizer": "per-head NorMuon plus Adam parameter groups",
+    "data_order": "canonical historical 192-row best-fit packing stream repartitioned contiguously over 15 ranks"
+  },
+  "collective_probe": {
+    "status": "pass",
+    "all_reduce_rank_sum": 105,
+    "expected_rank_sum": 105,
+    "hosts": 3,
+    "ranks_per_host": 5,
+    "network_evidence": "NCCL Using network IB; RoCE; GDRDMA on five allowlisted mlx5 HCAs"
+  },
+  "artifact_sha256": {
+    "private_frozen_manifest": "6e9d8738cbd250350e9dfa5ce4d605002008fc90fe5996d54a71d667ed6d3bae",
+    "collective_probe_result": "1ce6ecdec90b70696c19cc45def1a3b10a381f7d5e0d0b5b24ce5f31e98db80e",
+    "speedrun_metrics": "c0cb1a304c739b7f573544526d4d93f229b3447615bded9f9c7a9ffe7427da55",
+    "speedrun_summary": "a24ad41ffa51aa4222139e60573c4759fb791a3ac38ff7fa30848bf07d0a997f",
+    "speedrun_rank0_log": "c835155f7c38345eb5dbaae24240d65b93ec13eda2985aa6f70e9ad28592d688",
+    "megatron_metrics": "3686cdcceb008b7483c87c657efdfa26bff0cc74f8714fb786310a7c60fcdf16",
+    "megatron_result": "35a76630de892545e81a09795d4e1db5914d7dd6a6cebaaa9a1e10b23c1ea7b6",
+    "megatron_rank0_log": "393cf1a1cbbed043e863317bf1d0e72df9172a5d6ae54253662d86305e22f78e"
+  }
+}

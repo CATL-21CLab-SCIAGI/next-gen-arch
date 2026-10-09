@@ -1,0 +1,32 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+schema_version: 1
+description: Frozen matched checkpoints; concurrent with scratch training
+calibration_seed: 2026092901
+test_seed: 2026092902
+calibration_pairs_per_level: 2
+test_pairs_per_level: 12
+tasks:
+- composition
+- join
+- modular_pair_search
+- retrieval
+- arithmetic
+levels:
+- 8
+- 16
+max_context: 1024
+max_new_tokens: 4
+decoding: native_chat_greedy_uncached
+short_window: 32
+long_window: 512
+primary_metric: exact_answer_accuracy
+paired_unit: counterfactual_twin
+control_min_accuracy: 0.9
+inference_world_size: 16
+ep_size: 8
+gpu_allocator_limit_gib: 180
+minimum_free_gpu_gib: 205
+maximum_training_slowdown: 1.3
+maximum_phase_hours: 8
+maximum_queue_hours: 24
+qualification_ce_atol: 0.0001

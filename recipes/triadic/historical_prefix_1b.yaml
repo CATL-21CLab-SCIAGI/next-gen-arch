@@ -1,0 +1,22 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+format: archlab-triadic-historical-prefix-v1
+matched_geometry_recipe: package:recipes/triadic/matched_scratch_w640_d20.yaml
+production_variants:
+- triadic
+training_prefix_tokens: 1000000000
+learning_rate_schedule_tokens: 10000000000
+checkpoint_tokens:
+- 200000000
+- 400000000
+- 600000000
+- 800000000
+- 1000000000
+control_source: previous_scratch_learning_curves
+control_provenance: env:ARCHLAB_TRIADIC_HISTORICAL_CONTROLS
+comparison: historical_controls_with_reported_contract_differences
+qualification: fresh_triadic_full_model8_restore_and_next_update
+scheduling:
+  start_after: native_Violetto_graceful_checkpoint_and_pause
+  follow_with: remaining_native_Violetto_RL_then_final_evaluation
+  allocation: reuse_existing_persistent_eight_GPU_node
+  production_auto_relaunch: false

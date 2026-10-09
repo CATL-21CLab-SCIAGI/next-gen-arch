@@ -1,0 +1,29 @@
+schema_version: 1
+templates:
+  composition: |
+    Each table defines a function on integers. Apply the named functions in the
+    given order, starting with x. Does the result equal y?
+    Answer with exactly YES or NO, without explanation or punctuation.
+    {tables}
+    Order: {order}
+    x={x}; y={y}
+    Answer:
+  join: |
+    The facts below are complete. R(a,b) and S(b,c) define a two-hop path
+    from a to c. Does a two-hop path exist for the queried a and c?
+    Answer with exactly YES or NO, without explanation or punctuation.
+    {facts}
+    a={x}; c={y}
+    Answer:
+  retrieval: |
+    The table defines a function f. Does f(x) equal y?
+    Answer with exactly YES or NO, without explanation or punctuation.
+    {tables}
+    x={x}; y={y}
+    Answer:
+  arithmetic: |
+    For these two specified ordered pairs a and b, do BOTH coordinates of
+    a+b equal T modulo {modulus}? Modulo is the nonnegative remainder.
+    Answer with exactly YES or NO, without explanation or punctuation.
+    a={a}; b={b}; T={target}
+    Answer:

@@ -1,0 +1,86 @@
+--- a/custom_eval/eval_aime26.py
++++ b/custom_eval/eval_aime26.py
+@@ -65,18 +65,23 @@
+     num_samples: int = 1,
+     presence_penalty: float = 0.0,
+     repetition_penalty: float = 1.0,
++    runner=None,
++    dataset=None,
+ ):
+     global _use_boxed_hint
+     _use_boxed_hint = use_boxed_hint
+-    print(f"[AIME26] Loading dataset from {DATASET_NAME}...")
+-    
+-    try:
+-        ds = load_dataset_split_with_fallback("aime26", DATASET_NAME, "test")
+-        print(f"[AIME26] Loaded {len(ds)} samples")
+-    except Exception as e:
+-        print(f"[AIME26] Failed to load dataset: {e}")
+-        print("[AIME26] Using local AIME-like problems")
+-        ds = _local_aime_questions()
++    print("[AIME26] Using supplied dataset" if dataset is not None else f"[AIME26] Loading dataset from {DATASET_NAME}...")
++    
++    if dataset is not None:
++        ds = dataset
++    else:
++        try:
++            ds = load_dataset_split_with_fallback("aime26", DATASET_NAME, "test")
++            print(f"[AIME26] Loaded {len(ds)} samples")
++        except Exception as e:
++            print(f"[AIME26] Failed to load dataset: {e}")
++            print("[AIME26] Using local AIME-like problems")
++            ds = _local_aime_questions()
+ 
+     if limit:
+         ds = ds.select(range(min(limit, len(ds))))
+@@ -84,22 +89,23 @@
+     print(f"[AIME26] enable_thinking={enable_thinking}, temperature={temperature}, top_p={top_p}, top_k={top_k}")
+     print(f"[AIME26] max_tokens={max_tokens}, num_samples={num_samples}")
+ 
+-    runner = ModelRunner(
+-        model_path,
+-        device=device,
+-        dtype=dtype,
+-        max_new_tokens=max_tokens,
+-        model_backend=model_backend,
+-        tensor_parallel_size=tensor_parallel_size,
+-        pipeline_parallel_size=pipeline_parallel_size,
+-        data_parallel_size=data_parallel_size,
+-        gpu_memory_utilization=gpu_memory_utilization,
+-        max_model_len=max_model_len,
+-        max_num_seqs=max_num_seqs,
+-        vllm_language_model_only=vllm_language_model_only,
+-        vllm_server_url=vllm_server_url,
+-        vllm_server_model=vllm_server_model,
+-    )
++    if runner is None:
++        runner = ModelRunner(
++            model_path,
++            device=device,
++            dtype=dtype,
++            max_new_tokens=max_tokens,
++            model_backend=model_backend,
++            tensor_parallel_size=tensor_parallel_size,
++            pipeline_parallel_size=pipeline_parallel_size,
++            data_parallel_size=data_parallel_size,
++            gpu_memory_utilization=gpu_memory_utilization,
++            max_model_len=max_model_len,
++            max_num_seqs=max_num_seqs,
++            vllm_language_model_only=vllm_language_model_only,
++            vllm_server_url=vllm_server_url,
++            vllm_server_model=vllm_server_model,
++        )
+ 
+     correct = 0
+     total = 0
+@@ -302,6 +308,10 @@
+                         max_new_tokens=max_tokens,
+                         temperature=temperature,
+                         enable_thinking=enable_thinking,
++                        top_p=top_p,
++                        top_k=top_k if top_k > 0 else None,
++                        presence_penalty=presence_penalty if presence_penalty != 0.0 else None,
++                        repetition_penalty=repetition_penalty if repetition_penalty != 1.0 else None,
+                     )
+                     pred = preds[0] if preds else ""
+                     best_answer = extract_final_answer_robust(pred)

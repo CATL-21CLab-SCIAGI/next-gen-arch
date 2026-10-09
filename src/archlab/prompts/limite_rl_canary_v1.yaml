@@ -1,0 +1,4 @@
+messages:
+  - role: user
+    content: "Compute 13 + 29. Give your final answer in a box."
+expected_answer: "42"

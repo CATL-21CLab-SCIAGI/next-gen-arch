@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-09-26T06:51:51.580517+00:00",
+  "run": "deepseek-v41-2simplicial-miles-fp8-20260926-corrected",
+  "project_commit": "e4cd72dc78466f961c5944a199c52ceac77e7792",
+  "miles_commit": "6c6858a42b61459467814edc1404b1d9bfa38471",
+  "experiment": "deepseek-v41-2simplicial-adam-fp8-grpo-8k-partial-v2",
+  "hardware": {
+    "gpu_count": 32,
+    "gpu_type": "B300"
+  },
+  "parent_complete_sha256": "b60da9ce92b75a163a3aef3bada010eb654870bf6c126267f661661e4ec336a9",
+  "mlflow_run_id": "551db498b5e940e292acb0ed2866093e",
+  "scope": "Dated operational evidence; not a live monitor or proof of learning improvement",
+  "qualification": {
+    "distributed_updates": 1,
+    "checkpoint_readback": "passed",
+    "post_update_serving_sync": "all four engines at version 2",
+    "live_8k_training_update": false,
+    "full_training_resume_demonstrated": false,
+    "learning_improvement_claimed": false,
+    "live_8k_generation_started": true,
+    "repeated_update_stability": false
+  },
+  "updates": [
+    {
+      "train/entropy_loss": 0.4330698847770691,
+      "train/ess_ratio": 0.999502420425415,
+      "train/grad_norm": 0.22895340621471405,
+      "train/loss": -0.0004399544559419155,
+      "train/lr-pg_0": 1e-06,
+      "train/lr-pg_1": 1e-06,
+      "train/lr-pg_2": 1e-06,
+      "train/ois": 1.0001111030578613,
+      "train/pg_clipfrac": 0.0001682192669250071,
+      "train/pg_loss": -0.0004399544559419155,
+      "train/ppo_kl": 0.0001366417418466881,
+      "train/step": 0.0,
+      "train/tis": 1.0000561475753784,
+      "train/tis_abs": 0.026645319536328316,
+      "train/tis_clipfrac": 9.17774741537869e-05,
+      "train/train_rollout_kl": 0.0020243958570063114,
+      "train/train_rollout_logprob_abs_diff": 0.026677502319216728
+    }
+  ],
+  "first_batch": {
+    "source": "checksum-verified retained rollout of the identical unupdated parent",
+    "response_limit": 4096,
+    "groups": 16,
+    "contrast_groups": 16,
+    "samples": 128,
+    "response_tokens": 251624,
+    "selected_reward": 0.421875,
+    "truncated_fraction": 0.25,
+    "original_rollout_seconds": 4068.9223041534424,
+    "original_rollout_allocated_gpu_hours": 36.16819825914171
+  },
+  "fixed_evaluation": {
+    "initial_score": 0.27734375,
+    "source": "verified cached identical parent evaluation",
+    "prompts": 32,
+    "samples_per_prompt": 8,
+    "response_limit": 4096,
+    "subsequent_interval_updates": 4,
+    "post_update_result": null
+  },
+  "performance": {
+    "first_actor_cycle_seconds": 928.8,
+    "initial_weight_sync_seconds": 211.8,
+    "checkpoint_save_seconds": 3249.3,
+    "warm_cycle_seconds": null,
+    "first_batch_replay_excluded_from_generation_throughput": true,
+    "minimum_sampled_host_available_during_model_save_gib": 235.83306121826172,
+    "minimum_sampled_gpu_free_during_model_save_gib": 93.544921875,
+    "checkpoint_gpu_hours": 28.88266666666667,
+    "optimizer_checkpoint_save_phase_seconds_approx": 2253,
+    "minimum_sampled_post_update_sync_gpu_free_gib": 10.759765625,
+    "post_update_weight_sync_seconds": 190.3
+  },
+  "checkpoint": {
+    "iteration": 0,
+    "status": "saved_and_readback_passed",
+    "full_training_resume_demonstrated": false,
+    "completed_at_utc": "2026-09-26T06:45:45Z",
+    "model_files": 80390,
+    "model_bytes": 1499188568954,
+    "optimizer_bucket_bytes": 4450473836544,
+    "optimizer_manifests": 64,
+    "verification": "all model file extents; four adapter tensors through native DCP; all optimizer manifests/file extents; sampled finite moments; finite resident FP32 optimizer samples",
+    "sampled_adapter_changes_from_parent": {
+      "decoder.layers.4.self_attention_hyper_connection.archlab_adapter.read_logits": {
+        "changed_elements": 4,
+        "max_abs_delta": 9.98144969344139e-07,
+        "l2_delta": 1.9885053461621283e-06
+      },
+      "decoder.layers.4.self_attention_hyper_connection.archlab_adapter.write_logits": {
+        "changed_elements": 4,
+        "max_abs_delta": 9.995419532060623e-07,
+        "l2_delta": 1.9969888853665907e-06
+      },
+      "decoder.layers.4.self_attention_hyper_connection.archlab_adapter.input_norm.weight": {
+        "changed_elements": 5116,
+        "max_abs_delta": 1.0132789611816406e-06,
+        "l2_delta": 6.677077180938795e-05
+      },
+      "decoder.layers.4.self_attention_hyper_connection.archlab_adapter.q_norm.weight": {
+        "changed_elements": 128,
+        "max_abs_delta": 1.0132789611816406e-06,
+        "l2_delta": 1.0481947356311139e-05
+      }
+    }
+  },
+  "receipts": [
+    "resolved-launch.json",
+    "QUALIFICATION.json",
+    "ROLLOUT_BOOTSTRAP.json",
+    "DRIVER_STATUS.json",
+    "mlflow-evidence/PARENT_IMPORT_VERIFICATION.json",
+    "mlflow-evidence/FIRST_UPDATE.json",
+    "mlflow-evidence/REPLAYED_ROLLOUT_COMPUTE_COST.json",
+    "mlflow-evidence/LIVE_METRIC_HOOK_API_CHECK.json",
+    "mlflow-evidence/MLFLOW_READBACK_FIRST_UPDATE.json",
+    "mlflow-evidence/CHECKPOINT_STORAGE_PROGRESS.json",
+    "full-checkpoint-verification.json",
+    "saved-optimizer-verification.json",
+    "mlflow-evidence/SERVING_MODEL_INFO_FIRST_UPDATED_POLICY.json"
+  ],
+  "validation": {
+    "targeted_cpu_regression_tests": "35 passed",
+    "lint": "passed for changed Python files",
+    "native_parser_and_first_batch_validation": "passed",
+    "native_live_logging_api_on_retained_samples": "passed; no generation or training performed"
+  }
+}

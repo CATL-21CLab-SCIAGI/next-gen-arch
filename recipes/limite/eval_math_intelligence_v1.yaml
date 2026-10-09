@@ -1,0 +1,55 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+schema_version: 1
+name: limite-math-intelligence-v1
+purpose: Matched public math evaluation of the original base, 10B-token SFT pair, and full-weight RL pair.
+benchmarks:
+- aime24
+- aime25
+- aime26
+prompt:
+  template: checkpoint-bundled Violetto canonical single-turn mathematical chat
+  few_shot_examples: 0
+  tools: false
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 0
+  samples_per_problem: 4
+  seed: 20261002
+  max_new_tokens: 32768
+  context_limit: 131072
+  eos_token_ids:
+  - 151645
+  padding: none
+  repetition_watchdog: false
+scoring:
+  backend: math-verify-0.8.0-symbolic
+  judge: none
+  metrics:
+  - pass_at_1
+  - pass_at_2
+  - pass_at_4
+  - natural_eos_rate
+  - truncation_rate
+  - completion_tokens
+  uncertainty: problem-cluster bootstrap; paired first-sample McNemar and conservative Wilson difference
+    interval
+execution:
+  local_batch_size: 1
+  graph_pool_entries: 1
+  native_masked_gqa: true
+  gpu_memory_limit_gib: 35
+  training_updates: false
+  preliminary_pass: first independent sample for all checkpoints before samples 2 through 4
+disclosure:
+- Temperature and top_p are the publisher's serving defaults, not a disclosed benchmark recipe.
+- The publisher discloses a 131072-token context; its benchmark completion budget and independent sample
+  count are undisclosed.
+- 32768 completion tokens and four samples are this versioned evaluation contract, not a literal reproduction
+  of the publisher's percentages.
+- AIME 2024 and 2025 require an overlap audit against local SFT and RL inputs; no claim of globally contamination-free
+  pretraining is made.
+- SFT checkpoints are matched at exactly 10B supervised tokens, including the initial 2B adapter-only
+  warmup.
+- Latest RL checkpoints have unequal total applied updates; equal-update historical checkpoints are reported
+  separately with their phase exposure.

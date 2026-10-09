@@ -1,0 +1,103 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+profiles:
+  dense_100m_cp2:
+    extends:
+    - megatron_native_100m.yaml#dense_100m_dp
+    name: megatron-native-dense-100m-cp2-seed42
+    parallelism:
+      context: 2
+      context_comm_type: p2p
+  dense_100m_cp2_single:
+    extends:
+    - megatron_native_100m.yaml#dense_100m_dp4
+    name: megatron-native-dense-100m-cp2-single-seed42
+    parallelism:
+      context: 2
+      context_comm_type: p2p
+  dense_100m_dp4:
+    extends:
+    - megatron_native_100m.yaml#dense_100m_dp5
+    name: megatron-native-dense-100m-dp4-seed42
+    parallelism:
+      gpus_per_node: 4
+  dense_100m_dp5:
+    extends:
+    - megatron_native_100m.yaml#dense_100m_dp
+    name: megatron-native-dense-100m-dp5-seed42
+    parallelism:
+      nodes: 1
+      gpus_per_node: 5
+  dense_100m_dp:
+    extends:
+    - ../defaults.yaml#base
+    - ../defaults.yaml#backends_megatron
+    - ../defaults.yaml#scales_megatron_native_100m
+    name: megatron-native-dense-100m-dp-seed42
+    variant: baseline
+    seed: 42
+    parallelism:
+      nodes: 2
+      gpus_per_node: 6
+      tensor: 1
+      pipeline: 1
+      context: 1
+      expert: 1
+  dense_100m_pp2:
+    extends:
+    - megatron_native_100m.yaml#dense_100m_dp
+    name: megatron-native-dense-100m-pp2-seed42
+    parallelism:
+      pipeline: 2
+  dense_100m_pp5:
+    extends:
+    - megatron_native_100m.yaml#dense_100m_dp5
+    name: megatron-native-dense-100m-pp5-seed42
+    parallelism:
+      pipeline: 5
+  dense_100m_tp2:
+    extends:
+    - megatron_native_100m.yaml#dense_100m_dp
+    name: megatron-native-dense-100m-tp2-seed42
+    parallelism:
+      tensor: 2
+      sequence_parallel: true
+  dense_100m_tp2_single:
+    extends:
+    - megatron_native_100m.yaml#dense_100m_dp4
+    name: megatron-native-dense-100m-tp2-single-seed42
+    parallelism:
+      tensor: 2
+      sequence_parallel: true
+  moe_100m_ep1:
+    extends:
+    - megatron_native_100m.yaml#dense_100m_dp
+    name: megatron-native-moe-100m-ep1-seed42
+    model:
+      num_experts: 6
+      moe_ffn_hidden_size: 768
+      moe_router_topk: 2
+      moe_router_load_balancing_type: aux_loss
+      moe_aux_loss_coeff: 0.01
+      moe_router_dtype: fp32
+      moe_token_dispatcher_type: alltoall
+      moe_grouped_gemm: true
+      moe_permute_fusion: true
+  moe_100m_ep1_single:
+    extends:
+    - megatron_native_100m.yaml#moe_100m_ep1
+    name: megatron-native-moe-100m-ep1-single-seed42
+    parallelism:
+      nodes: 1
+      gpus_per_node: 4
+  moe_100m_ep2_single:
+    extends:
+    - megatron_native_100m.yaml#moe_100m_ep1_single
+    name: megatron-native-moe-100m-ep2-single-seed42
+    parallelism:
+      expert: 2
+  moe_100m_ep6:
+    extends:
+    - megatron_native_100m.yaml#moe_100m_ep1
+    name: megatron-native-moe-100m-ep6-seed42
+    parallelism:
+      expert: 6

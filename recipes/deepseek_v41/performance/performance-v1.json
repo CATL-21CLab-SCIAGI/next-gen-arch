@@ -1,0 +1,17 @@
+{
+  "format": "archlab-v41-performance-v1",
+  "grouped_experts": true,
+  "scale_engram": true,
+  "engram_optimizer": "sinkhorn-algorithm-1",
+  "table_lr_scale": 0.026,
+  "batched_updates": true,
+  "optimized_synchronization": true,
+  "trim_alignment": 128,
+  "head_loss_chunk": 1024,
+  "router_bias_rate": 0.001,
+  "retain_activations": true,
+  "compile_hc_backward": false,
+  "expert_dispatcher": "deepep",
+  "microbatch": 4,
+  "simplicial_backend": "triton"
+}

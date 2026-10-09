@@ -1,0 +1,57 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+name: limite-violetto-native-full-math-rl-async-v1
+model:
+  repo: paradigma-inc/limite-1b-violetto
+  revision: 4cf321846e479e78d9ec35dbd39fee2e260cbad6
+  variant: native
+  trainable_mode: full
+  inserted_layers: 0
+training:
+  max_steps: 400
+  world_size: 8
+  num_generations: 4
+  responses_per_update: 64
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-05
+  checkpoint_steps: 10
+  phase_start: 0
+  initialization: fresh_publisher_weights_and_fresh_rl_optimizer
+data:
+  source: nvidia/Nemotron-RL-Math-v2
+  split_sha256: 73d3e170b5a10aea286cc79e786fab301f7dabecae3385cc022c7b8fc692e15b
+  prompt_limit: 2048
+  train_before_context_exclusions: 5898
+  heldout: 128
+  verifier: symbolic_math_verify_without_judge_fallback
+  curriculum: shared_training_only_verified_mixed_outcome_problems
+upstream: https://github.com/XiaomiMiMo/verl/tree/a2ad9f6160b03ff2d47e59832bfb6b289f37c917
+rollout:
+  max_tokens: 16384
+  overlong_buffer: 4096
+  overlong_penalty: 0.5
+  unfinished_penalty: 0.5
+  repetition_penalty: 0.5
+execution:
+  graph_decode: true
+  native_decode_gqa: true
+  native_decode_backend: flash_attn_kvcache
+  reuse_decode: true
+  compact_decode: true
+  async_rollouts: true
+  overlap_actor_learner: false
+  rollout_rendezvous: gloo_after_drain
+  max_policy_lag: 1
+  responses_per_update: 64
+  actor_rng: restored_rank_cuda_then_independent_generator
+  checkpoint_prefetch: completed_batch_and_generator_state
+  trim_replay: true
+  skip_flat_backward: true
+curriculum:
+  initial_fraction: 0.5
+  anneal_steps: 128
+  pool: shared_training_only_verified_mixed_outcome_problems
+evaluation:
+  shaped_rewards: false
+  shared_heldout_unchanged: true
+  report_natural_eos_and_length_caps: true

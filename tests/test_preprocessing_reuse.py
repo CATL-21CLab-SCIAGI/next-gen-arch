@@ -1,0 +1,104 @@
+"""Dataset migration tests: reject drift and preserve original payloads/provenance."""
+
+import copy
+import json
+
+import pytest
+
+from archlab.preprocessing.nemotron_math import file_sha, json_sha, write_json
+from archlab.preprocessing.reuse import (
+    LEGACY_IMPLEMENTATION_SHA256,
+    LEGACY_RENDERER_SHA256,
+    V3_IMPLEMENTATION_SHA256,
+    V3_RENDERER_SHA256,
+    reuse_part,
+    validate_legacy_contract,
+)
+
+
+def contracts():
+    legacy = dict(schema_version=2, tokenizer_format="deepseek-v41", tokenizer_files={"tokenizer.json": "hash"},
+                  split={"seed": "fixed"}, sources=["same"], tasks=["same"],
+                  ending="One native BOS; native assistant EOS; no extra EOD",
+                  implementation_sha256=LEGACY_IMPLEMENTATION_SHA256, renderer_sha256=LEGACY_RENDERER_SHA256)
+    current = {**legacy, "schema_version": 4, "implementation_sha256": "new", "renderer_sha256": "new",
+               "ending": "Exact native source ending; no added EOS/EOD; incomplete trajectories flagged",
+               "assistant_message_policy": "lossless-assistant-sequences-and-terminal-calls-v2"}
+    return current, legacy
+
+
+def test_only_reviewed_extension_is_importable():
+    current, legacy = contracts()
+    validate_legacy_contract(current, legacy)
+    v3 = {**legacy, "schema_version": 3, "implementation_sha256": V3_IMPLEMENTATION_SHA256,
+          "renderer_sha256": V3_RENDERER_SHA256,
+          "assistant_message_policy": "lossless-assistant-sequences-and-terminal-calls-v2", "reuse_completed": {"original": "provenance"}}
+    validate_legacy_contract(current, v3)
+    for key, value in (("sources", ["different"]), ("split", {}), ("tokenizer_files", {}),
+                       ("tokenizer_format", "qwen"), ("ending", "arbitrary-new-ending")):
+        with pytest.raises(ValueError):
+            validate_legacy_contract({**current, key: value}, legacy)
+    with pytest.raises(ValueError):
+        validate_legacy_contract(current, {**legacy, "renderer_sha256": "unreviewed"})
+    with pytest.raises(ValueError):
+        validate_legacy_contract(current, {**legacy, "schema_version": 3})
+
+
+@pytest.mark.parametrize("excluded", [0, 1])
+def test_reuse_copies_checked_payloads_and_keeps_original_manifests(tmp_path, excluded):
+    source = tmp_path / "old" / "parts" / "part1"
+    local, output = tmp_path / "stage" / "part1", tmp_path / "output" / "part1"
+    source.mkdir(parents=True)
+    local.mkdir(parents=True)
+    task = dict(id="part1", source="source.parquet", rows=1 + excluded, row_start=0)
+    prefix = "train-no-tools_text_document"
+    files = []
+    for suffix in (".bin", ".idx", ".metadata.jsonl.gz"):
+        path = source / (prefix + suffix)
+        path.write_bytes(b"data")
+        files.append(dict(name=path.name, bytes=4, sha256=file_sha(path)))
+    manifest = dict(id="part1", task_sha256=json_sha(task), contract_sha256="old-contract",
+                    source=task["source"], row_start=0, documents=1, tokens=1, files=files,
+                    partitions={"train-no-tools": dict(prefix=prefix, documents=1, tokens=1)})
+    if excluded:
+        path = source / "excluded.metadata.jsonl.gz"
+        path.write_bytes(b"exclusion")
+        files.append(dict(name=path.name, bytes=path.stat().st_size, sha256=file_sha(path)))
+        manifest.update(excluded_documents=excluded, source_documents=1+excluded)
+    write_json(source / "READY.json", manifest)
+    original_marker = (source / "READY.json").read_bytes()
+    settings = dict(contract_sha256="new-contract", reuse_completed=dict(
+        directory=str(tmp_path / "old"), contract_sha256="old-contract",
+        parts={"part1": file_sha(source / "READY.json")},
+    ))
+    result = reuse_part(task, settings, local, output)
+    assert result["contract_sha256"] == "new-contract"
+    assert result["reused_from"]["original_manifest"] == manifest
+    assert json.loads((output / "READY.json").read_text()) == result
+    assert (source / "READY.json").read_bytes() == original_marker
+    for item in files:
+        assert (output / item["name"]).read_bytes() == (source / item["name"]).read_bytes()
+        assert (output / item["name"]).stat().st_ino != (source / item["name"]).stat().st_ino
+    # Corruption and changed markers must fail closed, never import silently.
+    (source / files[0]["name"]).write_bytes(b"oops")
+    with pytest.raises(ValueError, match="checksum"):
+        reuse_part(task, settings, local, output)
+    changed = copy.deepcopy(manifest)
+    changed["documents"] = 2
+    write_json(source / "READY.json", changed)
+    with pytest.raises(ValueError, match="READY marker changed"):
+        reuse_part(task, settings, local, output)
+
+
+def test_violetto_reuse_rejects_source_or_tokenizer_drift():
+    legacy = dict(schema_version=5, tokenizer_format="limite", sources=["same"],
+                  tokenizer_files={"tokenizer.json": "pinned"},
+                  implementation_sha256="3bfc63d968072add2a4d1ffd2e43386cfe19d05f4d8408fa7a52a21989a71916",
+                  renderer_sha256="42b27479de41bca0a4c2bb0a263a5e24a60c6329ab8f3f527b8f30b8ef6364aa")
+    current = {**legacy, "schema_version": 6, "implementation_sha256": "new", "renderer_sha256": "new"}
+    validate_legacy_contract(current, legacy)
+    for key in ("sources", "tokenizer_files"):
+        with pytest.raises(ValueError):
+            validate_legacy_contract({**current, key: "changed"}, legacy)
+    with pytest.raises(ValueError):
+        validate_legacy_contract(current, {**legacy, "renderer_sha256": "unknown"})

@@ -1,0 +1,800 @@
+# Exploratory associative-binding probes. No arithmetic or global pair search.
+# Send only text to a model; all other fields are evaluator metadata.
+# Native tokenizer lengths and 32/512-token window eligibility are unverified.
+# These semantic records do not necessarily correspond to individual tokens.
+# Variants within a group are correlated: keep groups in the same data split.
+# Independent assignment and label swaps form counterfactual 2x2 groups.
+schema_version: 1
+prompts:
+- id: labels_4_0_person
+  tags: &id001
+  - token_binding
+  - two_source
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=pine; Mira=oak.
+    Query person: Mira
+    Answer:
+  label_swap: false
+- id: labels_4_0_tree
+  tags: &id002
+  - token_binding
+  - direct_control
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=pine; Mira=oak.
+    Query tree: oak
+    Answer:
+  label_swap: false
+- id: labels_4_1_person
+  tags: &id003
+  - token_binding
+  - two_source
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=oak; Mira=pine.
+    Query person: Mira
+    Answer:
+  label_swap: false
+- id: labels_4_1_tree
+  tags: &id004
+  - token_binding
+  - direct_control
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=oak; Mira=pine.
+    Query tree: oak
+    Answer:
+  label_swap: false
+- id: labels_8_0_person
+  tags: &id005
+  - token_binding
+  - two_source
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=birch; Mira=cedar.
+    Query person: Mira
+    Answer:
+  label_swap: false
+- id: labels_8_0_tree
+  tags: &id006
+  - token_binding
+  - direct_control
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=birch; Mira=cedar.
+    Query tree: cedar
+    Answer:
+  label_swap: false
+- id: labels_8_1_person
+  tags: &id007
+  - token_binding
+  - two_source
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=cedar; Mira=birch.
+    Query person: Mira
+    Answer:
+  label_swap: false
+- id: labels_8_1_tree
+  tags: &id008
+  - token_binding
+  - direct_control
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=cedar; Mira=birch.
+    Query tree: cedar
+    Answer:
+  label_swap: false
+- id: labels_16_0_person
+  tags: &id009
+  - token_binding
+  - two_source
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=NO; larch=YES.
+    Assignments: Lena=oak; Omar=pine; Niko=larch; Mira=yew.
+    Query person: Mira
+    Answer:
+  label_swap: false
+- id: labels_16_0_tree
+  tags: &id010
+  - token_binding
+  - direct_control
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=NO; larch=YES.
+    Assignments: Lena=oak; Omar=pine; Niko=larch; Mira=yew.
+    Query tree: yew
+    Answer:
+  label_swap: false
+- id: labels_16_1_person
+  tags: &id011
+  - token_binding
+  - two_source
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=NO; larch=YES.
+    Assignments: Lena=oak; Omar=pine; Niko=yew; Mira=larch.
+    Query person: Mira
+    Answer:
+  label_swap: false
+- id: labels_16_1_tree
+  tags: &id012
+  - token_binding
+  - direct_control
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=NO; larch=YES.
+    Assignments: Lena=oak; Omar=pine; Niko=yew; Mira=larch.
+    Query tree: yew
+    Answer:
+  label_swap: false
+- id: labels_4_0_person_counterbalanced
+  tags: *id001
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=pine; Mira=oak.
+    Query person: Niko
+    Answer:
+  label_swap: false
+- id: labels_4_0_tree_counterbalanced
+  tags: *id002
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=pine; Mira=oak.
+    Query tree: pine
+    Answer:
+  label_swap: false
+- id: labels_4_1_person_counterbalanced
+  tags: *id003
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=oak; Mira=pine.
+    Query person: Niko
+    Answer:
+  label_swap: false
+- id: labels_4_1_tree_counterbalanced
+  tags: *id004
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=oak; Mira=pine.
+    Query tree: pine
+    Answer:
+  label_swap: false
+- id: labels_8_0_person_counterbalanced
+  tags: *id005
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=birch; Mira=cedar.
+    Query person: Niko
+    Answer:
+  label_swap: false
+- id: labels_8_0_tree_counterbalanced
+  tags: *id006
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=birch; Mira=cedar.
+    Query tree: birch
+    Answer:
+  label_swap: false
+- id: labels_8_1_person_counterbalanced
+  tags: *id007
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=cedar; Mira=birch.
+    Query person: Niko
+    Answer:
+  label_swap: false
+- id: labels_8_1_tree_counterbalanced
+  tags: *id008
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=cedar; Mira=birch.
+    Query tree: birch
+    Answer:
+  label_swap: false
+- id: labels_16_0_person_counterbalanced
+  tags: *id009
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=NO; larch=YES.
+    Assignments: Lena=oak; Omar=pine; Niko=larch; Mira=yew.
+    Query person: Niko
+    Answer:
+  label_swap: false
+- id: labels_16_0_tree_counterbalanced
+  tags: *id010
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=NO; larch=YES.
+    Assignments: Lena=oak; Omar=pine; Niko=larch; Mira=yew.
+    Query tree: larch
+    Answer:
+  label_swap: false
+- id: labels_16_1_person_counterbalanced
+  tags: *id011
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=NO; larch=YES.
+    Assignments: Lena=oak; Omar=pine; Niko=yew; Mira=larch.
+    Query person: Niko
+    Answer:
+  label_swap: false
+- id: labels_16_1_tree_counterbalanced
+  tags: *id012
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=NO; larch=YES.
+    Assignments: Lena=oak; Omar=pine; Niko=yew; Mira=larch.
+    Query tree: larch
+    Answer:
+  label_swap: false
+- id: labels_4_0_person_label_swap
+  tags: *id001
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=NO; pine=YES; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=pine; Mira=oak.
+    Query person: Mira
+    Answer:
+  label_swap: true
+- id: labels_4_0_tree_label_swap
+  tags: *id002
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=NO; pine=YES; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=pine; Mira=oak.
+    Query tree: oak
+    Answer:
+  label_swap: true
+- id: labels_4_1_person_label_swap
+  tags: *id003
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=NO; pine=YES; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=oak; Mira=pine.
+    Query person: Mira
+    Answer:
+  label_swap: true
+- id: labels_4_1_tree_label_swap
+  tags: *id004
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=NO; pine=YES; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=oak; Mira=pine.
+    Query tree: oak
+    Answer:
+  label_swap: true
+- id: labels_8_0_person_label_swap
+  tags: *id005
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=YES; cedar=NO; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=birch; Mira=cedar.
+    Query person: Mira
+    Answer:
+  label_swap: true
+- id: labels_8_0_tree_label_swap
+  tags: *id006
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=YES; cedar=NO; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=birch; Mira=cedar.
+    Query tree: cedar
+    Answer:
+  label_swap: true
+- id: labels_8_1_person_label_swap
+  tags: *id007
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=YES; cedar=NO; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=cedar; Mira=birch.
+    Query person: Mira
+    Answer:
+  label_swap: true
+- id: labels_8_1_tree_label_swap
+  tags: *id008
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=YES; cedar=NO; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=cedar; Mira=birch.
+    Query tree: cedar
+    Answer:
+  label_swap: true
+- id: labels_16_0_person_label_swap
+  tags: *id009
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=YES; larch=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=larch; Mira=yew.
+    Query person: Mira
+    Answer:
+  label_swap: true
+- id: labels_16_0_tree_label_swap
+  tags: *id010
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=YES; larch=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=larch; Mira=yew.
+    Query tree: yew
+    Answer:
+  label_swap: true
+- id: labels_16_1_person_label_swap
+  tags: *id011
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=YES; larch=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=yew; Mira=larch.
+    Query person: Mira
+    Answer:
+  label_swap: true
+- id: labels_16_1_tree_label_swap
+  tags: *id012
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=YES; larch=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=yew; Mira=larch.
+    Query tree: yew
+    Answer:
+  label_swap: true
+- id: labels_4_0_person_counterbalanced_label_swap
+  tags: *id001
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=NO; pine=YES; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=pine; Mira=oak.
+    Query person: Niko
+    Answer:
+  label_swap: true
+- id: labels_4_0_tree_counterbalanced_label_swap
+  tags: *id002
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=NO; pine=YES; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=pine; Mira=oak.
+    Query tree: pine
+    Answer:
+  label_swap: true
+- id: labels_4_1_person_counterbalanced_label_swap
+  tags: *id003
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=NO; pine=YES; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=oak; Mira=pine.
+    Query person: Niko
+    Answer:
+  label_swap: true
+- id: labels_4_1_tree_counterbalanced_label_swap
+  tags: *id004
+  group_id: labels_4
+  label_records: 4
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=NO; pine=YES; elm=NO; ash=YES.
+    Assignments: Lena=elm; Omar=ash; Niko=oak; Mira=pine.
+    Query tree: pine
+    Answer:
+  label_swap: true
+- id: labels_8_0_person_counterbalanced_label_swap
+  tags: *id005
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=YES; cedar=NO; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=birch; Mira=cedar.
+    Query person: Niko
+    Answer:
+  label_swap: true
+- id: labels_8_0_tree_counterbalanced_label_swap
+  tags: *id006
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=YES; cedar=NO; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=birch; Mira=cedar.
+    Query tree: birch
+    Answer:
+  label_swap: true
+- id: labels_8_1_person_counterbalanced_label_swap
+  tags: *id007
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=YES; cedar=NO; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=cedar; Mira=birch.
+    Query person: Niko
+    Answer:
+  label_swap: true
+- id: labels_8_1_tree_counterbalanced_label_swap
+  tags: *id008
+  group_id: labels_8
+  label_records: 8
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=YES; cedar=NO; maple=YES; willow=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=cedar; Mira=birch.
+    Query tree: birch
+    Answer:
+  label_swap: true
+- id: labels_16_0_person_counterbalanced_label_swap
+  tags: *id009
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=YES; larch=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=larch; Mira=yew.
+    Query person: Niko
+    Answer:
+  label_swap: true
+- id: labels_16_0_tree_counterbalanced_label_swap
+  tags: *id010
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=YES; larch=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=larch; Mira=yew.
+    Query tree: larch
+    Answer:
+  label_swap: true
+- id: labels_16_1_person_counterbalanced_label_swap
+  tags: *id011
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'YES'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=YES; larch=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=yew; Mira=larch.
+    Query person: Niko
+    Answer:
+  label_swap: true
+- id: labels_16_1_tree_counterbalanced_label_swap
+  tags: *id012
+  group_id: labels_16
+  label_records: 16
+  expected_answer: 'NO'
+  text: |
+    Use the records below only. For a person query, find that person's assigned
+    tree, then return the label of that tree. For a tree query, return that
+    tree's label directly.
+    Answer with exactly YES or NO. Do not output anything else, including
+    explanations or punctuation.
+    Labels: oak=YES; pine=NO; elm=NO; ash=YES; birch=NO; cedar=YES; maple=YES; willow=NO; spruce=YES; fir=NO; beech=YES; poplar=NO; hazel=NO; holly=YES; yew=YES; larch=NO.
+    Assignments: Lena=oak; Omar=pine; Niko=yew; Mira=larch.
+    Query tree: larch
+    Answer:
+  label_swap: true

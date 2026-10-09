@@ -1,0 +1,156 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+name: deepseek-v41-loop-regularization-figure5-transfer
+reference:
+  repository: https://github.com/qlabs-eng/scaling-exponents
+  commit: 9139c396957a57b6de9a1e7efe7e35a4a863f1a6
+  figure: 5
+  scope: protocol transfer to V4.1; not a numerical replication of the dense paper model
+queue:
+  after: normal-d128
+  before: normal-d384
+  nodes_per_cell: 2
+  gpus_per_cell: 16
+  wait_for_simplicial_completion: false
+grid:
+  cells: 222
+  weight_decay:
+  - 0.05
+  - 0.2
+  - 0.4
+  - 0.8
+  - 1.2
+  - 1.6
+  recursion_by_reference_depth:
+    4:
+    - 6
+    6:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 6
+    8:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 6
+    - 8
+    - 12
+    10:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 6
+    - 8
+    - 12
+    12:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 6
+    - 8
+    - 12
+    14:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 6
+    - 8
+    16:
+    - 1
+    - 2
+    - 3
+    18:
+    - 1
+  geometry_by_reference_depth:
+    4:
+      hidden_size: 128
+      stored_layers: 10
+      routed_topk: 2
+    6:
+      hidden_size: 128
+      stored_layers: 15
+      routed_topk: 2
+    8:
+      hidden_size: 128
+      stored_layers: 20
+      routed_topk: 2
+    10:
+      hidden_size: 256
+      stored_layers: 25
+      routed_topk: 5
+    12:
+      hidden_size: 256
+      stored_layers: 30
+      routed_topk: 5
+    14:
+      hidden_size: 256
+      stored_layers: 35
+      routed_topk: 5
+    16:
+      hidden_size: 256
+      stored_layers: 40
+      routed_topk: 5
+    18:
+      hidden_size: 384
+      stored_layers: 45
+      routed_topk: 8
+  width_rounding: upward to multiples of 128; minimum 128
+  expert_intermediate_size: 128
+  shared_experts: 1
+  routed_experts: 384
+  effective_active_hidden_width_ratio: 3.0
+  first_cell:
+    reference_depth: 8
+    recursions: 2
+    weight_decay: 0.8
+architecture:
+  block_allocation: thirds; remainder to core then coda
+  tied_core: true
+  first_core_input: raw prelude, matching released code
+  boundary: parameter-free feature RMSNorm plus prelude / sqrt(2), after every core including before coda
+  gradients: all passes
+  attention: normal
+  csa2_core_entry_state: immutable prelude-owned KV and index state
+training:
+  data: env:ARCHLAB_DEEPSEEK_V41_SCRATCH_DATA
+  unique_supervised_targets: 100000000
+  epochs: 10
+  planned_supervised_targets_per_cell: 1000000000
+  token_allowance_per_cell: 10000000000
+  planned_sweep_targets: 222000000000
+  seed: 42
+  context: 2048
+  global_windows: 64
+  microbatch: 4
+  performance_contract: recipes/deepseek_v41/performance/performance-v1.json
+  optimizer: Sinkhorn-Engram-FP32-momentum; Adafactor-other-parameters
+  engram_peak_base_learning_rate: 0.00026
+  engram_learning_rate_multiplier: 5
+  engram_weight_decay: 0
+  weight_decay_rule: decoupled matrix-only; min(relative_lr, step**-0.5) * wd
+  peak_relative_learning_rate: 0.01
+  minimum_relative_learning_rate: 0.001
+  warmup_updates: 100
+  fixed_recursions_per_cell: true
+checkpoints:
+  count: 5
+  milestones_supervised_targets:
+  - 200000000
+  - 400000000
+  - 600000000
+  - 800000000
+  - 1000000000
+  storage: env:ARCHLAB_SCALING_CHECKPOINT_ROOT
+  nas_symlinks: true
+evaluation:
+  heldout_targets: 1000000
+  interval_training_targets: 100000000
+  primary_compute_axis: measured training GPU-seconds on B300, excluding validation and checkpoint IO
+  measure_preferred_recursion: true
+  enforce_increasing_optimum: false
+  prohibit_reference_data_fallback: true

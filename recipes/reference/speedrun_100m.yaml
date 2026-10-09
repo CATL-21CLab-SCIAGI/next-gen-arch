@@ -1,0 +1,31 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+profiles:
+  qwen_gdn:
+    extends:
+    - ../defaults.yaml#base
+    - ../defaults.yaml#backends_speedrun
+    - ../defaults.yaml#scales_speedrun_100m
+    name: speedrun-qwen-gdn-100m-seed42
+    variant: qwen-gdn
+    seed: 42
+  research_baseline:
+    extends:
+    - ../defaults.yaml#base
+    - ../defaults.yaml#backends_speedrun
+    - ../defaults.yaml#scales_speedrun_100m
+    name: speedrun-research-baseline-100m-seed42
+    variant: baseline
+    seed: 42
+    comparison:
+      regime: controlled
+      baseline_variant: baseline
+      paired_seed: true
+      paired_data_order: true
+      shared_initialization: hash
+      primary_metric: validation_bpb
+    artifacts:
+      mode: research
+    paths:
+      data_root: env:NGA_DATA_ROOT
+      data_manifest: env:NGA_DATA_MANIFEST
+      output_dir: env:NGA_OUTPUT_DIR

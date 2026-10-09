@@ -1,0 +1,216 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+name: limite-matched-2B-full-finetune-math
+parent:
+  model: paradigma-inc/limite-1b-base
+  revision: cc612bafcd4acd8445936201694c8c41aea8e479
+  snapshot: env:LIMITE_BASE_MODEL
+  frozen: false
+initialization:
+  normal: env:LIMITE_NATIVE_NORMAL_2B
+  simplicial: env:LIMITE_NATIVE_SIMPLICIAL_2B
+  checkpoint_step: 7630
+  checkpoint_tokens: 2000158720
+  source_attention_backend: native
+  target_attention_backend: tilelang
+  intentional_backend_migration: true
+  preserve:
+  - adapter_weights
+  - adapter_AdamW_state
+  - rng_state
+  - data_order
+  retain_source_training_states: true
+adapters:
+  variants:
+  - normal
+  - simplicial
+  placement: before_each_of_48_native_blocks
+  geometry: derive_from_each_native_attention_module
+  query_heads: 10
+  kv_heads: 2
+  head_dim: 128
+  model_width: 1280
+  local_window_span: 1025
+  global_every: 4
+  simplicial_short_window: 16
+  preserve:
+  - qk_rmsnorm
+  - native_softmax_scale
+  - local_rope
+  - global_nope
+  - value_embeddings
+  - xsa
+  - attention_gates
+  attention_backend: tilelang
+finetune:
+  module: archlab.automodel.limite_adapter_warmup
+  trainable_mode: full
+  data: env:LIMITE_MATH_WINDOWS
+  source: nvidia/Nemotron-Math-v2
+  objective: all_token_next_token
+  target_total_tokens: 10000000000
+  additional_tokens: 7999841280
+  context: 2048
+  global_batch: 128
+  microbatch_per_gpu: 8
+  accumulation: 1
+  document_contained_windows: true
+  padding: false
+  identical_global_data_order: true
+  exclude_exact_rl_heldout_problem_hashes: true
+  native_parameter_dtypes: preserved_bfloat16_matrices_and_float32_small_parameters
+  adapter_optimizer:
+    name: torch.optim.AdamW
+    loaded_state: unchanged_from_2B_source
+    peak_lr: 0.0001
+    betas:
+    - 0.9
+    - 0.95
+    weight_decay: 0
+    schedule: original_global_token_cosine
+  backbone_optimizer:
+    name: transformer_engine.pytorch.optimizers.FusedAdam
+    master_weights: true
+    master_weight_dtype: float32
+    exp_avg_dtype: float32
+    exp_avg_sq_dtype: float32
+    initial_state: fresh
+    peak_lr: 1.0e-05
+    warmup_steps: 100
+    betas:
+    - 0.9
+    - 0.95
+    weight_decay: 0
+    schedule: cosine_over_remaining_finetune_tokens
+  gradient_clip: 1.0
+  communication_schedule: deferred
+  gradient_reduction: mean_after_backward_in_float32_then_cast_to_native_dtype
+  checkpoint_tokens:
+  - 2000158720
+  - 4000000000
+  - 6000000000
+  - 8000000000
+  - 10000000000
+  checkpoint_payload:
+  - adapter_weights
+  - backbone_weights
+  - both_optimizer_states
+  - rng_state
+  checkpoint_storage: env:LIMITE_FULL_FINETUNE_OSS
+  tracking_experiment: "Limite \u2014 Full fine tuning"
+rl:
+  module: archlab.automodel.limite_adapter_rl
+  source: nvidia/Nemotron-RL-Math-v2
+  data: env:LIMITE_MATH_RL_DATA
+  trainable_mode: full
+  frozen_base: false
+  runtime_overlay: env:TRL_RUNTIME
+  algorithm: upstream_TRL_1.4_GRPO_DAPO
+  steps: 400
+  generations_per_problem: 4
+  global_problems_per_update: 16
+  max_prompt_tokens: 2048
+  max_completion_tokens: 8192
+  optimizer:
+    name: SignalFusedAdam
+    lr: 1.0e-05
+    betas:
+    - 0.9
+    - 0.95
+    weight_decay: 0
+    master_weights: true
+  sampling:
+    temperature: 1.0
+    top_p: 1.0
+    top_k: 0
+  importance_denominator: actual_native_sampling_logprobs
+  sampling_probability_storage: streamed_selected_tokens_and_one_FP32_distribution
+  runtime_sequence_attention: true
+  input_padding_for_kernel_reuse: false
+  checkpoint_steps: 10
+  checkpoint_payload:
+  - adapter_weights
+  - backbone_weights
+  - optimizer_masters_and_moments
+  - trainer_clock
+  - scheduler
+  - applied_update_evidence
+  - every_rank_python_numpy_torch_cuda_rng
+  resume_initial_evaluation: false
+  legacy_resume: explicit_migration_retaining_weights_moments_clock_and_rank_zero_torch_rng_then_reseeding_other_ranks
+  incomplete_response_reward: 0
+  zero_signal_optimizer_update: false
+  stop_after_flat_batches: 8
+  start_after: own_variant_exact_10B_total_finetune_and_full_weight_RL_READY
+  tracking_experiment: "Limite \u2014 RL"
+execution:
+  nodes_per_variant: 2
+  gpus_per_node: 8
+  hardware: NVIDIA B300
+  kernel_runtime_overlay: env:TILELANG_RUNTIME
+  attention_implementation: package:archlab/architectures/tilelang_attention.py
+  attention_kernel_versions:
+    normal: tilelang-forward-fa4-native-bf16-backward-v3
+    simplicial: tilelang-joint-bf16-v2
+  normal_backward_runtime_overlay: env:FA4_RUNTIME
+  normal_backward_dsl_overlay: env:CUTLASS_DSL_RUNTIME
+  normal_performance_contract:
+    compile_mode: strict-blocks
+    normal_kernel: gqa
+    normal_backward: fa4
+    attention_kernel: tilelang-forward-fa4-native-bf16-backward-v3
+    forward: unchanged_shared_tilelang_query64_key64
+    backward: official_FA4_with_exact_shared_TileLang_Delta_log2_LSE_and_precast_scaled_dS
+    backward_scope: native_BF16_output_local_batch8_context2048_heads10_kv2_dim128_scale0.1
+    backward_fallback: original_TileLang_GQA_for_other_geometry_including_RL_and_decode
+    backward_dependencies:
+      flash-attn-4: 4.0.0b33
+      nvidia-cutlass-dsl: 4.6.2
+      apache-tvm-ffi: 0.1.12
+      quack-kernels: 0.5.3
+    head_chunk: 512
+    checkpoint_head: false
+    prefetch_windows: true
+    communication_schedule: deferred
+    cuda_graph: manual
+    graph_scope: unchanged_zero_grad_forward_backward_only
+    graph_input_layout: original_2049_column_window_view
+    static_native_context: exact_unmasked_training_masks_and_default_positions
+    graph_partial_token_step: uncaptured_original_loss_normalizer
+    graph_optimizer_clip_FP32_mean: unchanged_outside_capture
+    native_input_and_mlp_rmsnorm: eager_forward_and_backward_with_dtype_default_epsilon
+    compiler_precision:
+      emulate_precision_casts: true
+      force_same_precision: true
+      division_rounding: true
+      cudagraphs: false
+    preserved:
+    - geometry
+    - parameter_dtypes
+    - sigmoid_logit_transform
+    - loss_reduction_chunks
+    - global_data_order
+    - RNG
+    - optimizer_states
+    - learning_rate_schedule
+    admission: restored_full_optimizer_and_RNG_numerical_envelope_then_16_rank_finite_updates_and_bitwise_replica_probes
+  simplicial_performance_contract:
+    compile_mode: none
+    cuda_graph: none
+    head_chunk: 512
+    checkpoint_head: true
+    communication_schedule: deferred
+  baseline_mfu:
+    definition: useful_forward_and_backward_matrix_FLOPs_per_elapsed_training_step
+    attention: valid_causal_and_window_pairs_in_both_stacks
+    dense_BF16_peak_flops_per_B300: 2250000000000000
+    excluded:
+    - activation_recomputation
+    - optimizer
+    - lookup_tables
+    - padded_tiles
+    - communication
+  container_frameworks: unchanged
+  process_group_timeout_minutes: 30
+  checkpoint_timeout_reason: full_optimizer_upload_and_checksum_verification
+  synchronize_variants: false
+  qualification: full_weight_update_optimizer_resume_distributed_gradient_and_math_RL_oracles

@@ -1,0 +1,596 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+profiles:
+  27b_full:
+    name: qwen38-27b-full-text
+    source:
+      model: Qwen/Qwen3.8-27B
+      revision: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+      config_sha256: 191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab
+      tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+      scope: text backbone only
+    model:
+      vocab_size: 248320
+      sequence_len: 2048
+      max_position_embeddings: 262144
+      num_hidden_layers: 64
+      hidden_size: 5120
+      intermediate_size: 17408
+      attention_pattern:
+      - gdn
+      - gdn
+      - gdn
+      - full_attention
+      full_attention:
+        query_heads: 24
+        kv_heads: 4
+        head_dim: 256
+        partial_rotary_factor: 0.25
+        output_gate: silu
+      gdn:
+        qk_heads: 16
+        value_heads: 48
+        key_dim: 128
+        value_dim: 128
+        conv_kernel: 4
+      mtp:
+        layers: 1
+        dedicated_embeddings: false
+        fusion: rmsnorm_concat_linear
+    training:
+      mtp_loss_weight: 0.1
+      mtp_loss_weight_provenance: local fixed coefficient; not present in the released inference config
+    precision:
+      recipe: bf16
+      optimizer: megatron_native_muon_medium_fp32_matmuls
+      dependency_policy: unmodified_container_runtime
+  27b_quarter:
+    name: qwen38-27b-quarter-text
+    source:
+      model: Qwen/Qwen3.8-27B
+      revision: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+      config_sha256: 191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab
+      tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+      scope: text backbone only
+    scaling_contract:
+      rule: divide every divisible capacity shape by four
+      preserve:
+      - tokenizer vocabulary and token IDs
+      - maximum position reach
+      - three Gated DeltaNet layers followed by one gated full-attention layer
+      - causal convolution kernel extent
+      - one multi-token-prediction layer
+    model:
+      vocab_size: 248320
+      sequence_len: 2048
+      max_position_embeddings: 262144
+      num_hidden_layers: 16
+      hidden_size: 1280
+      intermediate_size: 4352
+      attention_pattern:
+      - gdn
+      - gdn
+      - gdn
+      - full_attention
+      full_attention:
+        query_heads: 6
+        kv_heads: 1
+        head_dim: 64
+        partial_rotary_factor: 0.25
+        output_gate: sigmoid
+      gdn:
+        qk_heads: 4
+        value_heads: 12
+        key_dim: 32
+        value_dim: 32
+        conv_kernel: 4
+      mtp_layers: 1
+    precision:
+      recipe: bf16
+      dependency_policy: unmodified_container_runtime
+    optimizer:
+      name: megatron_native_muon
+      scalar_fallback: adam
+      fp32_matmul_precision: medium
+      coefficient_schedule: polar_express
+      newton_schulz_steps: 8
+      peak_learning_rate: 5.0e-05
+      minimum_learning_rate: 5.0e-06
+  flash_next_1b_depth48_no_mtp:
+    name: qwen38-flash-next-1b-depth48-no-mtp
+    variant: true
+    source:
+      model: Qwen/Qwen3.8-Flash-Next
+      revision: 34567a4712bc9766c4449e2e98e4468bfa24d915
+      config_sha256: 889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b
+      tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+      initialize: random_seed_42
+      weights_loaded: false
+      scope: text_only
+    scaling_contract:
+      rule: approximately 1B total parameters including every expert and PLE table
+      depth_exception: retain all 48 backbone layers
+      tokenizer_vocabulary: preserve token identity
+      mtp: disabled
+      initialization: fresh random weights, optimizer, scheduler and data cursor; no checkpoint loaded
+    model:
+      vocab_size: 248320
+      sequence_length: 2048
+      layers: 48
+      hidden_size: 384
+      layer_pattern:
+      - gdn
+      - gdn
+      - gdn
+      - dense_attention
+      dense_attention:
+        query_heads: 6
+        kv_heads: 1
+        head_dim: 64
+        rotary_fraction: 0.25
+      gdn:
+        qk_heads: 4
+        value_heads: 12
+        key_dim: 32
+        value_dim: 32
+        conv_kernel: 4
+      moe:
+        routed_experts: 64
+        experts_per_token: 3
+        expert_intermediate_size: 112
+        shared_expert_intermediate_size: 112
+        router_aux_loss_coefficient: 0.01
+        router_z_loss_coefficient: 0.001
+      gated_residual:
+        streams: 1
+        low_rank: 48
+      ple:
+        layer: 2
+        parameters: 384012288
+        ngram_size: 3
+        heads_per_ngram: 2
+        base_vocab_size: 1000000
+        embedding_dim: 384
+        partitions: 32
+        replication: all 32 partitions local on every DP replica; no lookup communication
+      mtp:
+        depths: 0
+        loss_scaling_factor: 0.0
+      parameter_count: 1006441440
+    parallelism:
+      tensor: 1
+      pipeline: 1
+      expert: 1
+      expert_tensor: 1
+      context: 1
+      data: 32
+      expert_data: 32
+      pipeline_layers:
+      - 48
+      mode: dp-only
+    execution:
+      cuda_device_max_connections: 32
+      overlap_grad_reduce: true
+      overlap_param_gather: false
+      moe_permute_fusion: true
+      moe_router_fusion: true
+      cross_entropy_loss_fusion: true
+      cross_entropy_fusion_impl: native
+      vendor_runtime_changes: forbidden
+    training:
+      loss_normalization: global-valid-token-mean-v1
+      attention_grouping: explicit-gqa-v1
+      micro_batch_sequences: 4
+      global_batch_sequences: 4096
+      microbatches_per_step: 32
+      memory_constraint: microbatch 16 caused host OOM on the 512-GiB nodes despite advertised GPU capacity
+      tokens_per_step: 8388608
+      steps: 11921
+      effective_tokens: 100000595968
+      peak_lr: 0.00176
+      minimum_lr: 0.000176
+      warmup_fraction: 0.01
+      schedule: cosine
+      gradient_clip: 0.5
+      checkpoint_interval_steps: 1192
+    optimizer:
+      native_megatron_muon:
+        momentum: 0.95
+        nesterov: true
+        coefficient: polar_express
+        newton_schulz_steps: 8
+        scale_mode: spectral
+        extra_scale_factor: 0.2
+        fp32_matmul_precision: medium
+      scalar_optimizer: adamw
+      ple_tables:
+        optimizer: adam
+        weight_decay: 0.0
+    runtime:
+      container: env:NGA_CONTAINER_DIGEST
+      package_policy: frozen container-owned; no installation or runtime patching
+    output_root: env:NGA_OUTPUT_ROOT
+  flash_next_dense_ple:
+    name: qwen38-flash-next-dense-ple
+    variant: true
+    source:
+      model: Qwen/Qwen3.8-Flash-Next
+      revision: 34567a4712bc9766c4449e2e98e4468bfa24d915
+      config_sha256: 889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b
+      tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+      initialize: random_seed_42
+      weights_loaded: false
+      scope: text_only
+    model:
+      vocab_size: 248320
+      sequence_length: 2048
+      layers: 48
+      hidden_size: 2560
+      layer_pattern:
+      - gdn
+      - gdn
+      - gdn
+      - dense_attention
+      dense_attention:
+        query_heads: 24
+        kv_heads: 2
+        head_dim: 256
+        rotary_fraction: 0.25
+      gdn:
+        qk_heads: 16
+        value_heads: 48
+        key_dim: 128
+        value_dim: 128
+        conv_kernel: 4
+      moe:
+        routed_experts: 512
+        experts_per_token: 10
+        expert_intermediate_size: 640
+        shared_expert_intermediate_size: 640
+        router_aux_loss_coefficient: 0.001
+        router_z_loss_coefficient: 0.0
+      gated_residual:
+        streams: 4
+        low_rank: 320
+        pipeline_representation: packed
+      ple:
+        layer: 2
+        parameters: 51200245760
+        ngram_size: 3
+        heads_per_ngram: 8
+        base_vocab_size: 20000000
+        partitions: 128
+        owners: 8
+      mtp:
+        depths: 3
+        repeated_shared_layer: true
+        loss_scaling_factor: 0.1
+    parallelism:
+      tensor: 1
+      pipeline: 4
+      expert: 8
+      context: 1
+      pipeline_layers:
+      - 12
+      - 13
+      - 13
+      - 10
+    training:
+      loss_normalization: global-valid-token-mean-v1
+      global_batch_sequences: 4096
+      tokens_per_step: 8388608
+      steps: 11921
+      effective_tokens: 100000595968
+      peak_lr: 0.00176
+      minimum_lr: 0.000176
+      warmup_fraction: 0.01
+      schedule: cosine
+      gradient_clip: 0.5
+      checkpoint_interval_steps: 1192
+    optimizer:
+      native_megatron_muon:
+        momentum: 0.95
+        nesterov: true
+        coefficient: polar_express
+        newton_schulz_steps: 8
+        scale_mode: spectral
+        extra_scale_factor: 0.2
+        fp32_matmul_precision: medium
+      scalar_optimizer: adamw
+      ple_tables:
+        optimizer: adam
+        weight_decay: 0.0
+      qkv_split_note: Megatron query-group Q/K/V splitting is coarser than Qwen per-head splitting
+      canzona: unavailable
+    output_root: env:NGA_OUTPUT_ROOT
+  flash_next_quarter:
+    name: qwen38-flash-next-quarter-text
+    source:
+      collection: https://huggingface.co/collections/Qwen/qwen38-flash-next
+      model: Qwen/Qwen3.8-Flash-Next
+      revision_policy: pin-before-launch
+    scaling_contract:
+      rule: divide every divisible shape hyperparameter by four
+      indivisible_units: retain a minimum of one
+      routed_experts_per_token: round 10 / 4 to 3
+      tokenizer_vocabulary: preserve token identity; do not scale
+    model:
+      vocab_size: 248320
+      sequence_len: 2048
+      max_position_embeddings: 262144
+      num_hidden_layers: 12
+      hidden_size: 640
+      attention_pattern:
+      - gdn
+      - gdn
+      - gdn
+      - qsa
+      qsa:
+        query_heads: 6
+        kv_heads: 1
+        head_dim: 64
+        partial_rotary_factor: 0.25
+        indexer_query_heads: 1
+        indexer_kv_heads: 1
+        indexer_head_dim: 32
+        indexer_token_budget: 512
+      gdn:
+        qk_heads: 4
+        value_heads: 12
+        key_dim: 32
+        value_dim: 32
+        conv_kernel: 4
+      moe:
+        routed_experts: 128
+        active_routed_experts: 3
+        routed_intermediate_size: 160
+        shared_experts: 1
+        shared_intermediate_size: 160
+      gated_residual:
+        streams: 1
+        low_rank: 80
+      ngram_ple:
+        orders:
+        - 2
+        - 3
+        vocabulary_per_hash: 5000000
+        heads_per_order: 2
+        embedding_width: 640
+        injection_layer: 0
+      mtp_layers: 1
+    precision:
+      recipe: fp4_blackwell
+      transformer_engine_recipe: NVFP4BlockScaling
+      stochastic_rounding: true
+      two_dimensional_quantization: true
+      dependency_policy: unmodified_container_runtime
+  flash_next_quarter_depth48_no_mtp:
+    name: qwen38-flash-next-quarter-depth48-no-mtp
+    variant: true
+    source:
+      model: Qwen/Qwen3.8-Flash-Next
+      revision: 34567a4712bc9766c4449e2e98e4468bfa24d915
+      config_sha256: 889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b
+      tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+      initialize: random_seed_42
+      weights_loaded: false
+      scope: text_only
+    scaling_contract:
+      rule: divide divisible shape hyperparameters by four
+      depth_exception: retain all 48 backbone layers
+      routed_experts_per_token: round 10 / 4 to 3
+      tokenizer_vocabulary: preserve token identity
+      mtp: disabled
+    model:
+      vocab_size: 248320
+      sequence_length: 2048
+      layers: 48
+      hidden_size: 640
+      layer_pattern:
+      - gdn
+      - gdn
+      - gdn
+      - dense_attention
+      dense_attention:
+        query_heads: 6
+        kv_heads: 1
+        head_dim: 64
+        rotary_fraction: 0.25
+      gdn:
+        qk_heads: 4
+        value_heads: 12
+        key_dim: 32
+        value_dim: 32
+        conv_kernel: 4
+      moe:
+        routed_experts: 128
+        experts_per_token: 3
+        expert_intermediate_size: 160
+        shared_expert_intermediate_size: 160
+        router_aux_loss_coefficient: 0.01
+        router_z_loss_coefficient: 0.001
+      gated_residual:
+        streams: 1
+        low_rank: 80
+      ple:
+        layer: 2
+        parameters: 3200040960
+        ngram_size: 3
+        heads_per_ngram: 2
+        base_vocab_size: 5000000
+        partitions: 32
+      mtp:
+        depths: 0
+        loss_scaling_factor: 0.0
+      parameter_count: 5474884576
+    parallelism:
+      tensor: 1
+      pipeline: 4
+      expert: 8
+      context: 1
+      pipeline_layers:
+      - 12
+      - 12
+      - 12
+      - 12
+    training:
+      loss_normalization: global-valid-token-mean-v1
+      global_batch_sequences: 4096
+      tokens_per_step: 8388608
+      steps: 11921
+      effective_tokens: 100000595968
+      peak_lr: 0.00176
+      minimum_lr: 0.000176
+      warmup_fraction: 0.01
+      schedule: cosine
+      gradient_clip: 0.5
+      checkpoint_interval_steps: 1192
+    optimizer:
+      native_megatron_muon:
+        momentum: 0.95
+        nesterov: true
+        coefficient: polar_express
+        newton_schulz_steps: 8
+        scale_mode: spectral
+        extra_scale_factor: 0.2
+        fp32_matmul_precision: medium
+      scalar_optimizer: adamw
+      ple_tables:
+        optimizer: adam
+        weight_decay: 0.0
+    output_root: env:NGA_OUTPUT_ROOT
+  flash_next_w320_e32:
+    name: qwen38-flash-next-w320-e32-depth48-no-mtp
+    variant: true
+    source:
+      model: Qwen/Qwen3.8-Flash-Next
+      revision: 34567a4712bc9766c4449e2e98e4468bfa24d915
+      config_sha256: 889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b
+      tokenizer_sha256: 0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3
+      initialize: random_seed_42
+      weights_loaded: false
+      scope: text_only
+    model:
+      factory: archlab.architectures.qwen38_flash_next_full.Qwen38FlashNextFullConfig.width320_e32_depth48_no_mtp
+      vocab_size: 248320
+      sequence_length: 2048
+      layers: 48
+      hidden_size: 320
+      layer_pattern:
+      - gdn
+      - gdn
+      - gdn
+      - dense_attention
+      dense_attention:
+        query_heads: 24
+        kv_heads: 2
+        head_dim: 32
+        output_gate: sigmoid
+        qk_norm: per_head_zero_centered_rmsnorm
+        rotary_fraction: 0.25
+        rope_theta: 10000000
+        physical_projection_shapes:
+          q:
+          - 768
+          - 320
+          gate:
+          - 768
+          - 320
+          k:
+          - 64
+          - 320
+          v:
+          - 64
+          - 320
+        packing: native_per_kv_group_query_gate_key_value
+      gdn:
+        qk_heads: 16
+        value_heads: 48
+        key_dim: 16
+        value_dim: 16
+        conv_kernel: 4
+        output_gate: sigmoid
+      moe:
+        routed_experts: 32
+        experts_per_token: 10
+        expert_intermediate_size: 80
+        shared_expert_intermediate_size: 80
+        shared_output_gate: sigmoid
+        router_aux_loss_coefficient: 0.001
+        router_z_loss_coefficient: 0.0
+      gated_residual:
+        streams: 4
+        low_rank: 40
+        zero_centered_gamma: true
+      ple:
+        layer: 2
+        ngram_size: 3
+        heads_per_ngram: 8
+        base_vocab_size: 163840
+        embedding_dim: 320
+        branch_dim: 20
+        padded_rows: 2622720
+        padding_multiple: 128
+        partitions: 32
+        zero_centered_gamma: true
+        parameters: 52454400
+        replication: all partitions local on every DP replica
+      mtp:
+        depths: 0
+        loss_scaling_factor: 0.0
+      qsa_indexer: false
+      parameter_count: 387680960
+    parallelism:
+      mode: dp-only
+      data: 32
+      expert_data: 32
+      tensor: 1
+      pipeline: 1
+      expert: 1
+      expert_tensor: 1
+      context: 1
+    execution:
+      cuda_device_max_connections: 32
+      overlap_grad_reduce: true
+      overlap_param_gather: false
+      moe_permute_fusion: true
+      moe_router_fusion: true
+      cross_entropy_loss_fusion: true
+      cross_entropy_fusion_impl: native
+      vendor_runtime_changes: forbidden
+    training:
+      initialization: fresh_weights_optimizer_scheduler_and_data_cursor
+      seed: 42
+      precision: bf16
+      micro_batch_sequences: 4
+      global_batch_sequences: 4096
+      microbatches_per_step: 32
+      tokens_per_step: 8388608
+      steps: 11921
+      effective_tokens: 100000595968
+      peak_lr: 0.00176
+      minimum_lr: 0.000176
+      warmup_fraction: 0.01
+      schedule: cosine
+      gradient_clip: 0.5
+      checkpoint_interval_steps: 1192
+    optimizer:
+      native_megatron_muon:
+        momentum: 0.95
+        nesterov: true
+        coefficient: polar_express
+        newton_schulz_steps: 8
+        scale_mode: spectral
+        extra_scale_factor: 0.2
+        fp32_matmul_precision: medium
+      attention_projection_grouping: separate Q, gate, K, V matrices; bypass native ungated-QKV split
+      expert_projection_grouping: separate gate, up, down matrices per expert
+      scalar_optimizer: adamw
+      ple_tables:
+        optimizer: adam
+        weight_decay: 0.0
+    runtime:
+      container: env:NGA_CONTAINER_DIGEST
+      package_policy: frozen container-owned; no installation or runtime patching
+    data_root: env:NGA_DATA_ROOT
+    tokenizer: env:NGA_TOKENIZER
+    output_root: env:NGA_OUTPUT_ROOT

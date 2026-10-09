@@ -1,0 +1,22 @@
+schema_version: 1
+name: qwen38-pretrained-regression-pilot-v1
+# Benchmark instructions, not copies of benchmark examples or their answers.
+math:
+  gsm8k: |-
+    {{ question }}
+    Solve the problem and end your final response with "The answer is NUMBER."
+  aime: |-
+    {{ question }}
+    Give your final answer in \boxed{}.
+# lm-eval 0.4.13 zero-shot text formats. Choices are scored by likelihood.
+multiple_choice:
+  mmlu: |-
+    The following are multiple choice questions (with answers) about {{ subject.replace('_', ' ') }}.
+
+    {{ question.strip() }}
+    A. {{ choices[0] }}
+    B. {{ choices[1] }}
+    C. {{ choices[2] }}
+    D. {{ choices[3] }}
+    Answer:
+  arc_challenge: "Question: {{ question }}\nAnswer:"

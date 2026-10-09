@@ -1,0 +1,73 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+schema_version: 1
+name: limite-aime26-eval-pipeline-v3
+purpose: Prioritize base, Violetto and both matched SFT evaluations with the full supported context.
+backend:
+  harness: eval_pipeline/custom_eval/eval_aime26.py
+  upstream_revision: f3c8822a29047bbff7ea4e4c758856089a336a04
+  source: env:EVAL_PIPELINE_SOURCE
+  integration_patch: env:ARCHLAB_EVAL_PIPELINE_PATCH
+  inference: native Limite checkpoint loader and native eager decoding
+  native_gqa_backend: sdpa
+  dataset_fallback: forbidden; inject sealed real AIME26 cases
+benchmarks:
+- aime26
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 0
+  samples_per_problem: 4
+  seed: 20261002
+  max_new_tokens: 131072
+  context_limit: 131072
+  budget_policy: native_context_minus_prompt
+  eos_token_ids:
+  - 151643
+  - 151645
+  repetition_watchdog: false
+prompt:
+  template: checkpoint-bundled Violetto native single-turn chat
+  few_shot_examples: 0
+  tools: false
+  boxed_hint: false
+scoring:
+  primary: strict symbolic final-answer pass_at_1
+  also_report:
+  - eval_pipeline_pass_at_1
+  - pass_at_2
+  - pass_at_4
+  - truncation_rate
+  - natural_eos_rate
+  - completion_tokens
+  uncertainty: problem-cluster bootstrap, paired first-draw comparison
+execution:
+  nodes_per_variant: 2
+  gpus_per_variant: 16
+  local_batch_size: 1
+  immediate_parallel:
+  - base_eval
+  - publisher_violetto_eval
+  - normal_sft_10B_eval
+  - simplicial_sft_10B_eval
+  normal_gpu_processes:
+  - base_eval
+  - publisher_violetto_eval
+  - normal_sft_10B_eval
+  simplicial_gpu_processes:
+  - simplicial_sft_10B_eval
+  deferred_normal:
+  - resume_full_state_rl
+  - final_normal_rl_eval
+  deferred_simplicial:
+  - final_simplicial_rl_eval
+  deferred_requires: all_four_immediate_evaluations_complete
+  wait_for_other_variant_after_initial_evaluations: false
+  gpu_memory_limit_gib: 40
+disclosure:
+- This removes the 32768 completion limit; the native total-context limit remains.
+- Four independent samples mean pass_at_1 is mean sample accuracy, not any-of-four accuracy.
+- The upstream extractor can score a guess from unfinished reasoning; both definitions are retained.
+- The custom inserted layers require native inference and are not silently replaced by plain vLLM.
+- The CUDA-graph/flash_attn_with_kvcache candidate failed numerical admission and is excluded; publisher
+  SDPA may select its native FlashAttention implementation.
+- Publisher exact benchmark sampling details remain undisclosed; this is not an exact score reproduction.

@@ -1,0 +1,7 @@
+schema_version: 1
+templates:
+  user: |
+    Solve the following math problem. Give a concise solution and put your
+    single final answer in \boxed{{...}}. Do not list alternative final answers.
+
+    {problem}

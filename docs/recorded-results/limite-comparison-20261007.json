@@ -1,0 +1,59 @@
+{
+  "evidence_date": "2026-10-07",
+  "historical_source_revision": "dfb0ab4622bf6c30f3d09612328eb43827f8a067",
+  "protocol": {
+    "benchmark": "AIME26",
+    "problems": 30,
+    "draws_per_problem": 4,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "total_context_tokens": 131072,
+    "grader": "primary strict answer grader",
+    "metric": "mean response correctness (pass@1)"
+  },
+  "models": [
+    {
+      "model": "normal_sft10b",
+      "correct": 19,
+      "responses": 120,
+      "native_context_exhausted": 89
+    },
+    {
+      "model": "simplicial_sft10b",
+      "correct": 25,
+      "responses": 120,
+      "native_context_exhausted": 64
+    },
+    {
+      "model": "normal_rl400",
+      "correct": 15,
+      "responses": 120,
+      "native_context_exhausted": 2
+    },
+    {
+      "model": "simplicial_rl400",
+      "correct": 25,
+      "responses": 120,
+      "native_context_exhausted": 5
+    },
+    {
+      "model": "publisher_violetto",
+      "correct": 111,
+      "responses": 120,
+      "native_context_exhausted": 4
+    },
+    {
+      "model": "violetto_rl142",
+      "correct": 100,
+      "responses": 120,
+      "native_context_exhausted": 3
+    }
+  ],
+  "limitations": [
+    "single training pair",
+    "geometry-matched, unequal parameter counts",
+    "historical SFT tail/EOS omission",
+    "RL update histories differ",
+    "raw responses and checkpoints retained privately"
+  ]
+}

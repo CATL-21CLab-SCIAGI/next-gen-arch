@@ -1,0 +1,45 @@
+{
+  "campaign": "global-recipe-portability-negative",
+  "status": "complete-with-fail-fast-results",
+  "hardware": {
+    "accelerator": "NVIDIA B300",
+    "compute_capability": "10.3",
+    "nodes": 3,
+    "allowlisted_gpus_per_node": 5,
+    "excluded_busy_gpus_per_node": 3,
+    "ptxas": "CUDA 13.0"
+  },
+  "contract": {
+    "variants": 16,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "launched_runs": 48,
+    "finite_runs": 45,
+    "failed_runs": 3,
+    "backend_profile": "compile-max-autotune",
+    "optimization_recipe": "z-loss-5e-6-clip01"
+  },
+  "failures": [
+    {
+      "variant": "kimi-k3-kda-update",
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "iteration": 2,
+      "reason": "non-finite local gradient norm before the data-parallel collective",
+      "disposition": "fail-fast; deterministic retries were not used to hide the incompatibility"
+    }
+  ],
+  "provenance": {
+    "source_commit": "4d4149ce4745307837eaccc8866d480c7332127b",
+    "source_dirty": true,
+    "source_diff_sha256": "29dfeec12cfeae4df881c8b153f6b9eaed86022a2c7e060a723c563ad8ce5ed6",
+    "megatron_commit": "55ac7082517c3878ae653c07c09c534b8aed49f6"
+  },
+  "interpretation": "This is a recipe-portability stress test, not a pure backend comparison. The comparison artifacts intentionally contain only the 45 finite Megatron rows and label the cross-backend analysis as partial."
+}

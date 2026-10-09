@@ -1,0 +1,135 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+format: archlab-v41-scratch-scaling-v4
+variants:
+- normal
+- simplicial
+widths:
+- 128
+- 384
+- 640
+- 1280
+base_config: env:ARCHLAB_DEEPSEEK_V41_BASE_CONFIG
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+data: env:ARCHLAB_DEEPSEEK_V41_SCRATCH_DATA
+initialization:
+  random_seed: 42
+  pretrained_weights: false
+  pair_common_parameter_fingerprints_must_match: true
+geometry:
+  layers: 20
+  channel_scale: width / 5120
+  channel_rounding: upward
+  channel_alignments:
+    hidden_size: exact_requested_width
+    moe_intermediate_size: fixed_128
+    head_dim: power_of_two_at_least_16
+    qk_rope_head_dim: multiple_of_2
+    q_lora_rank: multiple_of_16
+    o_lora_rank: multiple_of_16
+    index_head_dim: power_of_two_at_least_4
+    engram_head_dim: multiple_of_8
+  preserve_head_counts: true
+  routed_experts: 384
+  shared_experts: 1
+  expert_intermediate_size: 128
+  routed_top_k:
+    128: 2
+    384: 8
+    640: 14
+    1280: 29
+  active_width_ratio: 3.0
+  active_width_definition: (routed_top_k + shared_experts) * expert_intermediate_size / hidden_size
+  preserve_engram_bucket_counts: false
+  engram_bucket_scale: width / 5120
+  engram_channel_scale: width / 5120 rounded_up_to_multiple_of_8
+  unstarted_runs: width_scaled_engram_including_repeated_data_sweep
+  transport_padding: false
+  vision: false
+  dspark: false
+adapters:
+  controlled_difference: normal_local_attention_vs_2simplicial
+  native_backbone_attention_retained: true
+  layers:
+  - 2
+  - 4
+  - 7
+  - 9
+  - 12
+  - 14
+  - 17
+  - 19
+  query_heads: 8
+  kv_heads: 2
+  head_dim: ceil_power_of_two(max(16, 128 * width / 5120))
+  short_window: 32
+  long_window: 512
+training:
+  gpus_per_variant: 16
+  nodes_per_variant: 2
+  expert_parallel: 8
+  expert_fsdp: 2
+  engram_owners: 16
+  cpu_offload: false
+  supervised_tokens_per_run: 10000000000
+  total_runs: 8
+  total_supervised_token_allowance: 80000000000
+  sequence_length: 2048
+  micro_batch_size: 4
+  accumulation: 1
+  global_windows_per_update: 64
+  right_padding_masked_and_not_counted: true
+  data_order_identical_across_all_runs: true
+  performance_contract: recipes/deepseek_v41/performance/performance-v1.json
+  optimizer: Sinkhorn-Engram-FP32-momentum; Adafactor-other-parameters
+  engram_peak_base_learning_rate: 0.00026
+  engram_learning_rate_multiplier: 5
+  engram_weight_decay: 0
+  peak_relative_learning_rate: 0.01
+  minimum_relative_learning_rate: 0.001
+  warmup_updates: 100
+  cosine_decay: supervised-token progress after warmup
+  weight_decay: 0
+  gradient_clip: 1.0
+  indexer_kl_coefficient: 0.01
+  router_bias_update: 0.001
+  router_bias_rule: centered proportional load error clipped to [-5, 1]
+  router_coverage_window_updates: 20
+  router_auxiliary_loss_coefficient_per_layer: 0.01
+  router_auxiliary_scaling: local-valid-targets/global-update-valid-targets
+  validation_tokens: 1000000
+  validation_interval_tokens: 100000000
+  checkpoint_interval_tokens: 2000000000
+  evaluation_checkpoints_per_run: 5
+  checkpoint_milestones_tokens:
+  - 2000000000
+  - 4000000000
+  - 6000000000
+  - 8000000000
+  - 10000000000
+  checkpoint_storage: OSS with NAS symlinks
+  checkpoint_root: env:ARCHLAB_SCALING_CHECKPOINT_ROOT
+  checkpoint_timing: first complete optimizer update at or after each milestone
+  stop_recovery_checkpoint: NAS, separate from evaluation checkpoints
+runtime:
+  backbone_sparse_backend: tilelang-batched-sparse-mqa-v1
+  qualification_per_width_and_variant: true
+  sparse_oracle_at_actual_head_dimension: true
+  checkpoint_restore_exact: true
+  next_update_loss_exact: true
+  next_update_state_bitwise: false
+  reason: FP32 atomic KV and sink gradient reductions
+study:
+  width_order:
+  - 128
+  - 640
+  - 384
+  - 1280
+  completion_barrier_between_variants: false
+  next_run: immediate after own completion
+  primary_metric: held-out cross entropy at matched supervised-token counts
+  record_logical_parameters: true
+  record_engram_parameters_separately: true
+  record_throughput_and_allocated_gpu_seconds: true
+  seeds_per_arm: 1
+  interpretation: fixed-depth width sweep with scaled Engram capacity and fixed routed expert count; exact
+    active MoE width ratio

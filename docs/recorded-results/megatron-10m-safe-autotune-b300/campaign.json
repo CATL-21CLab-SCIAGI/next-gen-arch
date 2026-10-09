@@ -1,0 +1,103 @@
+{
+  "campaign": "safe-autotune-backend-comparison",
+  "status": "complete-with-policy-recoveries",
+  "hardware": {
+    "accelerator": "NVIDIA B300",
+    "compute_capability": "10.3",
+    "nodes": 3,
+    "allowlisted_gpus_per_node": 5,
+    "excluded_busy_gpus_per_node": 3,
+    "ptxas": "CUDA 13.0"
+  },
+  "contract": {
+    "variants": 16,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "primary_launched_runs": 48,
+    "primary_finite_runs": 43,
+    "primary_fail_fast_runs": 5,
+    "recovery_launched_runs": 9,
+    "recovery_finite_runs": 9,
+    "accepted_megatron_runs": 48,
+    "accepted_speedrun_reference_runs": 48,
+    "optimization_recipe": "baseline"
+  },
+  "compiler_policy": {
+    "name": "compile-safe-autotune",
+    "max_autotune_variants": [
+      "attnres",
+      "baseline",
+      "dsa",
+      "engram",
+      "gated-attention",
+      "glm-mla",
+      "inkling-relative-attention",
+      "inkling-sconv-kv",
+      "inkling-sconv-residual",
+      "mhc",
+      "partial-rope-25",
+      "situ-glu",
+      "xielu"
+    ],
+    "default_compile_variants": [
+      "kda",
+      "kimi-k3-kda-update",
+      "qwen-gdn"
+    ],
+    "accepted_profile_counts": {
+      "compile-max-autotune": 39,
+      "compile": 9
+    },
+    "policy_commit": "f79d77c8f81f953666e58d6dcb4f1b52194bba2c"
+  },
+  "rejected_primary_results": [
+    {
+      "variant": "kda",
+      "seeds": [
+        42,
+        44
+      ],
+      "reason": "non-finite local gradient norm on the first backward pass",
+      "disposition": "fail-fast and recover with default torch.compile"
+    },
+    {
+      "variant": "kda",
+      "seeds": [
+        43
+      ],
+      "reason": "finite but quality-corrupted under max-autotune",
+      "disposition": "replace explicitly with the matched default-compile result"
+    },
+    {
+      "variant": "kimi-k3-kda-update",
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "reason": "non-finite local gradient norm on the first backward pass",
+      "disposition": "fail-fast and recover with default torch.compile"
+    },
+    {
+      "variant": "qwen-gdn",
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "reason": "finite but severe quality corruption under max-autotune",
+      "disposition": "replace explicitly with matched default-compile results"
+    }
+  ],
+  "provenance": {
+    "training_source_commit": "f8bc91df1aa10a2e4fd193cb9acdc4df3cdba975",
+    "training_source_dirty": false,
+    "training_source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "training_source_worktree_sha256": "33c2da2f369cc6a117055a71d327f41de48fe448131a6a62c936189bf2d3e4c3",
+    "megatron_commit": "55ac7082517c3878ae653c07c09c534b8aed49f6"
+  },
+  "interpretation": "The accepted policy keeps max-autotune for 13 numerically stable variants and uses default torch.compile for the three sensitive recurrent/GDN variants. Recovery rows are explicit replacements or missing-key fills; failed and corrupted primary rows remain preserved as negative evidence."
+}

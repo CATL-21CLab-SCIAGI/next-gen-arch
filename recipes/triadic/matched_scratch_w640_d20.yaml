@@ -1,0 +1,139 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+format: archlab-triadic-scratch-study-v1
+variants:
+- linear
+- linsimp
+- gdn
+- triadic
+base_config: env:ARCHLAB_DEEPSEEK_V41_BASE_CONFIG
+assets: env:ARCHLAB_DEEPSEEK_V41_ASSETS
+data: env:ARCHLAB_DEEPSEEK_V41_SCRATCH_DATA
+initialization:
+  random_seed: 42
+  pretrained_weights: false
+  zero_core_output: true
+  zero_compensation_output: true
+  common_mixer_tensors:
+  - read_logits
+  - write_logits
+  - input_norm
+  - q
+  - q_norm
+  - k
+  - k_norm
+  - v
+  - output_gate
+  - output
+  delta_shared_tensors:
+  - beta_projection
+  - qkv_causal_conv
+  delta_named_rng_streams:
+  - beta
+  - qkv-conv
+  require_constructor_hash_receipts: true
+geometry:
+  width: 640
+  depth: 20
+  streams: 4
+  branch_layers:
+  - 2
+  - 4
+  - 7
+  - 9
+  - 12
+  - 14
+  - 17
+  - 19
+  query_heads: 2
+  kv_heads: 2
+  head_dim: 128
+  short_window: 32
+  long_window: 512
+mixer_contract:
+  feature_rank: 512
+  gdn_features: 1
+  triadic_features: 4
+  official_revision: 2caa4098073da92c2ba0d573df6453ceb7dbce45
+  compensation:
+    target_reference: linsimp
+    reference_intermediate_size: 1024
+    alignment: 16
+    maximum_relative_parameter_error: 0.01
+matching:
+  identical:
+  - backbone_geometry
+  - backbone_initial_values
+  - token_budget
+  - document_windows
+  - data_order
+  - seed
+  - optimizer
+  - learning_rate_schedule
+  - branch_placement
+  - head_geometry
+  parameter_match: branch_budget_with_aligned_parallel_SwiGLU
+  compute_match: false
+  state_match: false
+  state_note: RF512x128 matches Triadic4x128x128 global matrix size; RF also has a denominator, LinSimp
+    adds its short window, and GDN1 has smaller state.
+  report_required:
+  - branch_parameters
+  - nonembedding_parameters
+  - total_parameters
+  - state_elements
+  - useful_flops_definition
+  - measured_step_seconds
+  - valid_tokens_per_second
+training:
+  module: archlab.automodel.deepseek_v41_scratch_training
+  world_size: 8
+  expert_parallel: 8
+  micro_batch_size: 2
+  accumulation: 4
+  global_windows_per_update: 64
+  sequence_length: 2048
+  supervised_tokens: 10000000000
+  validation_tokens: 1000000
+  validation_interval_tokens: 100000000
+  checkpoint_interval_tokens: 2000000000
+  checkpoint_tokens:
+  - 2000000000
+  - 4000000000
+  - 6000000000
+  - 8000000000
+  - 10000000000
+  checkpoint_storage: OSS_with_verified_NAS_symlinks
+  optimizer: FP32-factored-Adafactor-stochastic-BF16
+  peak_relative_learning_rate: 0.01
+  minimum_relative_learning_rate: 0.001
+  warmup_updates: 100
+  weight_decay: 0
+  gradient_clip: 1.0
+  random_initialization: true
+  all_parameters_trainable: true
+  cross_document_packing: false
+  execution:
+    optimized_synchronization: true
+    trim_alignment: 128
+    indexer_sample_grid: fixed_original_context_cpu
+qualification:
+  adapter_world_size: 2
+  full_model_world_size: 8
+  required:
+  - zero_output_identity
+  - causal_future_isolation
+  - independent_document_reset
+  - finite_all_trainable_gradients
+  - replica_agreement
+  - exact_checkpoint_optimizer_rng_restore
+  - identical_gradient_next_optimizer_update
+  - full_model_checkpoint_next_update
+  - matched_nonembedding_parameter_report
+  - common_mixer_initialization_hashes
+  - delta_shared_initialization_hashes
+  allow_missing_receipts: false
+scheduling:
+  execution: sequential_variants_on_one_persistent_eight_GPU_node
+  start_after: native_Violetto_RL_and_its_final_evaluation
+  provision_or_release_allocation: false
+  production_auto_relaunch: false

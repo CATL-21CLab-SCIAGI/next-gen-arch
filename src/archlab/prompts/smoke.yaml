@@ -1,0 +1,24 @@
+schema_version: 1
+name: factual-and-reasoning-smoke
+prompts:
+  - id: capital-france
+    text: The capital of France is
+    tags: [factual]
+  - id: chemical-gold
+    text: The chemical symbol of gold is
+    tags: [factual]
+  - id: weekday-reasoning
+    text: If yesterday was Friday, then tomorrow will be
+    tags: [reasoning]
+  - id: antonym-hot
+    text: The opposite of hot is
+    tags: [language]
+  - id: solar-system
+    text: "The planets of the solar system are:"
+    tags: [factual, list]
+  - id: favorite-color
+    text: My favorite color is
+    tags: [open-ended]
+  - id: linear-equation
+    text: If 5*x + 3 = 13, then x is
+    tags: [math]

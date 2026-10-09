@@ -1,0 +1,92 @@
+schema_version: 1
+# Exploratory probes, not a sealed benchmark or a reproduction of BoxWorld.
+# expected_answer is evaluator metadata: never append it to the model input.
+# Before window-sensitive testing, measure positions with the served tokenizer
+# after native chat formatting; character distances are not token distances.
+prompts:
+  - id: join_positive
+    tags: [pair_retrieval, positive]
+    expected_answer: "YES"
+    text: |
+      Use only the facts below. A route exists exactly when some relay receives
+      a link from A and has a link to Z. Answer with exactly YES or NO.
+      Do not output anything else, including explanations or punctuation.
+      Relay facts: M -> Z; N -> Y; P -> X; Q -> Z.
+      Source facts: B -> Q; C -> N; D -> P.
+      A -> M.
+      Route from A to Z?
+  - id: join_negative
+    tags: [pair_retrieval, negative, near_miss]
+    expected_answer: "NO"
+    text: |
+      Use only the facts below. A route exists exactly when some relay receives
+      a link from A and has a link to Z. Answer with exactly YES or NO.
+      Do not output anything else, including explanations or punctuation.
+      Relay facts: M -> Y; N -> Z; P -> X; Q -> Z.
+      Source facts: B -> Q; C -> N; D -> P.
+      A -> M.
+      Route from A to Z?
+  - id: join_single_fact_control
+    tags: [single_fact, control]
+    expected_answer: "YES"
+    text: |
+      Use only the direct links below. Answer with exactly YES or NO.
+      Do not output anything else, including explanations or punctuation.
+      Links: M -> Z; N -> Y; P -> X; Q -> Z;
+      B -> Q; C -> N; D -> P; A -> M.
+      Is there a direct link from A to M?
+  - id: conjunction_binding_positive
+    tags: [pair_retrieval, conjunction, positive]
+    expected_answer: "YES"
+    text: |
+      A shipment qualifies only if that same shipment is both inspected and
+      insured. Use only these records. Answer with exactly YES or NO.
+      Do not output anything else, including explanations or punctuation.
+      Insured: shipment K, shipment M, shipment P.
+      Inspected: shipment B, shipment D, shipment R.
+      Shipment M is also inspected.
+      Does shipment M qualify?
+  - id: conjunction_binding_negative
+    tags: [pair_retrieval, conjunction, negative, near_miss]
+    expected_answer: "NO"
+    text: |
+      A shipment qualifies only if that same shipment is both inspected and
+      insured. Use only these records. Answer with exactly YES or NO.
+      Do not output anything else, including explanations or punctuation.
+      Insured: shipment K, shipment N, shipment P.
+      Inspected: shipment B, shipment D, shipment R.
+      Shipment M is also inspected.
+      Does shipment M qualify?
+  - id: bridge_consumable
+    tags: [resource_reasoning, bridge, negative]
+    expected_answer: "NO"
+    text: |
+      You have one A key and one B key. Each exchange consumes its input key
+      and produces its output key. Available exchanges: A -> C; B -> D;
+      C -> D. The gem consumes one C and one D together. There are no other
+      keys or exchanges. Answer with exactly YES or NO.
+      Do not output anything else, including explanations or punctuation.
+      You first perform A -> C, then C -> D.
+      Can you still obtain the gem?
+  - id: bridge_reusable_control
+    tags: [resource_reasoning, control, positive]
+    expected_answer: "YES"
+    text: |
+      You have one A key and one B key. Each exchange keeps its input key
+      and produces its output key. Available exchanges: A -> C; B -> D;
+      C -> D. The gem requires one C and one D together. There are no other
+      keys or exchanges. Answer with exactly YES or NO.
+      Do not output anything else, including explanations or punctuation.
+      You first perform A -> C, then C -> D.
+      Can you still obtain the gem?
+  - id: bridge_safe_path
+    tags: [resource_reasoning, bridge, positive]
+    expected_answer: "YES"
+    text: |
+      You have one A key and one B key. Each exchange consumes its input key
+      and produces its output key. Available exchanges: A -> C; B -> D;
+      C -> D. The gem consumes one C and one D together. There are no other
+      keys or exchanges. Answer with exactly YES or NO.
+      Do not output anything else, including explanations or punctuation.
+      You first perform A -> C, then B -> D.
+      Can you now obtain the gem?

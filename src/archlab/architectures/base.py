@@ -1,0 +1,1206 @@
+"""
+Base GPT, mHC, and Engram architecture definitions.
+Notable features:
+- rotary embeddings (and no positional embeddings)
+- QK norm
+- untied weights for token embedding and lm_head
+- relu^2 activation in MLP
+- norm after token embedding
+- no learnable params in rmsnorm
+- no bias in linear layers
+- Group-Query Attention (GQA) support for more efficient inference
+- Flash Attention 3 integration
+"""
+
+import math
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from functools import cache
+from typing import Any
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class TorchAttentionOps:
+    """Portable reference attention with the small FA-compatible surface models need."""
+
+    @staticmethod
+    def _sdpa(q, k, v, *, causal: bool, window_size: tuple[int, int]):
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        query_length = q.size(2)
+        key_length = k.size(2)
+        left_window = window_size[0]
+        enable_gqa = q.size(1) != k.size(1)
+        if causal and (left_window < 0 or left_window >= key_length) and query_length == key_length:
+            output = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
+        else:
+            row = (key_length - query_length) + torch.arange(
+                query_length, device=q.device
+            ).unsqueeze(1)
+            column = torch.arange(key_length, device=q.device).unsqueeze(0)
+            mask = column <= row if causal else torch.ones_like(column <= row)
+            if left_window >= 0:
+                mask = mask & ((row - column) <= left_window)
+            output = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=enable_gqa)
+        return output.transpose(1, 2)
+
+    def flash_attn_func(
+        self,
+        q,
+        k,
+        v,
+        *,
+        causal: bool = False,
+        window_size: tuple[int, int] = (-1, -1),
+    ):
+        return self._sdpa(q, k, v, causal=causal, window_size=window_size)
+
+    def flash_attn_with_kvcache(
+        self,
+        q,
+        k_cache,
+        v_cache,
+        *,
+        k,
+        v,
+        cache_seqlens,
+        causal: bool = True,
+        window_size: tuple[int, int] = (-1, -1),
+    ):
+        positions = cache_seqlens.to(dtype=torch.long)
+        if not torch.equal(positions, positions[:1].expand_as(positions)):
+            raise ValueError("portable KV-cache attention requires aligned batch positions")
+        start = int(positions[0].item())
+        stop = start + k.size(1)
+        k_cache[:, start:stop].copy_(k)
+        v_cache[:, start:stop].copy_(v)
+        return self._sdpa(
+            q,
+            k_cache[:, :stop],
+            v_cache[:, :stop],
+            causal=causal,
+            window_size=window_size,
+        )
+
+
+def _ignore_architecture_log(_: str) -> None:
+    return None
+
+
+@dataclass(frozen=True)
+class ArchitectureRuntime:
+    """Injected execution operations; architecture modules never import a trainer."""
+
+    compute_dtype: torch.dtype = torch.float32
+    attention: Any = field(default_factory=TorchAttentionOps)
+    log: Callable[[str], None] = _ignore_architecture_log
+
+
+@dataclass
+class GPTConfig:
+    sequence_len: int = 2048
+    vocab_size: int = 32768
+    n_layer: int = 12
+    n_head: int = 6  # number of query heads
+    n_kv_head: int = 6  # number of key/value heads (GQA)
+    n_embd: int = 768
+    # Sliding window attention pattern string, tiled across layers. Final layer always L.
+    # Characters: L=long (full context), S=short (quarter context)
+    # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
+    window_pattern: str = "SSSL"
+    arch_family: str = "nanochat"
+    per_head_muon: bool = False
+    rope_fraction: float = 1.0
+    partial_key_offset: str = "none"
+    embedding_init_std: float = 0.8
+    matrix_init_recipe: str = "speedrun-zero-proj"
+    learnable_qk_gain: bool = False
+    cached_attention_layers: int = 0
+    reuse_midpoint_kv: bool = False
+    loss_fp32: bool = True
+    logit_transform: str = "symmetric-softcap"
+    z_loss_weight: float = 0.0
+    # Engram conditional-memory options. They are inert outside the Engram arm.
+    engram_layers: tuple[int, ...] = ()
+    engram_ngram_orders: tuple[int, ...] = (2, 3)
+    engram_num_heads: int = 8
+    engram_dim: int = 0
+    engram_vocab_multiplier: int = 5
+    engram_kernel_size: int = 4
+    engram_seed: int = 0
+    # Manifold-constrained Hyper-Connections (mHC) options.
+    mhc_num_streams: int = 4
+    mhc_init_gating_factor: float = 0.01
+    mhc_sinkhorn_iterations: int = 20
+    runtime: ArchitectureRuntime = field(
+        default_factory=ArchitectureRuntime,
+        repr=False,
+        compare=False,
+    )
+
+
+def norm(x):
+    return F.rms_norm(x, (x.size(-1),))  # note that this will run in bf16, seems ok
+
+
+def language_model_loss(
+    logits: torch.Tensor,
+    raw_logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    reduction: str,
+    z_loss_weight: float,
+    training: bool,
+) -> torch.Tensor:
+    """Cross entropy plus an explicitly training-only final-logit z-loss."""
+    flat_targets = targets.reshape(-1)
+    cross_entropy = F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)),
+        flat_targets,
+        ignore_index=-1,
+        reduction=reduction,
+    )
+    if not training or z_loss_weight <= 0:
+        return cross_entropy
+
+    valid = targets.ne(-1)
+    z_loss = torch.logsumexp(raw_logits.float(), dim=-1).square()
+    z_loss = torch.where(valid, z_loss, torch.zeros_like(z_loss))
+    if reduction == "none":
+        z_loss = z_loss.reshape(-1)
+    elif reduction == "sum":
+        z_loss = z_loss.sum()
+    elif reduction == "mean":
+        z_loss = z_loss.sum() / valid.sum().clamp_min(1)
+    else:
+        raise ValueError(f"unsupported loss reduction {reduction!r}")
+    return cross_entropy + z_loss_weight * z_loss
+
+
+class Linear(nn.Linear):
+    """nn.Linear that casts weights to match input dtype in forward.
+    Replaces autocast: master weights stay fp32 for optimizer precision,
+    but matmuls run in the activation dtype (typically bf16 from embeddings)."""
+
+    def forward(self, x):
+        return F.linear(x, self.weight.to(dtype=x.dtype))
+
+
+class HeadSplitLinear(nn.Module):
+    """A logically independent 2-D projection matrix per attention head."""
+
+    def __init__(self, in_features: int, num_heads: int, head_dim: int):
+        super().__init__()
+        self.weights = nn.ParameterList(
+            [nn.Parameter(torch.empty(head_dim, in_features)) for _ in range(num_heads)]
+        )
+
+    def forward(self, x):
+        return torch.cat(
+            [F.linear(x, weight.to(dtype=x.dtype)) for weight in self.weights],
+            dim=-1,
+        )
+
+
+def init_projection_uniform_(projection, lower: float, upper: float) -> None:
+    if isinstance(projection, HeadSplitLinear):
+        for weight in projection.weights:
+            torch.nn.init.uniform_(weight, lower, upper)
+    else:
+        torch.nn.init.uniform_(projection.weight, lower, upper)
+
+
+def has_ve(layer_idx, n_layer):
+    """Returns True if GPT layer should have Value Embedding (alternating, last layer always included)."""
+    return layer_idx % 2 == (n_layer - 1) % 2
+
+
+def apply_rotary_emb(x, cos, sin):
+    assert x.ndim == 4  # multihead attention
+    d = x.shape[3] // 2
+    x1, x2 = x[..., :d], x[..., d:]  # split up last dim into two halves
+    y1 = x1 * cos + x2 * sin  # rotate pairs of dims
+    y2 = x1 * (-sin) + x2 * cos
+    return torch.cat([y1, y2], 3)
+
+
+def apply_qk_features(q, k, cos_sin, config, layer_idx, qk_gain=None):
+    """Apply the shared RoPE, QK-normalization, gain, and PKO recipe."""
+    if not 0 < config.rope_fraction <= 1:
+        raise ValueError("rope_fraction must be in (0, 1]")
+    rotary_dim = int(q.size(-1) * config.rope_fraction)
+    rotary_dim -= rotary_dim % 2
+    if rotary_dim < 2:
+        raise ValueError("rope_fraction leaves fewer than two rotary dimensions")
+    cos, sin = cos_sin
+
+    def rotate(x):
+        rotated = apply_rotary_emb(
+            x[..., :rotary_dim],
+            cos[..., : rotary_dim // 2],
+            sin[..., : rotary_dim // 2],
+        )
+        return torch.cat((rotated, x[..., rotary_dim:]), dim=-1)
+
+    q, k = norm(rotate(q)), norm(rotate(k))
+    if qk_gain is None:
+        q, k = q * 1.2, k * 1.2
+    else:
+        q_gain = qk_gain[: q.size(2)].view(1, 1, -1, 1).to(q.dtype)
+        k_gain = qk_gain[: k.size(2)].view(1, 1, -1, 1).to(k.dtype)
+        q, k = q * q_gain, k * k_gain
+
+    offset = config.partial_key_offset
+    if offset not in {"none", "all", "last"}:
+        raise ValueError("partial_key_offset must be none, all, or last")
+    use_offset = offset == "all" or (offset == "last" and layer_idx == config.n_layer - 1)
+    if use_offset and rotary_dim < k.size(-1) and k.size(1) > 1:
+        stationary = k[..., rotary_dim:]
+        shifted = torch.cat((stationary[:, :1], stationary[:, :-1]), dim=1)
+        k = torch.cat((k[..., :rotary_dim], shifted), dim=-1)
+    return q, k
+
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, config, layer_idx):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+        self.n_head = config.n_head
+        self.n_kv_head = config.n_kv_head
+        self.n_embd = config.n_embd
+        self.runtime = config.runtime
+        self.head_dim = self.n_embd // self.n_head
+        assert self.n_embd % self.n_head == 0
+        assert self.n_kv_head <= self.n_head and self.n_head % self.n_kv_head == 0
+        projection_cls = HeadSplitLinear if config.per_head_muon else None
+        self.c_q = (
+            projection_cls(self.n_embd, self.n_head, self.head_dim)
+            if projection_cls
+            else Linear(self.n_embd, self.n_head * self.head_dim, bias=False)
+        )
+        self.c_k = (
+            projection_cls(self.n_embd, self.n_kv_head, self.head_dim)
+            if projection_cls
+            else Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+        )
+        self.c_v = (
+            projection_cls(self.n_embd, self.n_kv_head, self.head_dim)
+            if projection_cls
+            else Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+        )
+        self.c_proj = Linear(self.n_embd, self.n_embd, bias=False)
+        self.qk_gain = nn.Parameter(torch.empty(self.n_head)) if config.learnable_qk_gain else None
+        self.ve_gate_channels = min(12, self.n_embd)
+        self.ve_gate = (
+            Linear(self.ve_gate_channels, self.n_kv_head, bias=False)
+            if has_ve(layer_idx, config.n_layer)
+            else None
+        )
+
+    def forward(self, x, ve, cos_sin, window_size, kv_cache, kv_source=None):
+        B, T, C = x.size()
+        source = x if kv_source is None else kv_source
+
+        # Project the input to get queries, keys, and values
+        # Shape: (B, T, H, D) - FA3's native layout, no transpose needed!
+        q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
+        k = self.c_k(source).view(B, T, self.n_kv_head, self.head_dim)
+        v = self.c_v(source).view(B, T, self.n_kv_head, self.head_dim)
+
+        # Value residual (ResFormer): mix in value embedding with input-dependent gate per head
+        if ve is not None:
+            ve = ve.view(B, T, self.n_kv_head, self.head_dim)
+            gate = 3 * torch.sigmoid(
+                self.ve_gate(source[..., : self.ve_gate_channels])
+            )  # (B, T, n_kv_head), range (0, 3)
+            v = v + gate.unsqueeze(-1) * ve
+
+        # Apply Rotary Embeddings to queries and keys to get relative positional encoding
+        q, k = apply_qk_features(q, k, cos_sin, self.config, self.layer_idx, self.qk_gain)
+
+        # Flash Attention (FA3 on Hopper+, PyTorch SDPA fallback elsewhere)
+        # window_size is (left, right) tuple: (N, 0) for causal, (-1, 0) for full context
+        if kv_cache is None:
+            # Training: causal attention with optional sliding window
+            y = self.runtime.attention.flash_attn_func(
+                q, k, v, causal=True, window_size=window_size
+            )
+        else:
+            # Inference: use flash_attn_with_kvcache which handles cache management
+            k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
+            y = self.runtime.attention.flash_attn_with_kvcache(
+                q,
+                k_cache,
+                v_cache,
+                k=k,
+                v=v,
+                cache_seqlens=kv_cache.cache_seqlens,
+                causal=True,
+                window_size=window_size,
+            )
+            # Advance position after last layer processes
+            if self.layer_idx == kv_cache.n_layers - 1:
+                kv_cache.advance(T)
+
+        # Re-assemble the heads and project back to residual stream
+        y = y.contiguous().view(B, T, -1)
+        y = self.c_proj(y)
+        return y
+
+
+class MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.c_fc = Linear(config.n_embd, 4 * config.n_embd, bias=False)
+        self.c_proj = Linear(4 * config.n_embd, config.n_embd, bias=False)
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = F.relu(x).square()
+        x = self.c_proj(x)
+        return x
+
+
+class Block(nn.Module):
+    def __init__(self, config, layer_idx):
+        super().__init__()
+        self.attn = CausalSelfAttention(config, layer_idx)
+        self.mlp = MLP(config)
+
+    def forward(
+        self,
+        x,
+        ve,
+        cos_sin,
+        window_size,
+        kv_cache,
+        attention_input=None,
+        kv_input=None,
+    ):
+        attention_input = norm(x) if attention_input is None else attention_input
+        if kv_input is None:
+            attn_output = self.attn(attention_input, ve, cos_sin, window_size, kv_cache)
+        else:
+            attn_output = self.attn(
+                attention_input, ve, cos_sin, window_size, kv_cache, kv_source=kv_input
+            )
+        x = x + attn_output
+        x = x + self.mlp(norm(x))
+        return x
+
+
+class MHCConnection(nn.Module):
+    """One manifold-constrained hyper-connection around a sublayer."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.num_streams = config.mhc_num_streams
+        self.hidden_size = config.n_embd
+        self.sinkhorn_iterations = config.mhc_sinkhorn_iterations
+        projection_dim = self.num_streams * (self.num_streams + 2)
+        self.mapping_proj = nn.Linear(
+            self.num_streams * self.hidden_size,
+            projection_dim,
+            bias=False,
+        )
+        self.alpha = nn.Parameter(torch.empty(3))
+        self.bias = nn.Parameter(torch.empty(projection_dim))
+        self.norm_eps = 1e-6
+        self.init_gating_factor = config.mhc_init_gating_factor
+
+    @torch.no_grad()
+    def init_weights(self):
+        nn.init.xavier_uniform_(self.mapping_proj.weight)
+        nn.init.constant_(self.alpha, self.init_gating_factor)
+        nn.init.zeros_(self.bias)
+
+    def _sinkhorn_knopp(self, logits):
+        matrix = torch.exp(logits - logits.amax(dim=-1, keepdim=True))
+        for _ in range(self.sinkhorn_iterations):
+            matrix = matrix / matrix.sum(dim=-1, keepdim=True).clamp_min(self.norm_eps)
+            matrix = matrix / matrix.sum(dim=-2, keepdim=True).clamp_min(self.norm_eps)
+        return matrix
+
+    def compute_mappings(self, streams):
+        n = self.num_streams
+        flat = streams.flatten(-2).float()
+        inv_rms = torch.rsqrt(flat.square().mean(dim=-1, keepdim=True) + self.norm_eps)
+        # mHC deliberately computes its routing maps in FP32.  Some training
+        # backends keep a reduced-precision model replica beside FP32 optimizer
+        # masters, so cast the replica explicitly instead of assuming that the
+        # parameter storage dtype matches ``streams.float()``.
+        projected = F.linear(flat, self.mapping_proj.weight.to(dtype=flat.dtype))
+        scales = torch.cat(
+            (
+                self.alpha[0].expand(n),
+                self.alpha[1].expand(n),
+                self.alpha[2].expand(n * n),
+            )
+        )
+        mappings = projected * inv_rms * scales + self.bias
+        h_pre = mappings[..., :n].sigmoid()
+        h_post = 2.0 * mappings[..., n : 2 * n].sigmoid()
+        h_res = self._sinkhorn_knopp(mappings[..., 2 * n :].view(*streams.shape[:-2], n, n))
+        return h_pre, h_post, h_res
+
+    def prepare(self, streams):
+        h_pre, h_post, h_res = self.compute_mappings(streams)
+        branch_input = (streams.float() * h_pre.unsqueeze(-1)).sum(dim=-2)
+        return branch_input.to(streams.dtype), h_post, h_res
+
+    def combine(self, streams, branch_output, h_post, h_res):
+        mixed_residual = torch.matmul(h_res, streams.float())
+        written_output = h_post.unsqueeze(-1) * branch_output.float().unsqueeze(-2)
+        return (mixed_residual + written_output).to(streams.dtype)
+
+
+class GPT(nn.Module):
+    def __init__(self, config, pad_vocab_size_to=64):
+        """
+        NOTE a major footgun: this __init__ function runs in meta device context (!!)
+        Therefore, any calculations inside here are shapes and dtypes only, no actual data.
+        => We actually initialize all data (parameters, buffers, etc.) in init_weights() instead.
+        """
+        super().__init__()
+        self.config = config
+        # Compute per-layer window sizes for sliding window attention
+        # window_size is (left, right) tuple: (-1, 0) for full context, (N, 0) for sliding window
+        self.window_sizes = self._compute_window_sizes(config)
+        # Pad vocab for efficiency (DDP, tensor cores). This is just an optimization - outputs are cropped in forward().
+        # https://huggingface.co/docs/transformers/main_classes/model#transformers.PreTrainedModel.resize_token_embeddings
+        padded_vocab_size = (
+            (config.vocab_size + pad_vocab_size_to - 1) // pad_vocab_size_to
+        ) * pad_vocab_size_to
+        if padded_vocab_size != config.vocab_size:
+            config.runtime.log(
+                f"Padding vocab_size from {config.vocab_size} to {padded_vocab_size} for efficiency"
+            )
+        self.transformer = nn.ModuleDict(
+            {
+                "wte": nn.Embedding(padded_vocab_size, config.n_embd),
+                "h": nn.ModuleList(
+                    [Block(config, layer_idx) for layer_idx in range(config.n_layer)]
+                ),
+            }
+        )
+        self.engrams = nn.ModuleDict()
+        if config.arch_family == "engram":
+            if not config.engram_layers:
+                raise ValueError("Engram requires at least one injection layer")
+            if any(layer < 0 or layer >= config.n_layer for layer in config.engram_layers):
+                raise ValueError(
+                    f"Engram layers {config.engram_layers} are invalid for depth {config.n_layer}"
+                )
+            if len(set(config.engram_layers)) != len(config.engram_layers):
+                raise ValueError("Engram injection layers must be unique")
+            memory_dim = config.engram_dim or config.n_embd // 2
+            for layer_idx in config.engram_layers:
+                self.engrams[str(layer_idx)] = EngramMemory(
+                    hidden_size=config.n_embd,
+                    memory_dim=memory_dim,
+                    vocab_size=config.vocab_size,
+                    vocab_multiplier=config.engram_vocab_multiplier,
+                    num_heads=config.engram_num_heads,
+                    ngram_orders=tuple(config.engram_ngram_orders),
+                    layer_idx=layer_idx,
+                    seed=config.engram_seed,
+                    kernel_size=config.engram_kernel_size,
+                    optimizer_world_size=8,
+                )
+            self.register_buffer(
+                "engram_token_map", torch.empty(config.vocab_size, dtype=torch.long)
+            )
+            self.register_buffer("engram_pad_id", torch.empty((), dtype=torch.long))
+        self.mhc_connections = nn.ModuleList(
+            [MHCConnection(config) for _ in range(2 * config.n_layer)]
+            if config.arch_family == "mhc"
+            else []
+        )
+        self.lm_head = Linear(config.n_embd, padded_vocab_size, bias=False)
+        # Per-layer learnable scalars (inspired by modded-nanogpt)
+        # resid_lambdas: scales the residual stream at each layer (init 1.0 = neutral)
+        # x0_lambdas: blends initial embedding back in at each layer (init 0.0 = disabled)
+        # Separate parameters so they can have different optimizer treatment
+        self.resid_lambdas = nn.Parameter(
+            torch.ones(config.n_layer)
+        )  # fake init, real init in init_weights()
+        self.x0_lambdas = nn.Parameter(
+            torch.zeros(config.n_layer)
+        )  # fake init, real init in init_weights()
+        # Smear: mix previous token's embedding into current token (cheap bigram-like info)
+        self.smear_gate_channels = min(24, config.n_embd)
+        self.smear_gate = Linear(self.smear_gate_channels, 1, bias=False)
+        self.smear_lambda = nn.Parameter(torch.zeros(1))
+        # Backout: subtract cached mid-layer residual before final norm to remove low-level features
+        self.backout_lambda = nn.Parameter(0.2 * torch.ones(1))
+        # Value embeddings (ResFormer-style): alternating layers, last layer always included
+        head_dim = config.n_embd // config.n_head
+        kv_dim = config.n_kv_head * head_dim
+        self.value_embeds = nn.ModuleDict(
+            {
+                str(i): nn.Embedding(padded_vocab_size, kv_dim)
+                for i in range(config.n_layer)
+                if has_ve(i, config.n_layer)
+            }
+        )
+        # To support meta device initialization, we init the rotary embeddings here, but it's just "fake" meta tensors only.
+        # As for rotary_seq_len, these rotary embeddings are pretty small/cheap in memory,
+        # so let's just over-compute them by 10X, but assert fail if we ever reach that amount.
+        # In the future we can dynamically grow the cache, for now it's fine.
+        self.rotary_seq_len = (
+            config.sequence_len * 10
+        )  # 10X over-compute should be enough, TODO make nicer?
+        head_dim = config.n_embd // config.n_head
+        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
+        self.register_buffer(
+            "cos", cos, persistent=False
+        )  # persistent=False means it's not saved to the checkpoint
+        self.register_buffer("sin", sin, persistent=False)
+
+    @torch.no_grad()
+    def init_weights(self):
+        """
+        Initialize the full model in this one function for maximum clarity.
+
+        wte (embedding):     normal, std=1.0
+        lm_head:             normal, std=0.001
+        for each block:
+            attn.c_q:        uniform, std=1/sqrt(n_embd)
+            attn.c_k:        uniform, std=1/sqrt(n_embd)
+            attn.c_v:        uniform, std=1/sqrt(n_embd)
+            attn.c_proj:     zeros
+            mlp.c_fc:        uniform, std=1/sqrt(n_embd)
+            mlp.c_proj:      zeros
+        """
+
+        # Embedding and unembedding
+        torch.nn.init.normal_(
+            self.transformer.wte.weight,
+            mean=0.0,
+            std=self.config.embedding_init_std,
+        )
+        torch.nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.001)
+
+        # Transformer blocks: uniform init with bound = sqrt(3) * std (same standard deviation as normal)
+        n_embd = self.config.n_embd
+        s = (
+            3**0.5 * n_embd**-0.5
+        )  # sqrt(3) multiplier makes sure Uniform achieves the same std as Normal
+        for block in self.transformer.h:
+            init_projection_uniform_(block.attn.c_q, -s, s)  # weights use Uniform to avoid outliers
+            init_projection_uniform_(block.attn.c_k, -s, s)
+            init_projection_uniform_(block.attn.c_v, -s, s)
+            if self.config.matrix_init_recipe == "speedrun-zero-proj":
+                torch.nn.init.zeros_(block.attn.c_proj.weight)  # projections are zero
+                torch.nn.init.uniform_(
+                    block.mlp.c_fc.weight, -s * 0.4, s * 0.4
+                )  # 0.4x init scale for c_fc
+                torch.nn.init.zeros_(block.mlp.c_proj.weight)
+            elif self.config.matrix_init_recipe == "hyperball":
+                # Hyperball updates preserve each matrix's Frobenius norm, so a
+                # zero-initialized projection can never move. Scale the Modded
+                # 768-wide .026/.031 recipe as constants times fan-in^-1/2.
+                torch.nn.init.normal_(block.attn.c_proj.weight, std=0.72 * n_embd**-0.5)
+                torch.nn.init.normal_(block.mlp.c_fc.weight, std=0.86 * n_embd**-0.5)
+                torch.nn.init.normal_(block.mlp.c_proj.weight, std=0.86 * n_embd**-0.5)
+            else:
+                raise ValueError(f"unknown matrix_init_recipe={self.config.matrix_init_recipe!r}")
+            if block.attn.qk_gain is not None:
+                block.attn.qk_gain.fill_(1.2)
+
+        # Per-layer scalars
+        # Per-layer resid init: stronger residual at early layers, weaker at deep layers
+        n_layer = self.config.n_layer
+        for i in range(n_layer):
+            self.resid_lambdas.data[i] = 1.15 - (0.10 * i / max(n_layer - 1, 1))
+        # Decaying x0 init: earlier layers get more input embedding blending
+        for i in range(n_layer):
+            self.x0_lambdas.data[i] = 0.20 - (0.15 * i / max(n_layer - 1, 1))
+
+        # Value embeddings (init like c_v: uniform with same std)
+        for ve in self.value_embeds.values():
+            torch.nn.init.uniform_(ve.weight, -s, s)
+
+        # Gate weights init with small positive values so gates start slightly above neutral
+        for block in self.transformer.h:
+            if block.attn.ve_gate is not None:
+                torch.nn.init.uniform_(block.attn.ve_gate.weight, 0.0, 0.02)
+
+        # These controls are constructed on the meta device in the training
+        # path, so their constructor values are discarded by to_empty().  They
+        # must be explicitly initialized here just like every other parameter.
+        # Keeping this at the end preserves the established RNG stream for all
+        # pre-existing embedding and transformer weights.
+        torch.nn.init.uniform_(self.smear_gate.weight, 0.0, 0.02)
+        self.smear_lambda.zero_()
+        self.backout_lambda.fill_(0.2)
+
+        # Variant-only tensors use private RNG streams so paired runs retain
+        # bit-identical shared backbone weights for a given seed.
+        device = self.transformer.wte.weight.device
+        devices = (
+            [device.index if device.index is not None else torch.cuda.current_device()]
+            if device.type == "cuda"
+            else []
+        )
+        if self.engrams:
+            with torch.random.fork_rng(devices=devices):
+                torch.manual_seed(torch.initial_seed() ^ 0xE6A)
+                for engram in self.engrams.values():
+                    engram.init_weights()
+            self.engram_token_map.copy_(
+                torch.arange(
+                    self.config.vocab_size,
+                    device=self.engram_token_map.device,
+                )
+            )
+            self.engram_pad_id.zero_()
+        if self.mhc_connections:
+            with torch.random.fork_rng(devices=devices):
+                torch.manual_seed(torch.initial_seed() ^ 0x4D48C)
+                for connection in self.mhc_connections:
+                    connection.init_weights()
+
+        # Rotary embeddings
+        head_dim = self.config.n_embd // self.config.n_head
+        cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
+        self.cos, self.sin = cos, sin
+
+        compute_dtype = self.config.runtime.compute_dtype
+        # Optimizer master weights remain FP32 while embedding tables may use the compute dtype.
+        # embeddings and it saves memory. Exception: fp16 requires fp32 embeddings
+        # because GradScaler cannot unscale fp16 gradients.
+        if compute_dtype != torch.float16:
+            self.transformer.wte.to(dtype=compute_dtype)
+            for ve in self.value_embeds.values():
+                ve.to(dtype=compute_dtype)
+            for engram in self.engrams.values():
+                engram.embedding.to(dtype=compute_dtype)
+
+    @torch.no_grad()
+    def configure_engram_token_map(self, token_map: torch.Tensor, pad_id: int) -> None:
+        """Install the tokenizer-specific normalization map used by Engram."""
+        if not self.engrams:
+            return
+        if token_map.shape != self.engram_token_map.shape:
+            raise ValueError(
+                f"Expected token map shape {tuple(self.engram_token_map.shape)}, "
+                f"got {tuple(token_map.shape)}"
+            )
+        self.engram_token_map.copy_(
+            token_map.to(device=self.engram_token_map.device, dtype=torch.long)
+        )
+        self.engram_pad_id.copy_(self.engram_token_map[int(pad_id)])
+
+    def _precompute_rotary_embeddings(self, seq_len, head_dim, base=100000, device=None):
+        # TODO: bump base theta more? e.g. 100K is more common more recently
+        # autodetect the device from model embeddings
+        if device is None:
+            device = self.transformer.wte.weight.device
+        # stride the channels
+        channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
+        inv_freq = 1.0 / (base ** (channel_range / head_dim))
+        # stride the time steps
+        t = torch.arange(seq_len, dtype=torch.float32, device=device)
+        # calculate the rotation frequencies at each (time, channel) pair
+        freqs = torch.outer(t, inv_freq)
+        cos, sin = freqs.cos(), freqs.sin()
+        compute_dtype = self.config.runtime.compute_dtype
+        cos, sin = cos.to(compute_dtype), sin.to(compute_dtype)
+        cos, sin = (
+            cos[None, :, None, :],
+            sin[None, :, None, :],
+        )  # add batch and head dims for later broadcasting
+        return cos, sin
+
+    def _compute_window_sizes(self, config):
+        """
+        Compute per-layer window sizes for sliding window attention.
+
+        Returns list of (left, right) tuples for FA3's window_size parameter:
+        - left: how many tokens before current position to attend to (-1 = unlimited)
+        - right: how many tokens after current position to attend to (0 for causal)
+
+        Pattern string is tiled across layers. Final layer always gets L (full context).
+        Characters: L=long (full context), S=short (quarter context)
+        """
+        pattern = config.window_pattern.upper()
+        assert all(c in "SL" for c in pattern), (
+            f"Invalid window_pattern: {pattern}. Use only S and L."
+        )
+        # Map characters to window sizes
+        long_window = config.sequence_len
+        short_window = -(-long_window // 4 // 128) * 128  # ceil to FA3 tile size (2048 -> 768)
+        char_to_window = {
+            "L": (long_window, 0),
+            "S": (short_window, 0),
+        }
+        # Tile pattern across layers
+        window_sizes = []
+        for layer_idx in range(config.n_layer):
+            char = pattern[layer_idx % len(pattern)]
+            window_sizes.append(char_to_window[char])
+        # Final layer always gets full context
+        window_sizes[-1] = (long_window, 0)
+        return window_sizes
+
+    def get_device(self):
+        return self.transformer.wte.weight.device
+
+    def estimate_flops(self):
+        """
+        Return the estimated FLOPs per token for the model (forward + backward).
+        Each matmul weight parameter contributes 2 FLOPs (multiply *, accumulate +) in forward, and 2X that in backward => 2+4=6.
+        Cleanest explanation of this: https://medium.com/@dzmitrybahdanau/the-flops-calculus-of-language-model-training-3b19c1f025e4
+        On top of that, 12 * h * q * effective_seq_len accounts for key @ query matmul flops inside attention.
+        With sliding windows, effective_seq_len varies per layer (capped by window size).
+        Ref: https://arxiv.org/abs/2204.02311 (PaLM paper).
+        This is ~1% off from the exact formulas of Chinchilla paper, the difference is:
+        - Chinchilla counts the embedding layer as flops (? weird, it's just a lookup => we ignore)
+        - Chinchilla counts exp/sum/divide in attention softmax as flops (a little sus and very tiny => we ignore)
+        """
+        nparams = sum(p.numel() for p in self.parameters())
+        # Exclude non-matmul params: embeddings and per-layer scalars
+        value_embeds_numel = sum(ve.weight.numel() for ve in self.value_embeds.values())
+        engram_embeds_numel = sum(
+            engram.embedding.weight.numel() for engram in self.engrams.values()
+        )
+        nparams_exclude = (
+            self.transformer.wte.weight.numel()
+            + value_embeds_numel
+            + engram_embeds_numel
+            + self.resid_lambdas.numel()
+            + self.x0_lambdas.numel()
+            + self.smear_gate.weight.numel()
+            + self.smear_lambda.numel()
+            + self.backout_lambda.numel()
+        )
+        nparams_exclude += sum(
+            connection.alpha.numel() + connection.bias.numel()
+            for connection in self.mhc_connections
+        )
+        h, q, t = (
+            self.config.n_head,
+            self.config.n_embd // self.config.n_head,
+            self.config.sequence_len,
+        )
+        # Sum attention FLOPs per layer, accounting for sliding window
+        attn_flops = 0
+        for window_size in self.window_sizes:
+            window = window_size[0]  # (left, right) tuple, we use left
+            effective_seq = t if window < 0 else min(window, t)
+            attn_flops += 12 * h * q * effective_seq
+        num_flops_per_token = 6 * (nparams - nparams_exclude) + attn_flops
+        return num_flops_per_token
+
+    def num_scaling_params(self):
+        """
+        Return detailed parameter counts for scaling law analysis.
+        Different papers use different conventions:
+        - Kaplan et al. excluded embedding parameters
+        - Chinchilla included all parameters
+        Ref: https://arxiv.org/abs/2203.15556 (Chinchilla paper)
+        Ref: https://arxiv.org/abs/2001.08361 (Kaplan et al. original scaling laws paper)
+
+        Returns a dict with counts for each parameter group, so downstream analysis
+        can experiment with which combination gives the cleanest scaling laws.
+        """
+        # Count each group separately (mirrors the grouping in setup_optimizers)
+        wte = sum(p.numel() for p in self.transformer.wte.parameters())
+        value_embeds = sum(p.numel() for p in self.value_embeds.parameters())
+        lm_head = sum(p.numel() for p in self.lm_head.parameters())
+        transformer_matrices = sum(p.numel() for p in self.transformer.h.parameters())
+        engram_embeddings = sum(engram.embedding.weight.numel() for engram in self.engrams.values())
+        engram_projections = sum(
+            parameter.numel()
+            for engram in self.engrams.values()
+            for name, parameter in engram.named_parameters()
+            if name != "embedding.weight"
+        )
+        mhc_matrices = sum(
+            connection.mapping_proj.weight.numel() for connection in self.mhc_connections
+        )
+        mhc_scalars = sum(
+            connection.alpha.numel() + connection.bias.numel()
+            for connection in self.mhc_connections
+        )
+        scalars = (
+            self.resid_lambdas.numel()
+            + self.x0_lambdas.numel()
+            + self.smear_gate.weight.numel()
+            + self.smear_lambda.numel()
+            + self.backout_lambda.numel()
+        )
+        total = (
+            wte
+            + value_embeds
+            + lm_head
+            + transformer_matrices
+            + engram_embeddings
+            + engram_projections
+            + mhc_matrices
+            + mhc_scalars
+            + scalars
+        )
+        assert total == sum(p.numel() for p in self.parameters()), "Parameter count mismatch"
+        return {
+            "wte": wte,
+            "value_embeds": value_embeds,
+            "lm_head": lm_head,
+            "transformer_matrices": transformer_matrices,
+            "engram_embeddings": engram_embeddings,
+            "engram_projections": engram_projections,
+            "mhc_matrices": mhc_matrices,
+            "mhc_scalars": mhc_scalars,
+            "scalars": scalars,
+            "total": total,
+        }
+
+    def forward(self, idx, targets=None, kv_cache=None, loss_reduction="mean"):
+        B, T = idx.size()
+
+        # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim/2))
+        assert T <= self.cos.size(1), (
+            f"Sequence length grew beyond the rotary embeddings cache: {T} > {self.cos.size(1)}"
+        )
+        assert idx.device == self.cos.device, (
+            f"Rotary embeddings and idx are on different devices: {idx.device} != {self.cos.device}"
+        )
+        compute_dtype = self.config.runtime.compute_dtype
+        assert self.cos.dtype == compute_dtype, (
+            f"Rotary embeddings must be in {compute_dtype}, got {self.cos.dtype}"
+        )
+        # if kv cache exists, we need to offset the rotary embeddings to the current position in the cache
+        T0 = 0 if kv_cache is None else kv_cache.get_pos()
+        cos_sin = (
+            self.cos[:, T0 : T0 + T],
+            self.sin[:, T0 : T0 + T],
+        )  # truncate cache to current sequence length
+
+        # Embed the tokens
+        x = self.transformer.wte(idx)  # embed current token
+        x = x.to(compute_dtype)
+        x = norm(x)
+
+        # Smear: mix previous token's embedding into current position (cheap bigram info)
+        if kv_cache is None:
+            # Training / naive generate: full sequence available, use fast slice
+            assert T > 1, "Training forward pass should have T > 1"
+            gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(
+                self.smear_gate(x[:, 1:, : self.smear_gate_channels])
+            )
+            x = torch.cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
+        else:
+            # KV cache inference: read prev embedding from cache, store current for next step
+            x_pre_smear = kv_cache.prev_embedding
+            kv_cache.prev_embedding = x[:, -1:, :]
+            if T > 1:
+                # Prefill: apply smear to positions 1+, same as training
+                gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(
+                    self.smear_gate(x[:, 1:, : self.smear_gate_channels])
+                )
+                x = torch.cat([x[:, :1], x[:, 1:] + gate * x[:, :-1]], dim=1)
+            elif x_pre_smear is not None:
+                # Decode: single token, use cached prev embedding
+                gate = self.smear_lambda.to(x.dtype) * torch.sigmoid(
+                    self.smear_gate(x[:, :, : self.smear_gate_channels])
+                )
+                x = x + gate * x_pre_smear
+
+        # Forward the trunk of the Transformer
+        compressed_idx = self.engram_token_map[idx] if self.engrams else None
+        use_mhc = self.config.arch_family == "mhc"
+        if use_mhc:
+            streams = self.config.mhc_num_streams
+            x = x.unsqueeze(-2).expand(B, T, streams, self.config.n_embd).contiguous()
+        x0 = x  # save initial normalized embedding for x0 residual
+        n_layer = self.config.n_layer
+        backout_layer = n_layer // 2  # cache at halfway point
+        x_backout = None
+        cached_attention_input = None
+        midpoint_kv_input = None
+        for i, block in enumerate(self.transformer.h):
+            x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
+            cache_start = n_layer - self.config.cached_attention_layers
+            if self.config.cached_attention_layers and i == cache_start:
+                cached_attention_input = norm(x)
+            if str(i) in self.engrams:
+                if kv_cache is not None:
+                    raise NotImplementedError(
+                        "Engram KV-cache decoding requires an n-gram token cache"
+                    )
+                x = x + self.engrams[str(i)](
+                    x,
+                    compressed_idx,
+                    self.engram_pad_id,
+                )
+            ve = self.value_embeds[str(i)](idx).to(x.dtype) if str(i) in self.value_embeds else None
+            if use_mhc:
+                attn_connection = self.mhc_connections[2 * i]
+                attn_input, attn_post, attn_res = attn_connection.prepare(x)
+                attn_output = block.attn(
+                    norm(attn_input), ve, cos_sin, self.window_sizes[i], kv_cache
+                )
+                x = attn_connection.combine(x, attn_output, attn_post, attn_res)
+                mlp_connection = self.mhc_connections[2 * i + 1]
+                mlp_input, mlp_post, mlp_res = mlp_connection.prepare(x)
+                mlp_output = block.mlp(norm(mlp_input))
+                x = mlp_connection.combine(x, mlp_output, mlp_post, mlp_res)
+            else:
+                attention_input = cached_attention_input if i >= cache_start else None
+                kv_input = midpoint_kv_input if i > backout_layer else None
+                if attention_input is None and kv_input is None:
+                    x = block(x, ve, cos_sin, self.window_sizes[i], kv_cache)
+                else:
+                    x = block(
+                        x,
+                        ve,
+                        cos_sin,
+                        self.window_sizes[i],
+                        kv_cache,
+                        attention_input=attention_input,
+                        kv_input=kv_input,
+                    )
+            if i == backout_layer:
+                x_backout = x
+                if self.config.reuse_midpoint_kv:
+                    midpoint_kv_input = norm(x)
+        if use_mhc:
+            x = x.mean(dim=-2)
+            if x_backout is not None:
+                x_backout = x_backout.mean(dim=-2)
+        # Subtract mid-layer residual to remove low-level features before logit projection
+        if x_backout is not None:
+            x = x - self.backout_lambda.to(x.dtype) * x_backout
+        x = norm(x)
+
+        # Forward the lm_head (compute logits)
+        softcap = 15  # smoothly cap the logits to the range [-softcap, softcap]
+        raw_logits = self.lm_head(
+            x
+        )  # (B, T, padded_vocab_size) <- very big tensor, large amount of memory
+        raw_logits = raw_logits[..., : self.config.vocab_size]  # slice to remove padding
+        logits = raw_logits
+        if self.config.loss_fp32:
+            logits = logits.float()  # switch to fp32 for logit softcap and loss computation
+        if self.config.logit_transform == "symmetric-softcap":
+            logits = softcap * torch.tanh(logits / softcap)  # squash the logits
+        elif self.config.logit_transform == "asymmetric":
+            logits = 23 * torch.sigmoid((logits + 5) / 7.5)
+        else:
+            raise ValueError(f"unknown logit_transform={self.config.logit_transform!r}")
+
+        if targets is not None:
+            # training: given the targets, compute and return the loss
+            # TODO experiment with chunked cross-entropy?
+            loss = language_model_loss(
+                logits,
+                raw_logits,
+                targets,
+                reduction=loss_reduction,
+                z_loss_weight=self.config.z_loss_weight,
+                training=self.training,
+            )
+            return loss
+        else:
+            # inference: just return the logits directly
+            return logits
+
+    @torch.inference_mode()
+    def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
+        """
+        Naive autoregressive streaming inference.
+        To make it super simple, let's assume:
+        - batch size is 1
+        - ids and the yielded tokens are simple Python lists and ints
+        """
+        assert isinstance(tokens, list)
+        device = self.get_device()
+        rng = None
+        if temperature > 0:
+            rng = torch.Generator(device=device)
+            rng.manual_seed(seed)
+        ids = torch.tensor([tokens], dtype=torch.long, device=device)  # add batch dim
+        for _ in range(max_tokens):
+            logits = self.forward(ids)  # (B, T, vocab_size)
+            logits = logits[:, -1, :]  # (B, vocab_size)
+            if top_k is not None and top_k > 0:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float("Inf")
+            if temperature > 0:
+                logits = logits / temperature
+                probs = F.softmax(logits, dim=-1)
+                next_ids = torch.multinomial(probs, num_samples=1, generator=rng)
+            else:
+                next_ids = torch.argmax(logits, dim=-1, keepdim=True)
+            ids = torch.cat((ids, next_ids), dim=1)
+            token = next_ids.item()
+            yield token
+
+
+# Engram conditional memory shared by the base and combination architectures.
+@cache
+def _is_prime(value: int) -> bool:
+    if value < 2:
+        return False
+    if value % 2 == 0:
+        return value == 2
+    divisor = 3
+    while divisor <= math.isqrt(value):
+        if value % divisor == 0:
+            return False
+        divisor += 2
+    return True
+
+
+def distinct_prime_sizes(start: int, count: int, divisor: int = 1) -> tuple[int, ...]:
+    """Return distinct primes at or above ``start`` with a divisible sum."""
+    candidate = max(2, int(start))
+    sizes: list[int] = []
+    while len(sizes) < count:
+        if _is_prime(candidate):
+            sizes.append(candidate)
+        candidate += 1
+    while sum(sizes) % divisor:
+        replacement = sizes[-1] + 1
+        while not _is_prime(replacement):
+            replacement += 1
+        sizes[-1] = replacement
+    return tuple(sizes)
+
+
+class ShortCausalConv(nn.Module):
+    def __init__(self, hidden_size: int, kernel_size: int, dilation: int):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        self.weight = nn.Parameter(torch.empty(hidden_size, 1, kernel_size))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        time = x.size(1)
+        x_norm = norm(x).transpose(1, 2)
+        y = F.conv1d(
+            x_norm,
+            self.weight.to(dtype=x.dtype),
+            padding=(self.kernel_size - 1) * self.dilation,
+            dilation=self.dilation,
+            groups=x.size(-1),
+        )[..., :time]
+        return F.silu(y.transpose(1, 2))
+
+
+class EngramMemory(nn.Module):
+    """One Engram injection point with independent suffix n-gram hash tables."""
+
+    def __init__(
+        self,
+        *,
+        hidden_size: int,
+        memory_dim: int,
+        vocab_size: int,
+        vocab_multiplier: int,
+        num_heads: int,
+        ngram_orders: tuple[int, ...],
+        layer_idx: int,
+        seed: int,
+        kernel_size: int,
+        optimizer_world_size: int,
+    ):
+        super().__init__()
+        if memory_dim % (len(ngram_orders) * num_heads):
+            raise ValueError("Engram memory width must divide evenly across tables")
+        self.layer_idx = layer_idx
+        self.num_heads = num_heads
+        self.ngram_orders = tuple(ngram_orders)
+        self.max_ngram_order = max(ngram_orders)
+        self.head_dim = memory_dim // (len(ngram_orders) * num_heads)
+        self.hidden_size = hidden_size
+        self.seed = seed
+
+        table_count = len(ngram_orders) * num_heads
+        table_sizes = distinct_prime_sizes(
+            vocab_size * vocab_multiplier,
+            table_count,
+            divisor=optimizer_world_size,
+        )
+        offsets = [0]
+        for size in table_sizes[:-1]:
+            offsets.append(offsets[-1] + size)
+        self._table_sizes_python = table_sizes
+        self._offsets_python = tuple(offsets)
+        self.register_buffer(
+            "table_sizes", torch.empty(table_count, dtype=torch.long), persistent=False
+        )
+        self.register_buffer(
+            "offsets", torch.empty(table_count, dtype=torch.long), persistent=False
+        )
+        self.register_buffer(
+            "multipliers", torch.empty(self.max_ngram_order, dtype=torch.long), persistent=False
+        )
+
+        self.embedding = nn.Embedding(sum(table_sizes), self.head_dim)
+        self.key_proj = Linear(memory_dim, hidden_size, bias=False)
+        self.value_proj = Linear(memory_dim, hidden_size, bias=False)
+        self.short_conv = ShortCausalConv(hidden_size, kernel_size, self.max_ngram_order)
+
+    @torch.no_grad()
+    def init_weights(self) -> None:
+        self.table_sizes.copy_(
+            torch.tensor(self._table_sizes_python, device=self.table_sizes.device)
+        )
+        self.offsets.copy_(torch.tensor(self._offsets_python, device=self.offsets.device))
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(self.seed + 10007 * self.layer_idx)
+        multipliers = torch.randint(
+            1,
+            2**31 - 1,
+            (self.max_ngram_order,),
+            generator=generator,
+            dtype=torch.long,
+        )
+        multipliers |= 1
+        self.multipliers.copy_(multipliers.to(self.multipliers.device))
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=1.0)
+        bound = self.key_proj.in_features**-0.5
+        nn.init.uniform_(self.key_proj.weight, -bound, bound)
+        nn.init.uniform_(self.value_proj.weight, -bound, bound)
+        nn.init.zeros_(self.short_conv.weight)
+
+    def _hash_ids(self, compressed_ids: torch.Tensor, pad_id: torch.Tensor) -> torch.Tensor:
+        batch, time = compressed_ids.shape
+        shifts = [compressed_ids]
+        for distance in range(1, self.max_ngram_order):
+            prefix = pad_id.expand(batch, distance)
+            shifts.append(torch.cat((prefix, compressed_ids[:, : time - distance]), dim=1))
+        hashes = []
+        table_idx = 0
+        for order in self.ngram_orders:
+            mixed = shifts[0] * self.multipliers[0]
+            for distance in range(1, order):
+                mixed = torch.bitwise_xor(mixed, shifts[distance] * self.multipliers[distance])
+            for _ in range(self.num_heads):
+                hashes.append(
+                    torch.remainder(mixed, self.table_sizes[table_idx]) + self.offsets[table_idx]
+                )
+                table_idx += 1
+        return torch.stack(hashes, dim=-1)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        compressed_ids: torch.Tensor,
+        pad_id: torch.Tensor,
+    ) -> torch.Tensor:
+        hash_ids = self._hash_ids(compressed_ids, pad_id)
+        retrieved = self.embedding(hash_ids).flatten(start_dim=-2).to(hidden_states.dtype)
+        key = self.key_proj(retrieved)
+        value = self.value_proj(retrieved)
+        gate_logits = (norm(hidden_states) * norm(key)).sum(dim=-1) / math.sqrt(self.hidden_size)
+        gate_logits = gate_logits.abs().clamp_min(1e-6).sqrt() * gate_logits.sign()
+        gated_value = torch.sigmoid(gate_logits).unsqueeze(-1) * value
+        return gated_value + self.short_conv(gated_value)

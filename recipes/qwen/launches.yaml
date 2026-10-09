@@ -1,0 +1,88 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+profiles:
+  dense_full:
+    schema_version: 1
+    family: dense-27b
+    environment:
+      NGA_MODEL_SCALE: full
+      NGA_EXPECTED_NODES: 4
+      NGA_GPUS_PER_NODE: 8
+      NGA_SEQUENCE_LENGTH: 2048
+      NGA_MICRO_BATCH_SIZE: 4
+      NGA_GLOBAL_BATCH_SIZE: 512
+      NGA_TARGET_TRAIN_TOKENS: 100000000000
+      NGA_CHECKPOINT_INTERVAL_TOKENS: 10000000000
+      NGA_RUNTIME_PREFLIGHT: 1
+      NGA_PREFLIGHT_STEPS: 5
+      NGA_PROBE_STEPS: 0
+  dense_quarter:
+    schema_version: 1
+    family: dense-27b
+    environment:
+      NGA_MODEL_SCALE: quarter
+      NGA_EXPECTED_NODES: 4
+      NGA_GPUS_PER_NODE: 8
+      NGA_SEQUENCE_LENGTH: 2048
+      NGA_MICRO_BATCH_SIZE: 4
+      NGA_GLOBAL_BATCH_SIZE: 512
+      NGA_TARGET_TRAIN_TOKENS: 100000000000
+      NGA_CHECKPOINT_INTERVAL_TOKENS: 10000000000
+      NGA_RUNTIME_PREFLIGHT: 1
+      NGA_PREFLIGHT_STEPS: 400
+      NGA_PROBE_STEPS: 0
+  flash_next_1b:
+    schema_version: 1
+    family: flash-next
+    environment:
+      NGA_FLASH_NEXT_MODEL_VARIANT: 1b-depth48-no-mtp
+      NGA_EXPECTED_NODES: 4
+      NGA_GPUS_PER_NODE: 8
+      NGA_SEQUENCE_LENGTH: 2048
+      NGA_MICRO_BATCH_SIZE: 4
+      NGA_GLOBAL_BATCH_SIZE: 4096
+      NGA_TARGET_TRAIN_TOKENS: 100000595968
+      NGA_CHECKPOINT_INTERVAL_TOKENS: 100000595968
+      NGA_PROBE_STEPS: 0
+      NGA_PROBE_SAVE_INTERVAL: 0
+  flash_next_full:
+    schema_version: 1
+    family: flash-next
+    environment:
+      NGA_FLASH_NEXT_MODEL_VARIANT: full
+      NGA_EXPECTED_NODES: 4
+      NGA_GPUS_PER_NODE: 8
+      NGA_SEQUENCE_LENGTH: 2048
+      NGA_MICRO_BATCH_SIZE: 1
+      NGA_GLOBAL_BATCH_SIZE: 4096
+      NGA_TARGET_TRAIN_TOKENS: 100000595968
+      NGA_CHECKPOINT_INTERVAL_TOKENS: 100000595968
+      NGA_PROBE_STEPS: 0
+      NGA_PROBE_SAVE_INTERVAL: 0
+  flash_next_quarter:
+    schema_version: 1
+    family: flash-next
+    environment:
+      NGA_FLASH_NEXT_MODEL_VARIANT: quarter-depth48-no-mtp
+      NGA_EXPECTED_NODES: 4
+      NGA_GPUS_PER_NODE: 8
+      NGA_SEQUENCE_LENGTH: 2048
+      NGA_MICRO_BATCH_SIZE: 1
+      NGA_GLOBAL_BATCH_SIZE: 4096
+      NGA_TARGET_TRAIN_TOKENS: 100000595968
+      NGA_CHECKPOINT_INTERVAL_TOKENS: 100000595968
+      NGA_PROBE_STEPS: 0
+      NGA_PROBE_SAVE_INTERVAL: 0
+  flash_next_w320_e32:
+    schema_version: 1
+    family: flash-next
+    environment:
+      NGA_FLASH_NEXT_MODEL_VARIANT: w320-e32-depth48-no-mtp
+      NGA_EXPECTED_NODES: 4
+      NGA_GPUS_PER_NODE: 8
+      NGA_SEQUENCE_LENGTH: 2048
+      NGA_MICRO_BATCH_SIZE: 4
+      NGA_GLOBAL_BATCH_SIZE: 4096
+      NGA_TARGET_TRAIN_TOKENS: 100000595968
+      NGA_CHECKPOINT_INTERVAL_TOKENS: 100000595968
+      NGA_PROBE_STEPS: 0
+      NGA_PROBE_SAVE_INTERVAL: 0

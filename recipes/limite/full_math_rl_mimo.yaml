@@ -1,0 +1,21 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+name: limite-native-full-math-rl-mimo-v2
+upstream: https://github.com/XiaomiMiMo/verl/tree/a2ad9f6160b03ff2d47e59832bfb6b289f37c917
+rollout:
+  max_tokens: 16384
+  overlong_buffer: 4096
+  overlong_penalty: 0.5
+  unfinished_penalty: 0.5
+  repetition_penalty: 0.5
+execution:
+  graph_decode: true
+  trim_replay: true
+  skip_flat_backward: true
+curriculum:
+  initial_fraction: 0.5
+  anneal_steps: 128
+  pool: shared_training_only_verified_mixed_outcome_problems
+evaluation:
+  shaped_rewards: false
+  shared_heldout_unchanged: true
+  report_natural_eos_and_length_caps: true

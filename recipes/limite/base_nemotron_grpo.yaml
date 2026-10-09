@@ -1,0 +1,52 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+name: limite-1b-base-nemotron-math-v2-grpo-v1
+num_generations: 4
+max_prompt_length: 2048
+max_completion_length: 8192
+context_length: 10240
+allocator_fraction: 0.45
+max_flat_batches: 8
+trainer:
+  max_steps: 128
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 16
+  generation_batch_size: 16
+  per_device_eval_batch_size: 16
+  num_generations_eval: 4
+  eval_on_start: true
+  eval_strategy: steps
+  eval_steps: 32
+  learning_rate: 3.0e-06
+  lr_scheduler_type: constant
+  warmup_steps: 0
+  weight_decay: 0.0
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  max_grad_norm: 1.0
+  optim: adamw_torch_fused
+  bf16: false
+  gradient_checkpointing: false
+  use_vllm: false
+  cache_implementation: dynamic
+  generation_kwargs:
+    use_cache: true
+    eos_token_id:
+    - 151645
+    - 151643
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 0
+  beta: 0.0
+  loss_type: dapo
+  scale_rewards: group
+  num_iterations: 1
+  mask_truncated_completions: true
+  logging_steps: 1
+  logging_nan_inf_filter: false
+  save_steps: 32
+  save_total_limit: 5
+  seed: 42
+  data_seed: 42
+  disable_tqdm: true
+  dataloader_num_workers: 0
+  remove_unused_columns: false

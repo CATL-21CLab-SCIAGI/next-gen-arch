@@ -1,0 +1,8 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+extends:
+- ../defaults.yaml#base
+- ../defaults.yaml#backends_megatron
+- ../defaults.yaml#scales_megatron_1b
+name: megatron-baseline-1b-seed42
+variant: baseline
+seed: 42

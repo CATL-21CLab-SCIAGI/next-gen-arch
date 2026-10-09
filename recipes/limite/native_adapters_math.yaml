@@ -1,0 +1,141 @@
+# Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
+name: limite-native-attention-adapters-math
+parent:
+  model: paradigma-inc/limite-1b-base
+  revision: cc612bafcd4acd8445936201694c8c41aea8e479
+  snapshot: env:LIMITE_BASE_MODEL
+  frozen: true
+adapters:
+  variants:
+  - normal
+  - simplicial
+  placement: before_each_of_48_native_blocks
+  geometry: derive_from_each_native_attention_module
+  query_heads: 10
+  kv_heads: 2
+  head_dim: 128
+  model_width: 1280
+  local_window_span: 1025
+  global_every: 4
+  preserve:
+  - qk_rmsnorm
+  - native_softmax_scale
+  - local_rope
+  - global_nope
+  - value_embeddings
+  - xsa
+  - attention_gates
+  zero_output_projection: true
+  simplicial_short_window: 16
+  matched_initialization_seed: 42
+  attention_backend: tilelang
+  restart: fresh_matched_zero_output_adapters
+  trainable_only: true
+warmup:
+  data: env:LIMITE_MATH_WINDOWS
+  source: nvidia/Nemotron-Math-v2
+  serialization: prepared_Violetto_text_only_with_reasoning_shared_Limite_vocabulary
+  objective: all_token_next_token
+  supervised_tokens_per_variant: 10000000000
+  context: 2048
+  document_contained_windows: true
+  padding: false
+  identical_global_data_order: true
+  exclude_exact_rl_heldout_problem_hashes: true
+  optimizer:
+    name: AdamW
+    lr: 0.0001
+    betas:
+    - 0.9
+    - 0.95
+    weight_decay: 0
+    clip: 1.0
+  schedule:
+    warmup_steps: 100
+    cosine_final_lr: 1.0e-05
+  amp: false
+  adapter_master_dtype: float32
+  activation_dtype: bfloat16
+  attention_kernel:
+    implementation: package:archlab/architectures/tilelang_attention.py
+    versions:
+      normal: tilelang-gqa-bf16-v1
+      simplicial: tilelang-joint-bf16-v1
+    input_dtype: bfloat16
+    pair_product_tensor_core_cast: bfloat16
+    probability_tensor_core_cast: bfloat16
+    softmax_output_gradient_accumulation_dtype: float32
+    saved_log_normalizer: base_2
+    query_specific_causal_and_local_masks: true
+    shared_key_value_gradient_accumulation: float32_atomics
+    queries_per_tile:
+      normal: 64
+      simplicial: 4
+    forward_long_key_tile:
+      normal: 64
+      simplicial: 128
+    backward_long_key_tile: 32
+    pipeline_stages:
+      forward: 1
+      backward: 1
+    independent_fp32_oracle_output_relative_tolerance: 0.005
+    independent_fp32_oracle_gradient_relative_tolerance: 0.01
+    cached_decode: same_tilelang_arithmetic_with_dynamic_cache_lengths
+    legacy_checkpoint_backend_change: prohibited
+    upstream:
+      repository: https://github.com/tile-ai/tilelang
+      examples_revision: 41b25527cd672434f88eeea7e056d8d7c0d4faa4
+      examples:
+      - examples/flash_attention/example_gqa_fwd_bshd.py
+      - examples/flash_attention/example_gqa_bwd.py
+  checkpoint_tokens:
+  - 2000000000
+  - 4000000000
+  - 6000000000
+  - 8000000000
+  - 10000000000
+  checkpoint_storage: env:LIMITE_ADAPTER_OSS
+  tracking_experiment: "Limite \u2014 Adapter warmup"
+  detached_loss_and_any_rank_stop_vote: combined_sum_collective
+rl:
+  source: nvidia/Nemotron-RL-Math-v2
+  data: env:LIMITE_MATH_RL_DATA
+  frozen_base: true
+  trainable_only: adapters
+  runtime_overlay: env:TRL_RUNTIME
+  algorithm: upstream_TRL_1.4_GRPO_DAPO
+  steps: 400
+  generations_per_problem: 4
+  global_problems_per_update: 16
+  max_prompt_tokens: 2048
+  max_completion_tokens: 8192
+  optimizer:
+    name: SignalFusedAdam
+    lr: 1.0e-05
+    betas:
+    - 0.9
+    - 0.95
+    weight_decay: 0
+  sampling:
+    temperature: 1.0
+    top_p: 1.0
+    top_k: 0
+  importance_denominator: actual_native_sampling_logprobs
+  incomplete_response_reward: 0
+  zero_signal_optimizer_update: false
+  stop_after_flat_batches: 8
+  start_after: own_variant_exact_10B_warmup_and_RL_READY
+  tracking_experiment: "Limite \u2014 RL"
+execution:
+  nodes_per_variant: 2
+  gpus_per_node: 8
+  hardware: NVIDIA B300
+  kernel_runtime_overlay: env:TILELANG_RUNTIME
+  kernel_packages:
+    tilelang: 0.1.15
+    apache-tvm-ffi: 0.1.11
+    torch-c-dlpack-ext: 0.1.5
+    z3-solver: 4.15.4.0
+  container_frameworks: unchanged
+  synchronize_variants: false
+  qualification: independent_kernel_oracle_and_distributed_real_data_updates
