@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile, readdir, stat} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
-import {CHART, chartPoint, curvePath, checkpointAt, firstObservedCrossing,
+import {CHART, chartPoint, curvePath, checkpointAt, checkpointEfficiency, firstObservedCrossing,
   targetComparison, validateEvidence, sceneProgress, scrollCheckpointIndex} from '../../docs/site/zh/evidence.mjs';
 
 const site = new URL('../../docs/site/', import.meta.url);
@@ -39,6 +39,37 @@ test('1.70x is explicitly a fixed 10B reference, not both first crossings', () =
   assert.equal(result.ratio.toFixed(2), '1.70');
   assert.equal(firstObservedCrossing(learning.series.all_saved_points.normal, result.target)[0], 9568256000);
   assert.match(html, /10B 为普通组终点参照/);
+});
+
+test('scroll efficiency follows the current normal budget and an observed simplicial crossing', () => {
+  const first = checkpointEfficiency(learning, 0);
+  assert.equal(first.ratio, 1);
+  assert.equal(first.simplicialTokens, 2000158720);
+  const last = checkpointEfficiency(learning, 65);
+  assert.equal(last.target, .8095661401748657);
+  assert.equal(last.normalTokens, 1e10);
+  assert.equal(last.simplicialTokens, 5898240000);
+  assert.equal(last.simplicialLoss, .8090752363204956);
+  close(last.ratio, 1.6954210069444444);
+  for (let i = 0; i < learning.series.points.length; i++) {
+    const result = checkpointEfficiency(learning, i);
+    assert.equal(result.normalTokens, checkpointAt(learning, i).tokens);
+    assert.ok(result.simplicialLoss <= result.target);
+    assert.ok(result.simplicialTokens <= result.normalTokens);
+    for (const [tokens, loss] of learning.series.all_saved_points.simplicial) {
+      if (tokens >= result.simplicialTokens) break;
+      assert.ok(loss > result.target, 'No earlier observed match may be skipped');
+    }
+  }
+  const fixture = {series: {
+    points: [[10, .8, .7]],
+    all_saved_points: {simplicial: [[2, .9], [4, .78], [5, .85], [9, .72], [10, .7]]},
+  }};
+  assert.deepEqual(checkpointEfficiency(fixture, 0), {
+    target: .8, normalTokens: 10, simplicialTokens: 4, simplicialLoss: .78, ratio: 2.5,
+  });
+  fixture.series.all_saved_points.simplicial = [[2, .9]];
+  assert.throws(() => checkpointEfficiency(fixture, 0), RangeError);
 });
 
 test('CE targets use earliest recorded crossing despite non-monotonic losses', () => {
@@ -114,6 +145,10 @@ test('static fallback contains the same real curves and necessary evidence conte
   assert.match(html, /2\.57%/);
   assert.match(html, /差异仍需复测/);
   assert.match(html, /科学发现闭环是下一步研究方向/);
+  const learningScene = html.slice(html.indexOf('id="learning"'), html.indexOf('class="learning-detail'));
+  assert.match(learningScene, /id="checkpoint-ratio">1\.70×/);
+  assert.match(learningScene, /id="checkpoint-budgets">10\.00B ÷ 5\.90B/);
+  assert.match(learningScene, /首次达到或低于该 CE 的保存点 token；含预热，不作插值/);
 });
 
 test('anchors, accessible controls, and assets work under a project subpath', async () => {

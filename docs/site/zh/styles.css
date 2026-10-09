@@ -175,13 +175,17 @@ figure{margin:0}
 #chart-paths path{fill:none;stroke-width:2.8;stroke-linecap:round;stroke-linejoin:round}
 #normal-line{stroke:var(--blue)}
 #simplicial-line{stroke:var(--orange)}
+#chart-token-efficiency line{stroke:var(--orange);stroke-width:1.5;stroke-dasharray:4 5;opacity:.8}
+#efficiency-crossing{fill:var(--orange);stroke:#0b1014;stroke-width:2}
 #cursor-line{stroke:#abb7c661;stroke-width:1;stroke-dasharray:4 5}
 #normal-cursor{fill:var(--blue);stroke:#0b1014;stroke-width:3}
 #simplicial-cursor{fill:var(--orange);stroke:#0b1014;stroke-width:3}
-.chart-readout{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;padding-top:12px}
+.chart-readout{display:grid;grid-template-columns:1.15fr 1fr 1fr 1.15fr;gap:20px;padding-top:12px}
 .chart-readout>div{display:flex;flex-direction:column;gap:6px}
 .chart-readout span{font-size:10px;color:var(--muted)}
 .chart-readout output{font-size:28px;line-height:1.3;font-variant-numeric:tabular-nums;letter-spacing:-.025em}
+.chart-readout .checkpoint-efficiency{border-left:1px solid var(--line);padding-left:20px;gap:3px}
+.checkpoint-efficiency small{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
 .data-status{font-size:11px;color:var(--orange);margin-top:12px}
 .data-status:empty{display:none}
 .target-comparison{display:grid;grid-template-columns:1fr 1.2fr;gap:90px;margin-top:0;align-items:center}
@@ -288,8 +292,9 @@ footer p span{color:var(--quiet);font-size:9px}
  .warmup-interpretation{font-size:15px;margin-top:40px}.source-note{font-size:10px}
  .scene-panel .chart-shell{padding:15px 13px;margin-top:22px;border-radius:10px}
  .chart-topline{display:block;font-size:10px}.legend{margin-top:9px;font-size:9px;gap:20px}
- .scene-panel #learning-chart{height:min(31svh,255px);margin-top:5px}#chart-grid text{font-size:24px}
- .chart-readout{gap:10px}.chart-readout span{font-size:8px}.scene-panel .chart-readout output{font-size:18px}
+ .scene-panel #learning-chart{height:min(25svh,220px);margin-top:5px}#chart-grid text{font-size:24px}
+ .chart-readout{grid-template-columns:1fr 1fr;gap:12px 18px}.chart-readout span{font-size:8px}.scene-panel .chart-readout output{font-size:18px}
+ .chart-readout .checkpoint-efficiency{padding-left:0;border-left:0}.checkpoint-efficiency small{font-size:9px}
  .target-comparison{grid-template-columns:1fr;gap:35px}.target-intro .large-metric{font-size:94px}.target-intro h3{font-size:25px}.target-intro p{font-size:13px}
  .preset-switch{margin-bottom:28px}.preset-switch button{font-size:10px;padding:9px 7px}.target-detail .source-note{min-height:0}
  .evidence-note{margin-top:35px}.horizon h2{font-size:40px}

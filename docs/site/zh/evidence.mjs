@@ -28,6 +28,20 @@ export function firstObservedCrossing(points, target) {
   return points.find((point) => point[1] <= target) ?? null;
 }
 
+/** Compare the current normal checkpoint with the first saved simplicial match. */
+export function checkpointEfficiency(data, index) {
+  const point = checkpointAt(data, index);
+  const simplicial = firstObservedCrossing(data.series.all_saved_points.simplicial, point.normal);
+  if (!simplicial) throw new RangeError('An observed simplicial crossing is required');
+  return {
+    target: point.normal,
+    normalTokens: point.tokens,
+    simplicialTokens: simplicial[0],
+    simplicialLoss: simplicial[1],
+    ratio: point.tokens / simplicial[0],
+  };
+}
+
 export function targetComparison(data, key) {
   const target = {endpoint: data.series.points.at(-1)[1], ce_081: .81, ce_082: .82}[key];
   if (target === undefined) throw new RangeError('Unknown target preset');

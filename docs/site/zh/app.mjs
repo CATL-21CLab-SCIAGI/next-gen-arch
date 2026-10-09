@@ -1,4 +1,4 @@
-import {CHART, chartPoint, curvePath, checkpointAt, targetComparison, validateEvidence, sceneProgress, scrollCheckpointIndex} from './evidence.mjs?v=20261010-2';
+import {CHART, chartPoint, curvePath, checkpointAt, checkpointEfficiency, targetComparison, validateEvidence, sceneProgress, scrollCheckpointIndex} from './evidence.mjs?v=20261010-3';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -90,7 +90,7 @@ const elements = {
   linear: ['递归状态', '线性注意力', '把历史信息压缩进可更新的状态，再由查询读出。状态更新为长序列提供另一种计算路径。', 'S ← S + k ⊗ v', 'Research-Program', '阅读研究路线'],
   softmax: ['内容寻址', 'Softmax 注意力', '查询与每个键匹配，归一化得到权重，再汇总对应的值。它是普通对照组的基本交互。', 'softmax(qkᵀ) · v', 'Limite-SFT-Comparison', '阅读对照实验'],
   sparse: ['选择性交互', '稀疏注意力', '通过窗口、路由或其他选择机制，限制每次参与计算的历史位置，让交互集中在选定的信息上。', '关注一个子集', 'DeepSeek-Experiments', '阅读架构实验'],
-  simplicial: ['三体交互', '2-simplicial', '一个查询，同时对一对历史 token 评分。把两份信息的组合作为直接的交互单元。', 'q · (k ⊙ k′)', 'Limite-SFT-Comparison', '阅读实验设计'],
+  simplicial: ['三体交互', '2-单纯形注意力', '一个查询，同时对一对历史 token 评分。把两份信息的组合作为直接的交互单元。', 'q · (k ⊙ k′)', 'Limite-SFT-Comparison', '阅读实验设计'],
   triadic: ['探索中的候选', 'Triadic', '同一个历史 token 的两个键与一个值写入三阶递归状态，再由两个查询读出。它与 2-simplicial 组合两个历史位置的机制不同。', 'S ← S + k ⊗ k′ ⊗ v', 'https://arxiv.org/abs/2609.36529', '阅读 Triadic 论文'],
 };
 $$('[data-element]').forEach((button) => button.addEventListener('click', () => {
@@ -132,8 +132,10 @@ function renderCurve(data) {
 
 function showCheckpoint(data, index) {
   const point = checkpointAt(data, index);
+  const efficiency = checkpointEfficiency(data, index);
   const [x, yn] = chartPoint(point.tokens, point.normal);
   const [, ys] = chartPoint(point.tokens, point.simplicial);
+  const [matchX, matchY] = chartPoint(efficiency.simplicialTokens, efficiency.simplicialLoss);
   $('#cursor-line').setAttribute('x1', x);
   $('#cursor-line').setAttribute('x2', x);
   $('#normal-cursor').setAttribute('cx', x);
@@ -143,6 +145,19 @@ function showCheckpoint(data, index) {
   $('#token-readout').textContent = (point.tokens / 1e9).toFixed(2) + 'B';
   $('#normal-readout').textContent = point.normal.toFixed(6);
   $('#simplicial-readout').textContent = point.simplicial.toFixed(6);
+  $('#checkpoint-ratio').textContent = efficiency.ratio.toFixed(2) + '×';
+  $('#checkpoint-budgets').textContent = (efficiency.normalTokens / 1e9).toFixed(2) + 'B ÷ '
+    + (efficiency.simplicialTokens / 1e9).toFixed(2) + 'B';
+  $('#efficiency-target-line').setAttribute('x1', matchX);
+  $('#efficiency-target-line').setAttribute('x2', x);
+  $('#efficiency-target-line').setAttribute('y1', yn);
+  $('#efficiency-target-line').setAttribute('y2', yn);
+  $('#efficiency-crossing-stem').setAttribute('x1', matchX);
+  $('#efficiency-crossing-stem').setAttribute('x2', matchX);
+  $('#efficiency-crossing-stem').setAttribute('y1', yn);
+  $('#efficiency-crossing-stem').setAttribute('y2', matchY);
+  $('#efficiency-crossing').setAttribute('cx', matchX);
+  $('#efficiency-crossing').setAttribute('cy', matchY);
 }
 function showTarget(data, key) {
   const result = targetComparison(data, key);

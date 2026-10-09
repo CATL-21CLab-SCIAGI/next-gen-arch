@@ -13,8 +13,8 @@
   <link rel="canonical" href="https://catl-21clab-sciagi.github.io/next-gen-arch/zh/">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="preload" as="image" href="./assets/particle-field.png">
-  <link rel="stylesheet" href="./styles.css?v=20261010-2">
-  <script type="module" src="./app.mjs?v=20261010-2"></script>
+  <link rel="stylesheet" href="./styles.css?v=20261010-3">
+  <script type="module" src="./app.mjs?v=20261010-3"></script>
   <title>从炼金术到材料学 · 科学大模型</title>
 </head>
 <body>
@@ -69,7 +69,7 @@
     </section>
 
     <section class="materials wrap section-pad" aria-labelledby="materials-title">
-      <p class="eyebrow" data-reveal>从经验配方到第一性原理</p>
+      <p class="eyebrow" data-reveal>决定效率的，是“材料”。</p>
       <h2 id="materials-title" data-reveal>今天的架构，<br>还在青铜时代。</h2>
       <p class="body-copy" data-reveal>有效，但不知其所以然。</p>
       <div class="material-ages" data-reveal>
@@ -101,7 +101,7 @@
     </section>
 
     <section class="periodic wrap section-pad" id="architecture" aria-labelledby="periodic-title">
-      <div class="section-heading" data-reveal><p class="eyebrow">架构周期表</p><h2 id="periodic-title">空位就是预言。</h2><p class="body-copy">按局部变换、两两交互与高阶结构排列。</p></div>
+      <div class="section-heading" data-reveal><p class="eyebrow">架构周期表</p><h2 id="periodic-title">空位就是预言。</h2><p class="body-copy">按“几个 token 同时相互作用”排列。</p></div>
       <div class="periodic-layout" data-reveal>
         <div class="periodic-grid" role="group" aria-label="选择架构组件，查看它的作用">
           <div class="row-label"><strong>单体</strong><span>token 内部变换</span></div>
@@ -112,14 +112,14 @@
           <button class="element" type="button" data-element="linear" aria-pressed="false"><small>04</small><b>La</b><strong>线性注意力</strong><span>递归状态</span></button>
           <button class="element" type="button" data-element="softmax" aria-pressed="false"><small>05</small><b>Sa</b><strong>Softmax</strong><span>内容寻址</span></button>
           <button class="element" type="button" data-element="sparse" aria-pressed="false"><small>06</small><b>Sp</b><strong>稀疏注意力</strong><span>选择性交互</span></button>
-          <div class="row-label row-orange"><strong>高阶</strong><span>高阶交互与记忆</span></div>
-          <button class="element element-orange" type="button" data-element="simplicial" aria-pressed="true"><small>07</small><b>Si</b><strong>2-simplicial</strong><span>本次受控检验</span></button>
+          <div class="row-label row-orange"><strong>三体</strong><span>三个 token 同时作用</span></div>
+          <button class="element element-orange" type="button" data-element="simplicial" aria-pressed="true"><small>07</small><b>Si</b><strong>2-单纯形注意力</strong><span>本次受控检验</span></button>
           <button class="element element-orange element-dashed" type="button" data-element="triadic" aria-pressed="false"><small>08</small><b>Tr</b><strong>Triadic</strong><span>探索中的候选</span></button>
           <div class="element element-unknown" aria-label="尚待探索的结构">?</div>
         </div>
         <aside class="element-detail" aria-live="polite" aria-atomic="true">
           <span id="element-kicker" class="tiny-label accent">三体交互</span>
-          <h3 id="element-name">2-simplicial</h3>
+          <h3 id="element-name">2-单纯形注意力</h3>
           <p id="element-description">一个查询，同时对一对历史 token 评分。把两份信息的组合作为直接的交互单元。</p>
           <div id="element-formula" class="formula">q · (k ⊙ k′)</div>
           <a id="element-link" class="text-link" href="https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki/Limite-SFT-Comparison">阅读实验设计 <span aria-hidden="true">↗</span></a>
@@ -167,8 +167,8 @@
 
     <section class="warmup section-pad" id="warmup" aria-labelledby="warmup-title">
       <div class="wrap">
-        <p class="eyebrow" data-reveal>插入层的监督预热</p>
-        <h2 id="warmup-title" data-reveal>仅训练插入层，<br>数学推理能力已有提升。</h2>
+        <p class="eyebrow" data-reveal>预热</p>
+        <h2 id="warmup-title" data-reveal>2B token ·<br>只训插入块</h2>
         <p class="body-copy" data-reveal>在相同的 Nemotron Math-v2 数据上训练约 2B token。<br>这一阶段尚未进行强化学习。</p>
         <figure class="warmup-figure" data-reveal>
           <figcaption>AIME 2026 · 平均单次正确率</figcaption>
@@ -189,19 +189,20 @@
           <div class="chart-topline"><span>固定验证样本损失（CE，越低越好）</span><div class="legend"><span class="normal-dot">常规注意力</span><span class="simplicial-dot">2-单纯形</span></div></div>
 <svg id="learning-chart" viewBox="0 0 1000 450" role="img" aria-labelledby="learning-svg-title learning-svg-desc">
             <title id="learning-svg-title">普通和二单纯形注意力的验证学习曲线</title>
-            <desc id="learning-svg-desc">从约二十亿到一百亿训练 token，66个相同进度的保存点中，二单纯形的固定验证交叉熵均更低。普通终点0.809566，二单纯形0.801842。</desc>
+            <desc id="learning-svg-desc">从约二十亿到一百亿训练 token，66个相同进度的保存点中，二单纯形的固定验证交叉熵均更低。普通终点0.809566，二单纯形0.801842。橙色虚线连接当前普通组损失与二单纯形首次达标的保存点；10B终点对应5.90B，token效率为1.70倍。</desc>
             <g id="chart-grid"><line x1="70" x2="972" y1="380.1044776119403" y2="380.1044776119403"/><text x="50" y="384.1044776119403" text-anchor="end">0.80</text><line x1="70" x2="972" y1="271.1492537313437" y2="271.1492537313437"/><text x="50" y="275.1492537313437" text-anchor="end">0.82</text><line x1="70" x2="972" y1="162.1940298507465" y2="162.1940298507465"/><text x="50" y="166.1940298507465" text-anchor="end">0.84</text><line x1="70" x2="972" y1="53.238805970149315" y2="53.238805970149315"/><text x="50" y="57.238805970149315" text-anchor="end">0.86</text><text x="70" y="430" text-anchor="middle">2B</text><text x="295.5" y="430" text-anchor="middle">4B</text><text x="521" y="430" text-anchor="middle">6B</text><text x="746.5" y="430" text-anchor="middle">8B</text><text x="972" y="430" text-anchor="middle">10B</text></g><g id="chart-paths"><path id="normal-line" d="M70.018,50.153 L80.954,61.947 L95.732,88.539 L110.511,112.430 L125.289,129.006 L140.067,145.767 L154.846,156.262 L169.624,168.063 L184.402,178.302 L199.181,185.239 L213.959,193.118 L228.738,199.623 L243.516,206.853 L258.294,215.490 L273.073,221.514 L287.851,226.067 L295.506,228.251 L302.629,230.817 L317.408,237.621 L332.186,243.672 L346.965,246.554 L361.743,250.158 L376.521,256.984 L391.300,262.013 L406.078,261.780 L420.856,266.175 L435.635,273.748 L450.413,273.788 L465.191,278.945 L479.970,282.566 L494.748,281.687 L509.527,283.821 L521.024,287.440 L524.305,288.786 L539.083,290.133 L553.862,298.328 L568.640,299.238 L583.418,301.775 L598.197,298.310 L612.975,302.627 L627.754,304.072 L642.532,306.185 L657.310,308.754 L672.089,310.237 L686.867,312.831 L701.645,313.249 L716.424,314.606 L731.202,313.782 L745.980,314.123 L746.512,315.496 L760.759,318.416 L775.537,317.132 L790.316,319.637 L805.094,322.256 L819.872,324.192 L834.651,323.918 L849.429,323.302 L864.207,325.875 L878.986,325.551 L893.764,324.572 L908.542,326.296 L923.321,328.060 L938.099,328.032 L952.878,327.449 L967.656,328.689 L972.000,327.990"/><path id="simplicial-line" d="M70.018,132.548 L80.954,141.182 L95.732,161.865 L110.511,181.930 L125.289,197.560 L140.067,209.471 L154.846,218.319 L169.624,226.177 L184.402,231.619 L199.181,237.715 L213.959,247.430 L228.738,249.310 L243.516,259.797 L258.294,267.966 L273.073,271.943 L287.851,275.286 L295.506,275.483 L302.629,281.030 L317.408,287.684 L332.186,290.187 L346.965,292.231 L361.743,296.545 L376.521,299.843 L391.300,306.734 L406.078,307.080 L420.856,309.920 L435.635,316.453 L450.413,321.220 L465.191,319.270 L479.970,323.299 L494.748,327.350 L509.527,330.665 L521.024,330.424 L524.305,333.090 L539.083,334.508 L553.862,341.849 L568.640,340.622 L583.418,341.899 L598.197,339.889 L612.975,344.468 L627.754,346.693 L642.532,348.624 L657.310,348.854 L672.089,352.366 L686.867,354.343 L701.645,355.921 L716.424,356.080 L731.202,355.037 L745.980,356.272 L746.512,359.672 L760.759,358.280 L775.537,357.637 L790.316,359.463 L805.094,363.804 L819.872,365.039 L834.651,364.104 L849.429,364.628 L864.207,366.209 L878.986,364.652 L893.764,363.975 L908.542,366.549 L923.321,368.815 L938.099,369.063 L952.878,368.361 L967.656,369.217 L972.000,370.071"/></g>
+            <g id="chart-token-efficiency"><line id="efficiency-target-line" x1="509.52656" x2="972" y1="327.9904303906571" y2="327.9904303906571"/><line id="efficiency-crossing-stem" x1="509.52656" x2="509.52656" y1="327.9904303906571" y2="330.6647573584943"/><circle id="efficiency-crossing" cx="509.52656" cy="330.6647573584943" r="5"/></g>
             <g id="chart-cursor"><line id="cursor-line" x1="972" x2="972" y1="25" y2="391"/><circle id="normal-cursor" cx="972" cy="327.9904303906571" r="6"/><circle id="simplicial-cursor" cx="972" cy="370.07146528585656" r="6"/></g>
           </svg>
-          <div class="chart-readout" aria-live="off"><div><span>累计监督训练 token</span><output id="token-readout">10.00B</output></div><div class="normal-color"><span>常规注意力</span><output id="normal-readout">0.809566</output></div><div class="accent"><span>2-单纯形</span><output id="simplicial-readout">0.801842</output></div></div>
+          <div class="chart-readout" aria-live="off"><div><span>累计监督训练 token</span><output id="token-readout">10.00B</output></div><div class="normal-color"><span>常规注意力</span><output id="normal-readout">0.809566</output></div><div class="accent"><span>2-单纯形</span><output id="simplicial-readout">0.801842</output></div><div class="checkpoint-efficiency accent"><span>同等损失 · token 效率</span><output id="checkpoint-ratio">1.70×</output><small id="checkpoint-budgets">10.00B ÷ 5.90B</small></div></div>
           <p class="scroll-note">随页面滚动查看实际保存的训练记录</p><p id="data-status" class="data-status" role="status"></p>
         </div>
-        <p class="source-note">2B 之前只训练插入层，之后解冻全模型并继续微调至 10B；66 个共同保存点上，2-单纯形的固定验证损失均更低。</p>
+        <p class="source-note">2B 之前只训练插入层，之后解冻全模型并继续微调至 10B；66 个共同保存点上，2-单纯形的固定验证损失均更低。token 效率＝当前常规组 token ÷ 2-单纯形首次达到或低于该 CE 的保存点 token；含预热，不作插值。</p>
       </div></div>
     </section>
     <section class="learning-detail section-pad"><div class="wrap">
         <div class="target-comparison" data-reveal>
-          <div class="target-intro"><span class="tiny-label">同一验证目标</span><div class="large-metric"><span id="efficiency-ratio">1.70</span><small>×</small></div><h3>数据效率</h3><p id="target-summary">达到普通组 10B 终点的验证 CE，<br>三体首次保存达标点约为 5.90B。</p></div>
+          <div class="target-intro"><span class="tiny-label">学习效率</span><div class="large-metric"><span id="efficiency-ratio">1.70</span><small>×</small></div><h3>数据效率</h3><p id="target-summary">达到普通组 10B 终点的验证 CE，<br>三体首次保存达标点约为 5.90B。</p></div>
           <div class="target-detail">
             <div class="preset-switch" role="group" aria-label="选择验证目标"><button type="button" data-target="endpoint" aria-pressed="true">10B 终点参照</button><button type="button" data-target="ce_081" aria-pressed="false">CE 0.810</button><button type="button" data-target="ce_082" aria-pressed="false">CE 0.820</button></div>
             <div class="bar-row"><div><span class="normal-color">普通注意力</span><b id="normal-budget">10.00B</b></div><div class="bar-track"><i id="normal-budget-bar" class="normal-bar" style="width:100%"></i></div></div>

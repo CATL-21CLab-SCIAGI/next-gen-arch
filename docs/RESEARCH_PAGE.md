@@ -35,6 +35,14 @@ checkpoint meeting that CE (5.89824B). Normal first reaches that CE at
 9.568256B. The other two CE presets compare both first observed crossings.
 No interpolation or monotonicity assumption is used.
 
+The pinned learning chart also displays token efficiency for the current
+normal checkpoint as the reader scrolls: its cumulative token budget divided
+by the first saved simplicial checkpoint at or below its CE. A dashed guide
+marks that observed match; both budgets include the adapter warmup. The static
+fallback shows the same 10B / 5.89824B endpoint ratio, 1.70×. This follows the
+presentation's pages 33–34 while retaining saved-checkpoint precision rather
+than the slide's approximate 5.8B annotation.
+
 The parameter difference (2.57%) and limited training replication remain
 visible. Scientific-discovery workflows are identified as future research,
 with links to the organization's existing public foundations. The operational
@@ -45,7 +53,9 @@ queue state, infrastructure receipts, or model payloads belong here.
 
 ## Interaction and publication
 
-The attention comparison uses the original vector artwork from PDF page 20,\nwith named SVG views for the two diagrams so the source artwork is stored once.\nPage scrolling drives the attention comparison and saved-checkpoint cursor;
+The attention comparison uses the original vector artwork from PDF page 20,
+with named SVG views for the two diagrams so the source artwork is stored once.
+Page scrolling drives the attention comparison and saved-checkpoint cursor;
 there are no manual drag handles. Keyboard and touch page scrolling work
 through the native document. Discrete component and CE-preset buttons remain.
 Motion can be paused and respects reduced-motion preferences. Static figures
