@@ -3,17 +3,18 @@ import assert from 'node:assert/strict';
 import {readFile, readdir, stat} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {CHART, chartPoint, curvePath, checkpointAt, firstObservedCrossing,
-  targetComparison, reasoningMetric, validateEvidence} from '../../docs/site/zh/evidence.mjs';
+  targetComparison, validateEvidence, sceneProgress, scrollCheckpointIndex} from '../../docs/site/zh/evidence.mjs';
 
 const site = new URL('../../docs/site/', import.meta.url);
 const zh = new URL('zh/', site);
 const html = await readFile(new URL('index.html', zh), 'utf8');
 const learning = JSON.parse(await readFile(new URL('assets/learning-curves.json', zh)));
-const reasoning = JSON.parse(await readFile(new URL('assets/reasoning.json', zh)));
+const warmup = JSON.parse(await readFile(new URL('assets/warmup.json', zh)));
+const internet = JSON.parse(await readFile(new URL('assets/internet-data.json', zh)));
 const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, String(actual));
 
 test('curve contains the audited paired points, preserving actual token positions', () => {
-  assert.equal(validateEvidence(learning, reasoning), true);
+  assert.equal(validateEvidence(learning, warmup), true);
   for (const [column, name] of [[1, 'normal'], [2, 'simplicial']]) {
     const full = learning.series.all_saved_points[name];
     assert.equal(full.length, 70);
@@ -54,28 +55,64 @@ test('CE targets use earliest recorded crossing despite non-monotonic losses', (
   assert.throws(() => targetComparison(learning, 'unknown'), RangeError);
 });
 
-test('AIME metrics use strict correctness and all generated tokens', () => {
-  const n = reasoning.results.normal, s = reasoning.results.simplicial;
-  assert.deepEqual([n.correct_responses, s.correct_responses], [19, 25]);
-  assert.deepEqual([n.total_generated_tokens, s.total_generated_tokens], [12327575, 9774678]);
-  const accuracy = reasoningMetric(reasoning, 'accuracy');
-  close(accuracy.normal, 19 / 120 * 100);
-  close(accuracy.simplicial, 25 / 120 * 100);
-  const efficiency = reasoningMetric(reasoning, 'efficiency');
-  close(efficiency.normal, 1.5412601424043253);
-  close(efficiency.simplicial, 2.557629008341758);
-  close(efficiency.simplicial / efficiency.normal, 1.659440180132034);
-  assert.equal(reasoning.protocol.problems, 30);
-  assert.equal(reasoning.protocol.responses_per_problem, 4);
-  assert.equal(reasoning.protocol.native_context_tokens, 131072);
-  assert.throws(() => reasoningMetric(reasoning, 'unknown'), RangeError);
+test('published AIME evidence is adapter-only warmup against base, without RL', () => {
+  assert.equal(warmup.stage, 'adapter_only_warmup');
+  assert.equal(warmup.training.backbone_frozen, true);
+  assert.equal(warmup.training.actual_supervised_targets, 2000158720);
+  assert.equal(warmup.training.rl_updates, 0);
+  for (const [variant, correct] of [['base', 5], ['normal', 25], ['simplicial', 27]]) {
+    const result = warmup.results[variant];
+    assert.equal(result.correct_responses, correct);
+    assert.equal(result.responses, 120);
+    close(result.mean_pass_at_1, correct / 120);
+    assert.equal(result.rl_updates, 0);
+  }
+  assert.equal(warmup.protocol.problems, 30);
+  assert.equal(warmup.protocol.responses_per_problem, 4);
+  assert.equal(warmup.protocol.native_context_tokens, 131072);
+  assert.equal(warmup.protocol.grader, 'strict_answer_grader');
+  assert.match(html, /4\.2<span>%/);
+  assert.match(html, /20\.8<span>%/);
+  assert.match(html, /22\.5<span>%/);
+  assert.doesNotMatch(html, /1\.66|15\.8|RL400|reasoning\.json/);
+});
+
+test('scrolling spans all saved checkpoints and reverses without extrapolation', () => {
+  assert.equal(sceneProgress(200, 2000, 700, 66), 0);
+  assert.equal(sceneProgress(66, 2000, 700, 66), 0);
+  assert.equal(sceneProgress(-584, 2000, 700, 66), .5);
+  assert.equal(sceneProgress(-1234, 2000, 700, 66), 1);
+  assert.equal(sceneProgress(-3000, 2000, 700, 66), 1);
+  assert.equal(sceneProgress(0, 600, 700), 1);
+  assert.equal(sceneProgress(NaN, 600, 700), 1);
+  const indices = [0, .25, .5, 1, .5, 0].map((p) => scrollCheckpointIndex(learning, p));
+  assert.deepEqual(indices, [0, 16, 33, 65, 33, 0]);
+  assert.equal(scrollCheckpointIndex(learning, NaN), 65);
+  assert.equal(scrollCheckpointIndex(learning, -1), 0);
+  assert.equal(scrollCheckpointIndex(learning, 2), 65);
+});
+
+test('internet data wall preserves PDF data and distinguishes the illustrative fit', () => {
+  assert.equal(internet.points.length, 7);
+  assert.deepEqual(internet.points.map((p) => p.trillion_tokens), [.3, 1.4, 2, 15, 18, 14.8, 36]);
+  const xs = internet.points.map((p) => p.year - 2020), ys = internet.points.map((p) => Math.log10(p.trillion_tokens));
+  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+  const mx = mean(xs), my = mean(ys);
+  const slope = xs.reduce((sum, x, i) => sum + (x - mx) * (ys[i] - my), 0) / xs.reduce((sum, x) => sum + (x - mx) ** 2, 0);
+  close(slope, internet.illustrative_fit.log10_tokens_slope_per_year);
+  close(10 ** slope, internet.illustrative_fit.annual_growth);
+  assert.equal(internet.stock.median_trillion_tokens, 300);
+  assert.deepEqual(internet.stock.confidence_interval_90_percent, [100, 1000]);
+  assert.match(html, /但互联网只有一个/);
+  assert.match(html, /2028 年并非确定的耗尽日期/);
+  for (const p of internet.points) assert.ok(html.includes(p.model));
 });
 
 test('static fallback contains the same real curves and necessary evidence context', () => {
   for (const column of [1, 2]) assert.ok(html.includes(curvePath(learning.series.points, column)));
   assert.match(html, /固定验证/);
   assert.match(html, /2\.57%/);
-  assert.match(html, /能力优势仍需复测/);
+  assert.match(html, /差异仍需复测/);
   assert.match(html, /科学发现闭环是下一步研究方向/);
 });
 
@@ -88,10 +125,8 @@ test('anchors, accessible controls, and assets work under a project subpath', as
     assert.ok((await stat(new URL(reference, zh))).isFile(), reference);
   }
   assert.doesNotMatch(html, /(?:href|src)="\/[^/]/, 'Avoid root-absolute URLs on GitHub project Pages');
-  for (const id of ['interaction-range', 'token-range']) {
-    assert.match(html, new RegExp('for="' + id + '"'));
-    assert.match(html, new RegExp('id="' + id + '"[^>]*type="range"'));
-  }
+  assert.doesNotMatch(html, /type="range"|comparison-handle|token-range|interaction-range/);
+  for (const name of ['attention', 'learning']) assert.ok(html.includes('data-scroll-scene="' + name + '"'));
   assert.match(html, /id="motion-toggle"[^>]*aria-label=/);
   const root = await readFile(new URL('index.html', site), 'utf8');
   assert.match(root, /url=\.\/zh\//);
@@ -101,7 +136,7 @@ test('published tree contains only reviewed static assets and compact aggregates
   const allowed = new Set([
     '.nojekyll', 'index.html', 'zh/index.html', 'zh/styles.css', 'zh/favicon.svg',
     'zh/app.mjs', 'zh/evidence.mjs', 'zh/assets/learning-curves.json',
-    'zh/assets/reasoning.json', 'zh/assets/particle-field.png', 'zh/assets/action-landscape.jpg',
+    'zh/assets/warmup.json', 'zh/assets/internet-data.json', 'zh/assets/particle-field.png', 'zh/assets/action-landscape.jpg',
   ]);
   const base = fileURLToPath(site);
   for (const name of await readdir(site, {recursive: true})) {

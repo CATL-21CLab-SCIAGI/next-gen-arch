@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-10-10",
+  "stage": "adapter_only_warmup",
+  "protocol": {
+    "benchmark": "AIME 2026",
+    "problems": 30,
+    "responses_per_problem": 4,
+    "responses_per_model": 120,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "native_context_tokens": 131072,
+    "completion_budget": "native_context_minus_actual_prompt",
+    "paired_problem_sample_seeds": true,
+    "grader": "strict_answer_grader",
+    "training_seed_pairs": 1
+  },
+  "training": {
+    "parent": "paradigma-inc/limite-1b-base",
+    "backbone_frozen": true,
+    "actual_supervised_targets": 2000158720,
+    "rl_updates": 0,
+    "geometry_matched": true,
+    "parameter_matched": false,
+    "normal_total_parameters": 1224060256,
+    "simplicial_total_parameters": 1255517536
+  },
+  "results": {
+    "base": {
+      "correct_responses": 5,
+      "responses": 120,
+      "mean_pass_at_1": 0.041666666666666664,
+      "pass_at_1_cluster_bootstrap_95pct": [
+        0.008333333333333333,
+        0.08333333333333333
+      ],
+      "total_generated_tokens": 3888729,
+      "nominal_sft_tokens": 0,
+      "actual_sft_tokens": 0,
+      "rl_updates": 0
+    },
+    "normal": {
+      "correct_responses": 25,
+      "responses": 120,
+      "mean_pass_at_1": 0.20833333333333334,
+      "pass_at_1_cluster_bootstrap_95pct": [
+        0.1,
+        0.3333333333333333
+      ],
+      "total_generated_tokens": 9489210,
+      "nominal_sft_tokens": 2000000000,
+      "actual_sft_tokens": 2000158720,
+      "rl_updates": 0
+    },
+    "simplicial": {
+      "correct_responses": 27,
+      "responses": 120,
+      "mean_pass_at_1": 0.225,
+      "pass_at_1_cluster_bootstrap_95pct": [
+        0.11666666666666667,
+        0.35
+      ],
+      "total_generated_tokens": 7488827,
+      "nominal_sft_tokens": 2000000000,
+      "actual_sft_tokens": 2000158720,
+      "rl_updates": 0
+    }
+  },
+  "notes_zh": [
+    "预训练基座与两组只训练新增注意力层至约 2B token 的检查点比较；尚未进行强化学习。",
+    "单次正确率为 30 题各 4 次独立采样的平均结果，不是 pass@4。",
+    "常规注意力与 2-单纯形注意力总参数分别为 1.224B 和 1.256B；两组几何匹配，参数量不完全相同。",
+    "相对基座的提升支持继续研究；两种新增注意力之间的差异仍需更多独立训练重复验证。"
+  ],
+  "sources": [
+    "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki/Limite-SFT-Comparison",
+    "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki/Evaluation"
+  ]
+}

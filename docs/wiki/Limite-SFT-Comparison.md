@@ -1,8 +1,9 @@
 # Limite: normal versus 2-simplicial attention
 
-**Endpoint evidence: 2026-10-07; CE provenance audited 2026-10-09.** Completed training and endpoint evaluation;
-intermediate checkpoint evaluation is outside this snapshot. This page is not a
-live queue or a claim that the architecture comparison is conclusive.
+**Endpoint evidence: 2026-10-07; CE provenance audited 2026-10-09;
+adapter-only warmup audited 2026-10-10.** This page records the matched 2B
+warmup and completed endpoint evaluations. It is not a live queue or a claim
+that the architecture comparison is conclusive.
 
 ## Question and matched settings
 
@@ -64,6 +65,30 @@ performance contracts. Neither timing differences nor kernel-level admission
 measurements should be presented as a pure FLOP-count comparison.
 
 ## Recorded results
+
+### Adapter-only warmup
+
+Before full-weight finetuning or RL, the matched adapters were trained for
+2,000,158,720 supervised targets with the pretrained backbone frozen. The
+strict AIME26 evaluation below uses the same 30 problems, four paired seeded
+responses per problem, temperature 0.6, top-p 0.95, and the native 131,072-token
+total context for all three models.
+
+| Model | Correct / 120 | Mean pass@1 |
+| --- | ---: | ---: |
+| Limite-1B Base, without added-layer training | 5 | 4.17% |
+| Normal adapter-only warmup, 2B | 25 | 20.83% |
+| 2-simplicial adapter-only warmup, 2B | 27 | 22.50% |
+
+These are strict-grader results, not the earlier pipeline extraction counts.
+The improvement over the pretrained base motivates further investigation;
+the small difference between the two adapters does not establish architectural
+superiority. There is one training pair, and the parameter mismatch described
+above remains. No RL updates have occurred at these checkpoints.
+The [compact warmup evidence](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/main/docs/site/zh/assets/warmup.json)
+includes the sampling contract and per-model aggregates.
+
+### Full-finetuning and historical RL endpoints
 
 The 10B endpoint's fixed validation-split diagnostic CE is
 **0.809566 normal / 0.801842 simplicial**. Each saved point scores the same
