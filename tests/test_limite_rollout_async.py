@@ -1,4 +1,4 @@
-"""The no-overlap rollout boundary retains prefetch state before collectives."""
+"""Rollout schedules preserve policy/RNG provenance and host collective order."""
 
 import json
 import sys
@@ -233,3 +233,200 @@ def test_portable_async_recovery_recipe_changes_only_execution_overlap():
     assert execution["actor_rng"] == "restored_rank_cuda_then_independent_generator"
     assert execution["checkpoint_prefetch"] == "completed_batch_and_generator_state"
     assert recipe["rollout"]["max_tokens"] == 16384
+
+
+def test_after_update_starts_next_batch_only_from_published_optimizer_snapshot(tmp_path, monkeypatch):
+    events = []
+
+    def generate(prompts, snapshot, generator):
+        events.append(("generate", tuple(prompts), snapshot.version))
+        return sampled(prompts, snapshot, generator)
+
+    actor = queue(generate)
+    try:
+        actor.publish(PolicySnapshot(5, "current"))
+        learner = trainer(actor, tmp_path)
+        learner.archlab_rollout_prefetch_schedule = "after_update"
+        original_drain = actor.drain
+
+        def forbidden_drain():
+            raise AssertionError("after_update must not drain a future rollout before the optimizer")
+
+        monkeypatch.setattr(actor, "drain", forbidden_drain)
+        native_rollout(["current"], learner)
+        assert actor.pending is None
+        assert events == [("generate", ("current",), 5)]
+        assert learner._metrics["train"]["rollout/drain_seconds"] == [0.0]
+        assert learner._metrics["train"]["rollout/policy_lag"] == [0]
+
+        # The ordinary checkpoint boundary must not launch or wait on the next
+        # data batch. Actor RNG advances only when that batch is consumed.
+        monkeypatch.setattr(actor, "drain", original_drain)
+        rng = actor.generator.get_state().clone()
+        saved = actor.checkpoint_state()
+        assert saved["pending"] is None and torch.equal(rng, saved["generator"])
+        assert events == [("generate", ("current",), 5)]
+
+        events.append(("optimizer", 6))
+        actor.publish(PolicySnapshot(6, "updated"))
+        learner.archlab_policy_version = lambda: 6
+        native_rollout(["next"], learner)
+        assert events == [("generate", ("current",), 5), ("optimizer", 6),
+                          ("generate", ("next",), 6)]
+        assert actor.pending is None
+        assert learner._metrics["train"]["rollout/policy_lag"] == [0, 0]
+        rows = [json.loads(line) for line in (tmp_path / "behavior.jsonl").read_text().splitlines()]
+        assert [row["source_policy_version"] for row in rows] == [5, 6]
+        assert [row["weight"] for row in rows] == ["current", "updated"]
+    finally:
+        actor.close()
+
+
+def test_after_update_preserves_completed_legacy_pending_batch_and_actor_rng(tmp_path):
+    original = queue(sampled)
+    generated = []
+
+    def record(prompts, snapshot, generator):
+        generated.append((tuple(prompts), snapshot.version))
+        return sampled(prompts, snapshot, generator)
+
+    resumed = queue(record)
+    try:
+        original.prefetch(["current"])
+        saved = original.checkpoint_state()
+        expected = saved["pending"]["batch"]
+        assert saved["pending"]["policy_version"] == 4
+        resumed.publish(PolicySnapshot(5, "updated-before-resume"))
+        resumed.restore(saved)
+        learner = trainer(resumed, tmp_path)
+        learner.archlab_rollout_prefetch_schedule = "after_update"
+        actual = native_rollout(["current"], learner)
+        assert actual == expected and generated == []
+        assert resumed.pending is None
+        assert learner._metrics["train"]["rollout/policy_lag"] == [1]
+        assert torch.equal(resumed.generator.get_state(), saved["generator"])
+        assert resumed.checkpoint_state()["pending"] is None
+
+        resumed.publish(PolicySnapshot(6, "updated-after-resume"))
+        learner.archlab_policy_version = lambda: 6
+        native_rollout(["next"], learner)
+        assert generated == [(("next",), 6)]
+        assert learner._metrics["train"]["rollout/policy_lag"] == [1, 0]
+        control = torch.Generator().set_state(saved["generator"])
+        torch.randint(100, (4,), generator=control)
+        assert torch.equal(resumed.generator.get_state(), control.get_state())
+    finally:
+        original.close()
+        resumed.close()
+
+
+def test_after_update_host_rendezvous_blocks_metadata_until_every_current_actor_finishes(tmp_path):
+    slow_entered, release_slow, fast_waiting = (threading.Event() for _ in range(3))
+    rendezvous = threading.Barrier(2, timeout=5)
+    actors, learners, generated, metadata = [], [], [], []
+    for rank in range(2):
+        def generate(prompts, snapshot, generator, rank=rank):
+            generated.append((rank, tuple(prompts)))
+            if rank == 1:
+                slow_entered.set()
+                assert release_slow.wait(5)
+            return sampled(prompts, snapshot, generator)
+
+        def wait_for_peers(rank=rank):
+            if rank == 0:
+                fast_waiting.set()
+            rendezvous.wait()
+
+        output = tmp_path / str(rank)
+        output.mkdir()
+        actor = queue(generate)
+        learner = trainer(actor, output)
+        learner.archlab_rollout_prefetch_schedule = "after_update"
+        learner.accelerator.num_processes = 2
+        learner.archlab_rollout_rendezvous = wait_for_peers
+        actors.append(actor)
+        learners.append(learner)
+
+    def rollout_then_metadata(rank):
+        result = native_rollout(["current"], learners[rank])
+        metadata.append(rank)
+        return result
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            work = [executor.submit(rollout_then_metadata, rank) for rank in range(2)]
+            try:
+                assert slow_entered.wait(5) and fast_waiting.wait(5)
+                # The slow worker can enter generate before submit() has
+                # assigned its Future to queue.pending. Observe the blocked
+                # rollout, not that racy intermediate implementation detail.
+                assert actors[0].pending is None
+                assert metadata == [] and not any(future.done() for future in work)
+                assert sorted(generated) == [(0, ("current",)), (1, ("current",))]
+            finally:
+                release_slow.set()
+            assert work[0].result(timeout=5) == work[1].result(timeout=5)
+        assert sorted(metadata) == [0, 1]
+        assert all(actor.pending is None for actor in actors)
+        assert learners[0]._metrics["train"]["rollout/peer_wait_seconds"][0] > 0
+    finally:
+        release_slow.set()
+        for actor in actors:
+            actor.close()
+
+
+def test_after_update_flat_optimizer_step_uses_same_snapshot_without_eager_work(tmp_path):
+    generated = []
+
+    def record(prompts, snapshot, generator):
+        generated.append((tuple(prompts), snapshot.version))
+        return sampled(prompts, snapshot, generator)
+
+    actor = queue(record)
+    try:
+        actor.publish(PolicySnapshot(5, "unchanged"))
+        learner = trainer(actor, tmp_path)
+        learner.archlab_rollout_prefetch_schedule = "after_update"
+        native_rollout(["flat-current"], learner)
+        assert actor.checkpoint_state()["pending"] is None
+        assert generated == [(("flat-current",), 5)]
+        # A globally flat/no-signal GRPO batch does not publish a new version.
+        native_rollout(["next"], learner)
+        assert generated == [(("flat-current",), 5), (("next",), 5)]
+        assert learner._metrics["train"]["rollout/policy_lag"] == [0, 0]
+        assert actor.pending is None
+    finally:
+        actor.close()
+
+
+@pytest.mark.parametrize("schedule,overlap,message", [
+    ("unknown", False, "unknown rollout prefetch schedule"),
+    ("after_update", True, "requires overlap_actor_learner=False"),
+    ("after_update", None, "requires overlap_actor_learner=False"),
+])
+def test_invalid_schedule_fails_before_consuming_rng_or_pending(tmp_path, schedule, overlap, message):
+    actor = queue(sampled)
+    try:
+        learner = trainer(actor, tmp_path, overlap)
+        learner.archlab_rollout_prefetch_schedule = schedule
+        rng = actor.generator.get_state().clone()
+        with pytest.raises(ValueError, match=message):
+            native_rollout(["current"], learner)
+        assert actor.pending is None and torch.equal(rng, actor.generator.get_state())
+        assert not (tmp_path / "behavior.jsonl").exists()
+    finally:
+        actor.close()
+
+
+def test_after_update_requires_host_rendezvous_before_consuming_distributed_batch(tmp_path):
+    actor = queue(sampled)
+    try:
+        learner = trainer(actor, tmp_path)
+        learner.archlab_rollout_prefetch_schedule = "after_update"
+        learner.accelerator.num_processes = 2
+        rng = actor.generator.get_state().clone()
+        with pytest.raises(RuntimeError, match="host rendezvous"):
+            native_rollout(["current"], learner)
+        assert actor.pending is None and torch.equal(rng, actor.generator.get_state())
+    finally:
+        actor.close()

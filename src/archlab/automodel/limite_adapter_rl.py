@@ -540,6 +540,7 @@ def main():
                                     "active_source_revision": runtime_contract()["source_revision"],
                                     "active_async_rollouts": str(bool(execution.get("async_rollouts"))),
                                     "active_overlap_actor_learner": str(execution.get("overlap_actor_learner", True)),
+                                    "active_rollout_prefetch_schedule": execution.get("rollout_prefetch_schedule", "before_update"),
                                     "active_max_policy_lag": str(execution.get("max_policy_lag", 0)),
                                     "math_protocol": protocol.contract()["version"] if protocol else "native-v1",
                                     "math_phase_start": str(a.phase_start),
@@ -951,6 +952,7 @@ def main():
         trainer.archlab_reuse_decode = execution.get("reuse_decode", False)
         trainer.archlab_max_policy_lag = execution.get("max_policy_lag", 1)
         trainer.archlab_overlap_actor_learner = execution.get("overlap_actor_learner", True)
+        trainer.archlab_rollout_prefetch_schedule = execution.get("rollout_prefetch_schedule", "before_update")
         if not a.test_rollouts:
             trainer.generation_config.archlab_budget_mode = protocol.budget_mode
         trainer.archlab_chunked_policy_scores = bool(execution.get("replay_head_chunk_size"))

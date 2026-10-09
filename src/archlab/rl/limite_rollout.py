@@ -163,18 +163,30 @@ def native_rollout(prompts, trainer):
     asynchronous = getattr(trainer, "archlab_async_rollout", None)
     training = trainer.model.training
     if asynchronous is not None and training:
+        overlap = getattr(trainer, "archlab_overlap_actor_learner", True)
+        schedule = getattr(trainer, "archlab_rollout_prefetch_schedule", "before_update")
+        if schedule not in ("before_update", "after_update"):
+            raise ValueError("unknown rollout prefetch schedule")
+        if schedule == "after_update" and overlap is not False:
+            raise ValueError("after_update rollout scheduling requires overlap_actor_learner=False")
+        rendezvous = getattr(trainer, "archlab_rollout_rendezvous", None)
+        if not overlap and trainer.accelerator.num_processes > 1 and rendezvous is None:
+            raise RuntimeError("distributed no-overlap rollout requires a host rendezvous")
         result, timings = asynchronous.consume(prompts, trainer.archlab_policy_version())
-        asynchronous.prefetch(getattr(trainer, "archlab_next_rollout_prompts", None))
-        if not getattr(trainer, "archlab_overlap_actor_learner", True):
+        if schedule == "before_update":
+            asynchronous.prefetch(getattr(trainer, "archlab_next_rollout_prompts", None))
+        if not overlap:
             # Local drain alone is insufficient: faster ranks can otherwise
             # launch waiting NCCL kernels while a peer is still decoding.
-            started = time.perf_counter()
-            asynchronous.drain()
-            timings["rollout_drain_seconds"] = time.perf_counter() - started
+            # The after-update schedule starts the next batch on demand at its
+            # own consume, after the previous optimizer/checkpoint boundary.
+            # A restored legacy pending batch is still consumed exactly once.
+            timings["rollout_drain_seconds"] = 0.0
+            if schedule == "before_update":
+                started = time.perf_counter()
+                asynchronous.drain()
+                timings["rollout_drain_seconds"] = time.perf_counter() - started
             trainer._metrics["train"]["rollout/drain_seconds"].append(timings["rollout_drain_seconds"])
-            rendezvous = getattr(trainer, "archlab_rollout_rendezvous", None)
-            if trainer.accelerator.num_processes > 1 and rendezvous is None:
-                raise RuntimeError("distributed no-overlap rollout requires a host rendezvous")
             started = time.perf_counter()
             if rendezvous is not None:
                 rendezvous()
