@@ -2,8 +2,9 @@
 
 Uses disposable models with identical checkpoint values. Small teacher-forced
 checks compare native eager scores and every trainable gradient with chunked
-replay. Full-context replay is an explicit, separate resource admission, with no
-optimizer construction or update. Synthetic inputs test execution, not quality.
+replay. Full-context admission retains the production actor, graph pool,
+snapshots and Adam states while updating disposable learner weights. The
+source checkpoint is immutable. Synthetic inputs test execution, not quality.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import json
 import math
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -89,10 +91,11 @@ def _objective(scores):
     return -(scores * weights).mean()
 
 
-def gradient_error(model, expected):
+def gradient_error(model, expected, *, repeat_gradients=(), update_report=None):
     missing, nonfinite, worst = [], [], []
     squared_error, squared_reference = 0., 0.
     groups = {"adapter": [0., 0.], "backbone": [0., 0.]}
+    outliers = []
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
             continue
@@ -116,8 +119,16 @@ def gradient_error(model, expected):
         groups[group][0] += difference_squared
         groups[group][1] += reference_squared
         relative = difference_norm / max(reference_norm, 1e-8)
+        baseline = [target, *(row[name].float() for row in repeat_gradients if row[name] is not None)]
+        noise = max((float(torch.linalg.vector_norm(left - right))
+                     for index, left in enumerate(baseline) for right in baseline[index + 1:]), default=0.)
+        gradient_bound = max(.2 * reference_norm, 3 * noise)
+        equivalent_update = update_report is not None and update_report["per_parameter"].get(name, False)
+        if difference_norm > gradient_bound and not equivalent_update:
+            outliers.append(name)
         worst.append(dict(name=name, relative_l2=relative, difference_norm=difference_norm,
-                          reference_norm=reference_norm))
+                          reference_norm=reference_norm, repeat_reference_noise_norm=noise,
+                          gradient_bound=gradient_bound, equivalent_first_update=equivalent_update))
     relative = math.sqrt(squared_error / max(squared_reference, 1e-16))
     maximum = max((row["relative_l2"] for row in worst), default=0.)
     result = dict(
@@ -126,10 +137,57 @@ def gradient_error(model, expected):
                            reference_norm=math.sqrt(reference))
                 for name, (error, reference) in groups.items()},
         worst_tensors=sorted(worst, key=lambda row: row["relative_l2"], reverse=True)[:10],
-        tolerance=dict(relative_l2=.04, max_tensor_relative_l2=.2),
+        outliers=outliers,
+        tolerance=dict(relative_l2=.04, group_relative_l2=.04, tensor_signal_fraction=.2,
+                       repeat_reference_noise_multiplier=3,
+                       marginal_tensor="must satisfy gradient bound or first-update parity"),
     )
-    result["passed"] = bool(worst) and not missing and not nonfinite and relative < .04 and maximum < .2
+    result["passed"] = (bool(worst) and not missing and not nonfinite and not outliers and relative < .04
+                        and all(row["relative_l2"] < .04 for row in result["groups"].values())
+                        and (update_report is None or update_report["passed"]))
     return result
+
+
+def update_error(actual, expected, repeats):
+    """Bound actual FP32-master update differences against repeat-eager noise."""
+    sums = {"all": [0., 0., 0.], "adapter": [0., 0., 0.], "backbone": [0., 0., 0.]}
+    per_parameter, failures = {}, []
+    for name, target in expected.items():
+        value = actual[name]
+        if value is None or target is None:
+            per_parameter[name] = value is None and target is None
+            if not per_parameter[name]:
+                failures.append(name)
+            continue
+        reference_norm = float(torch.linalg.vector_norm(target))
+        error = float(torch.linalg.vector_norm(value - target))
+        baseline = [target, *(row[name] for row in repeats if row[name] is not None)]
+        noise = max((float(torch.linalg.vector_norm(left - right))
+                     for index, left in enumerate(baseline) for right in baseline[index + 1:]), default=0.)
+        bound = max(.02 * reference_norm, 3 * noise)
+        per_parameter[name] = math.isfinite(error) and error <= bound
+        if not per_parameter[name]:
+            failures.append(name)
+        group = "adapter" if name.startswith("model.adapters.") else "backbone"
+        for category in ("all", group):
+            sums[category][0] += error**2
+            sums[category][1] += reference_norm**2
+            sums[category][2] += noise**2
+    groups = {}
+    for group, (error, reference, noise) in sums.items():
+        bound = max(.02 * math.sqrt(reference), 3 * math.sqrt(noise))
+        relative = math.sqrt(error / max(reference, 1e-16))
+        groups[group] = dict(relative_l2=relative, difference_norm=math.sqrt(error),
+                             repeat_reference_noise_norm=math.sqrt(noise), bound=bound,
+                             passed=math.sqrt(error) <= bound and relative < .1)
+    return dict(
+        passed=not failures and all(row["passed"] for row in groups.values()),
+        groups=groups, failed_tensors=failures, per_parameter=per_parameter,
+        tolerance=dict(tensor_signal_fraction=.02, repeat_reference_noise_multiplier=3,
+                       global_and_group_relative_l2=.1),
+        oracle="fresh Adam FP32 master deltas with native clipping and subtraction rounding",
+        scope="first fresh-optimizer update only; multi-step distributed/resume fixture required separately",
+    )
 
 
 def replay_oracle(reference, optimized, ids, length):
@@ -142,6 +200,8 @@ def replay_oracle(reference, optimized, ids, length):
                 for model in (reference, optimized)]
     started = time.perf_counter()
     try:
+        from archlab.rl.limite_update_oracle import first_adam_updates
+
         reference.train()
         optimized.train()
         reference.zero_grad(set_to_none=True)
@@ -152,15 +212,35 @@ def replay_oracle(reference, optimized, ids, length):
         reference_gradients = {name: None if parameter.grad is None else parameter.grad.detach().cpu().clone()
                               for name, parameter in reference.named_parameters() if parameter.requires_grad}
         reference_evidence = gradient_report(reference)
+        parameters = {name: parameter.detach().cpu().clone()
+                      for name, parameter in reference.named_parameters() if parameter.requires_grad}
+        reference_updates, optimizer_contract = first_adam_updates(parameters, reference_gradients)
+        repeats, repeat_updates = [], []
+        for _ in range(2):
+            reference.zero_grad(set_to_none=True)
+            restore_rng(rng)
+            _objective(_eager_scores(reference, ids, keep)).backward()
+            gradients = {name: None if parameter.grad is None else parameter.grad.detach().cpu().clone()
+                         for name, parameter in reference.named_parameters() if parameter.requires_grad}
+            repeats.append(gradients)
+            repeat_updates.append(first_adam_updates(parameters, gradients)[0])
         reference.zero_grad(set_to_none=True)
         restore_rng(rng)
         actual = _replay_scores(optimized, ids, keep)
         loss = _objective(actual)
         loss.backward()
         _synchronize(ids.device)
+        actual_gradients = {name: None if parameter.grad is None else parameter.grad.detach().cpu().clone()
+                           for name, parameter in optimized.named_parameters() if parameter.requires_grad}
+        updates = first_adam_updates(parameters, actual_gradients)[0]
+        update_report = update_error(updates, reference_updates, repeat_updates)
         result = dict(
             length=length, prompt_tokens=length - keep, completion_tokens=keep,
-            scores=score_error(actual, expected), gradients=gradient_error(optimized, reference_gradients),
+            scores=score_error(actual, expected),
+            gradients=gradient_error(optimized, reference_gradients, repeat_gradients=repeats,
+                                     update_report=update_report),
+            first_update={key: value for key, value in update_report.items() if key != "per_parameter"},
+            optimizer_contract=optimizer_contract, repeat_reference_backwards=3,
             reference_gradients=reference_evidence, replay_gradients=gradient_report(optimized),
             loss=float(loss.detach()), seconds=time.perf_counter() - started,
             reference="same_checkpoint_native_eager_softcapped_logits",
@@ -219,6 +299,136 @@ def full_context_oracle(model, ids, length, prompt_limit):
                         and report["finite_scores"] and math.isfinite(report["loss"])
                         and report["weights_unchanged"] and report["gradients_restored"]
                         and report["training_mode_restored"])
+    return report
+
+
+def _tensor_bytes(value):
+    if isinstance(value, torch.Tensor):
+        return value.numel() * value.element_size()
+    if isinstance(value, dict):
+        return sum(_tensor_bytes(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_tensor_bytes(item) for item in value)
+    return 0
+
+
+def resident_context_oracle(model, actor, ids, length, prompt_limit, tokenizer, *, num_generations=4):
+    """Exercise the resident production actor, learner and initialized optimizer.
+
+    This gate updates disposable weights, republishes them and checks every
+    captured actor batch. Restoring the learner afterwards retains the original
+    checkpoint fingerprint. It tests one rank's memory contract; distributed
+    checkpoint/resume admission is a separate requirement.
+    """
+    from transformers import GenerationConfig
+
+    from archlab.automodel.limite_adapter_rl import optimizer_for_model
+    from archlab.automodel.limite_decode_qualification import distribution_error
+    from archlab.rl.limite_actor import native_actor_queue, policy_snapshot
+
+    if not ids.is_cuda or not 0 < prompt_limit < length <= model.config.max_position_embeddings:
+        raise ValueError("resident admission requires CUDA and a valid native-context sequence")
+    before, rng, mode = parameter_fingerprint(model), capture_rng(), model.training
+    originals = {name: parameter.detach().cpu().clone() for name, parameter in model.named_parameters()}
+    gradients = {name: parameter.grad for name, parameter in model.named_parameters()}
+    queue = None
+    started = time.perf_counter()
+    try:
+        torch.cuda.reset_peak_memory_stats(ids.device)
+        config = GenerationConfig(max_new_tokens=actor.config.max_position_embeddings,
+                                  do_sample=True, temperature=1., top_p=1., top_k=0)
+        config.archlab_budget_mode = "native_context"
+        trainer = SimpleNamespace(
+            args=SimpleNamespace(num_generations=num_generations), generation_config=config,
+            processing_class=tokenizer, archlab_stop_requested=lambda: False,
+            archlab_compact_decode=True, archlab_max_policy_lag=1,
+        )
+        actor.requires_grad_(False).eval()
+        queue = native_actor_queue(actor, model, trainer, 0)
+        previous_snapshot = queue.snapshot
+        pool = queue.archlab_graph_pool
+        expected_keys = {(batch, actor.config.max_position_embeddings)
+                         for batch in range(1, num_generations + 1)}
+        pool_complete = set(pool.entries) == expected_keys and all(
+            decoder.graph is not None for decoder in pool.entries.values()
+        ) and not pool.capture_allowed
+        optimizer = optimizer_for_model(model)
+        # Public TE initialization allocates FP32 master weights and both
+        # moments without advancing Adam's counter or fabricating an update.
+        for group in optimizer.param_groups:
+            for parameter in group["params"]:
+                optimizer.initialize_state(parameter, optimizer.store_param_remainders)
+        optimizer_bytes = _tensor_bytes(optimizer.state)
+        initialized = all({"exp_avg", "exp_avg_sq", "master_param"} <= optimizer.state[p].keys()
+                          for group in optimizer.param_groups for p in group["params"])
+        model.train()
+        model.zero_grad(set_to_none=True)
+        tokens = _repeat_ids(ids, length)
+        scores = _replay_scores(model, tokens, length - prompt_limit)
+        loss = _objective(scores)
+        loss.backward()
+        _synchronize(ids.device)
+        evidence = gradient_report(model)
+        gradient_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1., error_if_nonfinite=True))
+        optimizer.step()
+        _synchronize(ids.device)
+        changed = {"adapter": 0, "backbone": 0}
+        for name, parameter in model.named_parameters():
+            if not torch.equal(parameter.detach().cpu(), originals[name]):
+                changed["adapter" if name.startswith("model.adapters.") else "backbone"] += 1
+        updated_fingerprint = parameter_fingerprint(model)
+        current_snapshot = policy_snapshot(model, 1)
+        queue.publish(current_snapshot)
+        queue.archlab_refresh_actor(current_snapshot)
+        actor_matches = parameter_fingerprint(actor) == updated_fingerprint
+        refresh = []
+        with torch.no_grad():
+            for batch in range(1, num_generations + 1):
+                token = ids[:, :1].repeat(batch, 1)
+                source = actor(input_ids=token, use_cache=True, logits_to_keep=1).past_key_values
+                reference_cache = actor(input_ids=token, use_cache=True, logits_to_keep=1).past_key_values
+                decoder = pool.get(source, token, actor.config.max_position_embeddings)
+                actual = decoder(token, 1).clone()
+                expected = actor(input_ids=token, past_key_values=reference_cache,
+                                 use_cache=True, logits_to_keep=1).logits[:, -1]
+                error = distribution_error(actual, expected)
+                refresh.append(dict(batch_size=batch, **error, finite_logits=bool(torch.isfinite(actual).all())))
+        _synchronize(ids.device)
+        refresh_passed = all(row["finite_logits"] and row["weighted_error"] < .02 and row["kl"] < .001
+                             for row in refresh)
+        report = dict(
+            **evidence, sequence_length=length, prompt_tokens=prompt_limit,
+            completion_tokens=length - prompt_limit, loss=float(loss.detach()),
+            finite_scores=bool(torch.isfinite(scores).all()), seconds=time.perf_counter() - started,
+            peak_memory_gib=torch.cuda.max_memory_allocated(ids.device) / 1024**3,
+            peak_reserved_gib=torch.cuda.max_memory_reserved(ids.device) / 1024**3,
+            actor_graph_pool_complete=pool_complete, actor_graph_keys=sorted(pool.entries),
+            actor_graph_capacity=actor.config.max_position_embeddings,
+            actor_model_resident=True, actor_snapshot_bytes=_tensor_bytes(previous_snapshot.weights),
+            simultaneous_policy_snapshots=2,
+            snapshot_bytes_at_publish=_tensor_bytes(previous_snapshot.weights) + _tensor_bytes(current_snapshot.weights),
+            optimizer="production SignalFusedAdam", optimizer_state_bytes=optimizer_bytes,
+            optimizer_all_states_initialized=initialized, optimizer_group_steps=[g.get("step") for g in optimizer.param_groups],
+            clipped_gradient_norm=gradient_norm, applied_disposable_updates=1, changed_tensors=changed,
+            updated_actor_matches_learner=actor_matches, actor_refresh=refresh,
+            distributed_scope="one rank; distributed optimizer/checkpoint/resume fixture required separately",
+            numerical_input="repeated versioned nonbenchmark canary",
+        )
+        report["passed"] = (pool_complete and initialized and evidence["all_trainable_gradients_finite"]
+                            and evidence["gradient_norm"] > 0 and report["finite_scores"]
+                            and math.isfinite(report["loss"]) and all(changed.values())
+                            and actor_matches and refresh_passed)
+    finally:
+        if queue is not None:
+            queue.close()
+        with torch.no_grad():
+            for name, parameter in model.named_parameters():
+                parameter.copy_(originals[name])
+                parameter.grad = gradients[name]
+        model.train(mode)
+        restore_rng(rng)
+    report["learner_weights_restored"] = parameter_fingerprint(model) == before
+    report["passed"] &= report["learner_weights_restored"]
     return report
 
 
@@ -294,7 +504,7 @@ def main():
         report["decode"] = decode_oracle(
             reference, optimized, graph_ids, args.graph_capacity, steps=args.decode_steps,
             reference_name="same_SFT_checkpoint_native_eager_dynamic_cache",
-            native_gqa_backend=args.native_gqa_backend,
+            native_gqa_backend=args.native_gqa_backend, teacher_forcing="sampled",
         )
         report["decode"]["passed"] &= (
             report["decode"]["teacher_forced_mean_logprob_error"] < .02
@@ -324,7 +534,14 @@ def main():
         torch.cuda.empty_cache()
         if args.full_context_stress and numerical_passed:
             _record(args.output, report, "full_context_starting")
-            report["full_context"] = full_context_oracle(optimized, ids, args.stress_length, args.prompt_limit)
+            actor = build_model(args.model, args.variant, "cuda", args.checkpoint,
+                                trainable_mode="full", checkpoint_cache=args.checkpoint_cache)
+            enable_runtime_sequence_attention(actor)
+            set_native_decode_gqa(actor, backend=args.native_gqa_backend)
+            report["optimizer_constructed"] = True
+            report["full_context"] = resident_context_oracle(
+                optimized, actor, ids, args.stress_length, args.prompt_limit, tokenizer,
+            )
         elif args.full_context_stress:
             report["full_context"] = dict(passed=False, skipped="small-shape numerical admission failed")
         report["parameter_sha256_after"] = parameter_fingerprint(optimized)
@@ -332,8 +549,12 @@ def main():
         report["passed"] = (report["decode"]["passed"] and report["weights_unchanged"]
                             and all(row["passed"] for row in report["head_only"] + report["replay"])
                             and (not args.full_context_stress or report["full_context"]["passed"]))
-        report["production_admitted"] = (report["passed"] and args.full_context_stress
-                                          and args.stress_length == maximum and args.graph_capacity == maximum)
+        report["single_rank_admitted"] = (report["passed"] and args.full_context_stress
+                                           and args.stress_length == maximum and args.graph_capacity == maximum)
+        # A single process cannot establish distributed optimizer/checkpoint
+        # correctness, even after its full resident memory test passes.
+        report["production_admitted"] = False
+        report["remaining_admission"] = ["distributed optimizer/checkpoint/resume fixture"]
     except BaseException as error:
         report["passed"] = report["production_admitted"] = False
         report["error"] = dict(type=type(error).__name__, message=str(error)[:2000])

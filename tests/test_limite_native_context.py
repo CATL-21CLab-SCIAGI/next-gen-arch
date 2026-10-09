@@ -108,6 +108,18 @@ def test_chunked_softcapped_scores_match_full_values_entropy_and_parameter_gradi
         torch.testing.assert_close(got, want)
 
 
+def test_chunked_fp32_head_uses_the_same_fused_logsoftmax_values_and_derivatives():
+    logits = torch.tensor([[[6., 4., -1.], [23., 22., 0.], [-.1, -.2, -.3]]], requires_grad=True)
+    labels = torch.tensor([[0, 1, 2]])
+    weights = torch.tensor([[.5, -1., 1.5]])
+    expected = logits.log_softmax(-1).gather(-1, labels[..., None]).squeeze(-1)
+    expected_gradient = torch.autograd.grad((expected * weights).sum(), logits, retain_graph=True)[0]
+    actual, _ = chunked_policy_scores(lambda value: value, logits, labels, chunk_size=2)
+    actual_gradient = torch.autograd.grad((actual * weights).sum(), logits)[0]
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(actual_gradient, expected_gradient, rtol=0, atol=0)
+
+
 def test_owned_forward_preserves_normal_forward_and_causal_shift_without_state_changes():
     class Backbone(torch.nn.Embedding):
         def forward(self, input_ids, **kwargs):

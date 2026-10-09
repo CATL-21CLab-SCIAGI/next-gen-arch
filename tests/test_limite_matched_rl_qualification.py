@@ -9,6 +9,7 @@ from archlab.automodel import limite_matched_rl_qualification as qualification
 from archlab.automodel.checkpoint_oracle import assert_state_equal
 from archlab.rl.limite_checkpoint import capture_rng
 from archlab.rl.limite_scoring import enable_chunked_policy_scores
+from archlab.rl.limite_update_oracle import first_adam_updates
 
 
 class ToyBackbone(nn.Module):
@@ -59,6 +60,36 @@ def test_gradient_gate_checks_all_parameters_and_rejects_wrong_gradients():
     assert qualification.gradient_error(model, expected)["missing"] == ["model.layer.weight"]
 
 
+def test_noise_admission_requires_equivalent_update_for_cancelling_scalar_gradients():
+    model = nn.Linear(4, 1)
+    with torch.no_grad():
+        model.weight.fill_(1.)
+        model.bias.fill_(1.)
+    parameters = {name: parameter.detach().clone() for name, parameter in model.named_parameters()}
+    expected = dict(weight=torch.ones_like(model.weight), bias=torch.full_like(model.bias, 1e-4))
+    repeats = [dict(weight=expected["weight"].clone(), bias=expected["bias"] + noise)
+               for noise in (1e-5, -1e-5)]
+    reference_updates = first_adam_updates(parameters, expected)[0]
+    repeat_updates = [first_adam_updates(parameters, gradients)[0] for gradients in repeats]
+    actual = dict(weight=expected["weight"].clone(), bias=expected["bias"] * 2)
+    for name, parameter in model.named_parameters():
+        parameter.grad = actual[name]
+    assert not qualification.gradient_error(model, expected)["passed"]
+    update_report = qualification.update_error(first_adam_updates(parameters, actual)[0],
+                                                reference_updates, repeat_updates)
+    assert update_report["passed"]
+    assert qualification.gradient_error(model, expected, repeat_gradients=repeats,
+                                         update_report=update_report)["passed"]
+    # A sign flip in the same low-magnitude scalar changes Adam's real update;
+    # it must fail even though its contribution to global gradient error is tiny.
+    actual["bias"].neg_()
+    update_report = qualification.update_error(first_adam_updates(parameters, actual)[0],
+                                                reference_updates, repeat_updates)
+    assert not update_report["passed"]
+    assert not qualification.gradient_error(model, expected, repeat_gradients=repeats,
+                                             update_report=update_report)["passed"]
+
+
 def test_replay_oracle_catches_alignment_and_restores_gradients_rng_and_mode():
     torch.manual_seed(7)
     reference = ToyPolicy().eval()
@@ -72,6 +103,7 @@ def test_replay_oracle_catches_alignment_and_restores_gradients_rng_and_mode():
     rng = capture_rng()
     report = qualification.replay_oracle(reference, optimized, torch.tensor([[1, 2, 3]]), 13)
     assert report["passed"]
+    assert report["repeat_reference_backwards"] == 3
     assert report["prompt_tokens"] == 7 and report["completion_tokens"] == 6
     assert report["gradients"]["relative_l2"] < 1e-5
     assert_state_equal(capture_rng(), rng)

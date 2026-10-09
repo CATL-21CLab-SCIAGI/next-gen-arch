@@ -120,4 +120,18 @@ def native_actor_queue(actor, learner, trainer, version, fixture_generate=None):
     queue = AsyncRolloutQueue(generate, generator, initial,
                              trainer.archlab_stop_requested, trainer.archlab_max_policy_lag,
                              diagnostics=diagnostics)
+
+    def refresh_actor(snapshot):
+        """Refresh an idle actor and its captured constants without sampling."""
+        if queue.pending is not None:
+            raise RuntimeError("cannot refresh an actor with a pending rollout")
+        with torch.cuda.stream(stream), torch.no_grad():
+            load_policy(snapshot)
+            pool.synchronize()
+        stream.synchronize()
+
+    # Expose owned execution resources for admission and memory telemetry;
+    # qualification uses the production pool instead of a smaller substitute.
+    queue.archlab_graph_pool = pool
+    queue.archlab_refresh_actor = refresh_actor
     return queue

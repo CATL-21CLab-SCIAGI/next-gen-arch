@@ -8,6 +8,7 @@ benchmark questions, or production learner state is involved.
 from __future__ import annotations
 
 import argparse
+import copy
 import gc
 import hashlib
 import json
@@ -77,12 +78,15 @@ def decode_admitted(report):
 
 def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
                   reference_name="unmodified_publisher_eager_dynamic_cache",
-                  native_gqa_backend="flash_attn_kvcache"):
+                  native_gqa_backend="flash_attn_kvcache", teacher_forcing="greedy"):
     from archlab.architectures.limite_decode import GraphDecoderPool
     from archlab.architectures.limite_decode_state import cache_rows
     from archlab.architectures.limite_gqa import set_native_decode_gqa
-    from archlab.automodel.limite_decode_qualification import distribution_error
+    from archlab.automodel.limite_decode_qualification import distribution_error, select_native_rows
 
+    if teacher_forcing not in ("greedy", "sampled"):
+        raise ValueError("decode qualification requires greedy or sampled teacher forcing")
+    generator = torch.Generator(device=ids.device).manual_seed(1234)
     reference.eval()
     optimized.eval()
     set_native_decode_gqa(optimized, backend=native_gqa_backend)
@@ -90,6 +94,7 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
         reference_output = reference(input_ids=ids, use_cache=True, logits_to_keep=1)
         optimized_output = optimized(input_ids=ids, use_cache=True, logits_to_keep=1)
         native_cache, source = reference_output.past_key_values, optimized_output.past_key_values
+        compact_native_cache = copy.deepcopy(native_cache)
         tokens = reference_output.logits[:, -1].argmax(-1, keepdim=True)
         del reference_output, optimized_output
         pool = GraphDecoderPool(optimized)
@@ -98,13 +103,14 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
         reused = pool.get(source, tokens, capacity)
         same_graph = reused is decoder
         rows = torch.arange(ids.shape[0], device=ids.device)
-        metrics, compact_metrics, greedy, selected_logprob_errors = [], [], [], []
+        metrics, compact_metrics, greedy, selected_logprob_deltas, batch_shape_controls = [], [], [], [], []
         max_logit_error, finite = 0.0, True
         prefix = ids.shape[1]
         for step in range(steps):
             if step in (2, 4, 6) and rows.numel() > 1:
                 kept = torch.arange(1, len(rows), device=ids.device)
                 view = cache_rows(decoder.cache, kept, length=prefix + step)
+                select_native_rows(compact_native_cache, kept)
                 rows = rows[1:]
                 pool.synchronize()
                 decoder = pool.get(view, tokens[rows], capacity)
@@ -112,7 +118,10 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
             expected = reference(
                 input_ids=tokens, past_key_values=native_cache, use_cache=True, logits_to_keep=1,
             ).logits[:, -1]
-            target = expected.index_select(0, rows)
+            target = reference(
+                input_ids=tokens[rows], past_key_values=compact_native_cache, use_cache=True, logits_to_keep=1,
+            ).logits[:, -1]
+            batch_shape_controls.append(distribution_error(target, expected.index_select(0, rows)))
             error = distribution_error(actual, target)
             metrics.append(error)
             if len(rows) != ids.shape[0]:
@@ -120,20 +129,26 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
             max_logit_error = max(max_logit_error, float((actual.float() - target.float()).abs().max()))
             finite = finite and bool(torch.isfinite(actual).all()) and bool(torch.isfinite(target).all())
             actual_greedy, target_greedy = actual.argmax(-1), target.argmax(-1)
-            selected_logprob_errors.append((
-                actual.float().log_softmax(-1).gather(-1, target_greedy[:, None])
-                - target.float().log_softmax(-1).gather(-1, target_greedy[:, None])
-            ).abs().flatten())
+            forced_all = (torch.multinomial(expected.float().softmax(-1), 1, generator=generator)
+                          if teacher_forcing == "sampled" else expected.argmax(-1, keepdim=True))
+            forced = forced_all.index_select(0, rows)
+            selected_logprob_deltas.append((
+                actual.float().log_softmax(-1).gather(-1, forced)
+                - target.float().log_softmax(-1).gather(-1, forced)
+            ).flatten())
             greedy.append(dict(step=step, rows=rows.tolist(),
                                optimized=actual_greedy.tolist(), publisher=target_greedy.tolist(),
                                exact=torch.equal(actual_greedy, target_greedy)))
-            # Teacher-force the same publisher-greedy tokens into both caches.
+            # Teacher-force identical publisher-selected tokens into all caches.
             # Any distribution error therefore cannot hide behind divergent histories.
-            tokens = expected.argmax(-1, keepdim=True)
+            tokens = forced_all
         torch.cuda.synchronize()
+        selected_delta = torch.cat(selected_logprob_deltas)
+        selected_ratio = selected_delta.exp()
         report = dict(
             steps=steps, batch_size=ids.shape[0], prompt_length=prefix, capacity=capacity,
             backend=native_gqa_backend, reference=reference_name,
+            teacher_forcing=teacher_forcing, teacher_forcing_seed=1234 if teacher_forcing == "sampled" else None,
             max_abs_logit_error=max_logit_error,
             mean_weighted_error=sum(x["weighted_error"] for x in metrics) / len(metrics),
             mean_kl=sum(x["kl"] for x in metrics) / len(metrics),
@@ -141,8 +156,19 @@ def decode_oracle(reference, optimized, ids, capacity, *, steps=8,
             compaction_max_kl=max(x["kl"] for x in compact_metrics),
             greedy_ids_exact=all(row["exact"] for row in greedy), greedy_ids=greedy,
             pool_reuse_same_graph=same_graph, pool_hits=pool.hits, finite_logits=finite,
-            teacher_forced_mean_logprob_error=float(torch.cat(selected_logprob_errors).mean()),
-            teacher_forced_max_logprob_error=float(torch.cat(selected_logprob_errors).max()),
+            teacher_forced_mean_logprob_error=float(selected_delta.abs().mean()),
+            teacher_forced_max_logprob_error=float(selected_delta.abs().max()),
+            teacher_forced_min_ratio=float(selected_ratio.min()),
+            teacher_forced_max_ratio=float(selected_ratio.max()),
+            teacher_forced_clip_fraction=float(((selected_ratio < .8) | (selected_ratio > 1.2)).float().mean()),
+            native_batch_shape_control=dict(
+                mean_weighted_error=sum(x["weighted_error"] for x in batch_shape_controls) / len(batch_shape_controls),
+                max_weighted_error=max(x["weighted_error"] for x in batch_shape_controls),
+                max_kl=max(x["kl"] for x in batch_shape_controls),
+                comparisons=batch_shape_controls,
+                interpretation="native DynamicCache compact batch versus native full batch; diagnostic only",
+            ),
+            optimization_reference="native DynamicCache with identical active batch and teacher-forced history",
             tolerance=dict(weighted_error=.02, kl=.001, greedy_ids="exact"),
             oracle="archlab.automodel.limite_decode_qualification.distribution_error",
         )

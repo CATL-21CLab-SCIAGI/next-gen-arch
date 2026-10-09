@@ -20,7 +20,10 @@ def chunked_policy_scores(head, hidden, targets, *, chunk_size=512, temperature=
 
     def part(x, y):
         logits = head(x) / temperature
-        logps = logits.gather(-1, y[:, None]).squeeze(-1) - logits.logsumexp(-1)
+        # Match upstream GRPO's fused FP32 log-softmax derivative. The
+        # algebraically equivalent gather-minus-logsumexp route changes
+        # cancellation/rounding before the BF16 backbone backward.
+        logps = logits.log_softmax(-1).gather(-1, y[:, None]).squeeze(-1)
         with torch.no_grad():
             entropy = (logits.logsumexp(-1) - (logits.softmax(-1) * logits).sum(-1)
                        if compute_entropy else logits.new_empty(0))
