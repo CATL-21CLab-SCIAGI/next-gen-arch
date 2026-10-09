@@ -62,4 +62,10 @@ admission:
   finite_adapter_and_backbone_gradients: true
   rollout_behavior_probabilities_recorded: true
   replay_importance_ratios_healthy: true
+  full_rollout_health:
+    clipped_token_fraction_max: 0.05
+    effective_sample_fraction_min: 0.95
+    mean_importance_weight_range: [0.5, 2.0]
+    extrema: diagnostics_only
+    upstream: verl/docs/algo/rollout_corr.md
   distributed_optimizer_checkpoint_resume: true

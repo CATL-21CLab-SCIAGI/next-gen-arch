@@ -104,6 +104,14 @@ separately. Full-context resource probes passed for both variants with about
 184 GiB peak reserved memory per GPU; these disposable probes do not establish
 production learning health or benchmark improvement.
 
+For complete sampled trajectories, health uses clipping frequency, effective
+sample size and mean importance weight, following the pinned upstream rollout
+correction diagnostics. The recipe requires at most 5% clipped tokens, at least
+95% effective sample fraction and mean weight between 0.5 and 2. Individual
+ratio extrema remain reported: a single low-weight tail token is not an
+importance-sampling correctness failure. Short-canary precision targets are
+kept separate from these full-trajectory health criteria.
+
 Both previous continuation queues were cancelled. New production admission
 still requires the recorded math-rollout checks; live queue and learner status
 are kept in private run receipts rather than inferred from this page.

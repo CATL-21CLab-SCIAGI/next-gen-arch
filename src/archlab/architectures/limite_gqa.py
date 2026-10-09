@@ -1,10 +1,12 @@
 """Use the existing PyTorch GQA API only at native masked decode reductions."""
 
+from contextlib import nullcontext
 from functools import cache
 from types import MethodType
 
 import torch
 from torch.nn import functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from archlab.architectures.limite_bindings import bind_native_forward
 
@@ -41,10 +43,16 @@ class _DecodeInterface:
                         softmax_scale=scaling, causal=False,
                     )
                     return result, None
-                result = F.scaled_dot_product_attention(
-                    q, k, v, attn_mask=mask, dropout_p=dropout,
-                    scale=scaling, is_causal=False, enable_gqa=True,
+                context = (
+                    sdpa_kernel(SDPBackend.MATH)
+                    if getattr(module, '_archlab_decode_backend', 'sdpa') == 'sdpa_math'
+                    else nullcontext()
                 )
+                with context:
+                    result = F.scaled_dot_product_attention(
+                        q, k, v, attn_mask=mask, dropout_p=dropout,
+                        scale=scaling, is_causal=False, enable_gqa=True,
+                    )
                 return result.transpose(1, 2).contiguous(), None
             return original(module, q, k, v, mask, scaling=scaling, dropout=dropout, **kwargs)
 
@@ -61,7 +69,7 @@ def _bound_forward(forward):
 
 def set_native_decode_gqa(model, enabled=True, *, backend='sdpa'):
     """Retain publisher prefill/training, geometry and framework implementations."""
-    if backend not in ('sdpa', 'flash_attn_kvcache'):
+    if backend not in ('sdpa', 'sdpa_math', 'flash_attn_kvcache'):
         raise ValueError('unsupported native decode backend')
     backbone = getattr(model.model, "base", model.model)
     for layer in backbone.layers:
