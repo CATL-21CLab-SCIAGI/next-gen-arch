@@ -3,7 +3,9 @@
 !/.github/
 !/.gitignore
 !/.gitmodules
-!/verl
+!/third_party/
+/third_party/*
+!/third_party/verl/
 !/.python-version
 !/AGENTS.md
 !/CITATION.cff

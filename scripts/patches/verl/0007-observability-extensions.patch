@@ -1,0 +1,93 @@
+diff --git a/verl/utils/flops_counter.py b/verl/utils/flops_counter.py
+--- a/verl/utils/flops_counter.py
++++ b/verl/utils/flops_counter.py
+@@ -13,6 +13,7 @@
+ # limitations under the License.
+ 
+ import inspect
++import os
+ 
+ import torch
+ from transformers import PretrainedConfig
+@@ -23,6 +24,7 @@
+     "CPU": 448e9,
+     "GB200": 2.5e15,
+     "B200": 2.25e15,
++    "B300": 2.25e15,  # Dense BF16: half of NVIDIA's 4.5 PFLOPS sparse specification.
+     "MI300X": 1307e12,
+     "MI350X": 2300e12,
+     "MI355X": 2500e12,
+@@ -742,5 +744,5 @@
+             estimated_flops = func(self.config, tokens_sum, batch_seqlens, delta_time, **kargs)
+         else:
+             estimated_flops = func(self.config, tokens_sum, batch_seqlens, delta_time)
+-        promised_flops = get_device_flops()
++        promised_flops = get_device_flops(device_name=os.getenv("VERL_MFU_DEVICE_NAME"))
+         return estimated_flops, promised_flops
+diff --git a/verl/trainer/config/ppo_trainer.yaml b/verl/trainer/config/ppo_trainer.yaml
+--- a/verl/trainer/config/ppo_trainer.yaml
++++ b/verl/trainer/config/ppo_trainer.yaml
+@@ -226,6 +226,9 @@
+   # Device to run training on (e.g., "cuda", "cpu")
+   device: cuda
+ 
++  # Optional scalar metrics callback; uses the existing logger and execution loop.
++  metrics_extension: null
++
+   # Whether to use V1 trainer
+   use_v1: true
+ 
+diff --git a/verl/trainer/ppo/v1/trainer_base.py b/verl/trainer/ppo/v1/trainer_base.py
+--- a/verl/trainer/ppo/v1/trainer_base.py
++++ b/verl/trainer/ppo/v1/trainer_base.py
+@@ -12,6 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import importlib
+ import json
+ import logging
+ import math
+@@ -2297,6 +2298,7 @@
+         return batch
+ 
+     def _compute_metrics(self, batch: KVBatchMeta, metrics, timing_raw, global_steps, epoch):
++        rollout_tags = batch.tags
+         # 1. collect necessary fields from TransferQueue for computing metrics
+         non_padding_mask = np.array([not tag.get("is_padding", False) for tag in batch.tags], dtype=bool)
+         fields = [
+@@ -2429,6 +2431,22 @@
+         gradient_norm = metrics.get("actor/grad_norm", None)
+         metrics.update(compute_variance_proxy_metrics(batch=metrics_batch, gradient_norm=gradient_norm))
+ 
++        extension = self.config.trainer.get("metrics_extension")
++        if extension:
++            module, function = extension.rsplit(".", 1)
++            callback = getattr(importlib.import_module(module), function)
++            extra_metrics = callback(
++                config=self.config, batch=metrics_batch,
++                tags=[tag for tag, keep in zip(rollout_tags, non_padding_mask, strict=True) if keep],
++                timing=timing_raw, step=global_steps,
++            )
++            if set(extra_metrics) & set(metrics):
++                raise ValueError("metrics extension must not overwrite upstream metrics")
++            if any(not isinstance(value, (int, float)) or not math.isfinite(value)
++                   for value in extra_metrics.values()):
++                raise ValueError("metrics extension must return finite scalar values")
++            metrics.update(extra_metrics)
++
+         # 3. other auxiliary metrics
+         if non_padding_mask.any():
+             num_turns = num_turns[non_padding_mask]
+diff --git a/recipes/code/config/train.yaml b/recipes/code/config/train.yaml
+--- a/recipes/code/config/train.yaml
++++ b/recipes/code/config/train.yaml
+@@ -65,6 +65,8 @@
+         gateway_count: 1
+         log_dir: ${oc.env:UNI_AGENT_LOG_DIR,/tmp/uni_agent_logs}
+         mask_unfinished_episode: false
++        # Optional validation before trajectories enter the transfer queue.
++        trajectory_validator: null
+         ship_turn_index: false
+         repetition_detect:
+           enable: false

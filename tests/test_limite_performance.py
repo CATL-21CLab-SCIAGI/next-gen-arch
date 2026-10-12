@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from archlab.automodel.limite_performance import baseline_flops, causal_pairs
+from archlab.architectures.limite_cost import baseline_flops, causal_pairs
 
 
 def native_config():

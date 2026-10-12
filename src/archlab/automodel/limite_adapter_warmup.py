@@ -17,6 +17,7 @@ import torch.distributed as dist
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from archlab.architectures.limite_cost import baseline_flops
 from archlab.automodel.limite_adapter_common import (
     attention_kernel_name,
     build_model,
@@ -34,7 +35,6 @@ from archlab.automodel.limite_adapter_communication import (
 from archlab.automodel.limite_adapter_compilation import configure_compilation
 from archlab.automodel.limite_adapter_data import MathWindows, WindowPrefetcher
 from archlab.automodel.limite_adapter_graph import ManualTrainingGraph, graph_contract
-from archlab.automodel.limite_performance import baseline_flops
 from archlab.optimizers.limite_warmup import build_warmup_optimizer, warmup_learning_rates
 
 

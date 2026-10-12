@@ -373,6 +373,13 @@ class PreludeBackbone(nn.Module):
     def _masks(self, hidden, positions, mask, cache):
         if hasattr(cache, "decode_masks"):
             return cache.decode_masks()
+        if (getattr(self, "_share_training_masks", False) and cache is None
+                and self.base.config._attn_implementation == "sdpa"):
+            from archlab.architectures.limite_replay import shared_training_masks
+
+            shared = shared_training_masks(hidden, positions, mask, int(self.config.sliding_window))
+            if shared is not None:
+                return shared
         replay = getattr(self, "_native_replay", None)
         if replay and cache is None:
             from archlab.architectures.limite_replay import native_replay_masks

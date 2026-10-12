@@ -17,7 +17,7 @@ from statistics import NormalDist
 
 from archlab.artifacts import atomic_write_json, sha256_file
 from archlab.evaluation.capability import paired_statistics
-from archlab.rl.limite_data import math_reward, reasoning_complete
+from archlab.evaluation.math_reward import math_reward, reasoning_complete
 
 AIME_SOURCES = {
     "aime24": {

@@ -21,13 +21,32 @@ import time
 from pathlib import Path
 
 from archlab.artifacts import atomic_write_json, sha256_file
-from archlab.automodel.limite_adapter_queue import evaluation_ready
 from archlab.evaluation.limite_math import benchmark_seed
 
 FORMAT = "archlab-limite-math-queue-v1"
 WORKER_MODULE = "archlab.automodel.limite_math_benchmark"
 OOM = re.compile(r"CUDA out of memory|(?:torch\.)?OutOfMemoryError|CUDA error: out of memory", re.I)
 RL_CONTRACT_KEYS = ("phase_start", "math_protocol", "curriculum_sha256", "rl_split_sha256")
+
+
+def evaluation_ready(gate):
+    if "gates" in gate:
+        gates = gate["gates"]
+        if not isinstance(gates, list) or not gates:
+            raise ValueError("evaluation gate requires a nonempty gates list")
+        return all(evaluation_ready(child) for child in gates)
+    state_path = Path(gate["state"])
+    if not state_path.exists():
+        return False
+    state = json.loads(state_path.read_text())
+    if state.get("status") in ("failed", "memory_overflow"):
+        return False
+    return all(
+        state.get("stages", {}).get(name, {}).get("status") == "complete"
+        and state["stages"][name].get("plan_sha256") == digest
+        for name, digest in gate["stages"].items()
+    ) and bool(gate["stages"])
+
 
 # Executed by the configured Python on a worker host. stdin is structured data;
 # shell text never contains a plan, output, environment value, or credential.

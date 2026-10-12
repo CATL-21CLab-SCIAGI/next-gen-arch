@@ -19,6 +19,32 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: Prepare pinned agent contracts
+        run: |
+          git submodule update --init --depth 1 third_party/verl
+          git -C third_party/verl submodule update --init --depth 1 third_party/uni_agent third_party/mimoagent-osr
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import subprocess
+
+          root = pathlib.Path.cwd()
+          spec = json.loads((root / "docs/upstreams.json").read_text())["verl"]
+          packages = [(root / spec["path"], spec)]
+          packages += [(root / spec["path"] / item["path"], item)
+                       for item in spec["dependencies"].values()]
+          for checkout, item in packages:
+              actual = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"]).decode().strip()
+              assert actual == item["revision"], checkout
+              for patch in item["patches"]:
+                  path = root / patch["path"]
+                  assert hashlib.sha256(path.read_bytes()).hexdigest() == patch["sha256"], path
+                  subprocess.run(["git", "-C", str(checkout), "apply", str(path)], check=True)
+          for checkout, item in packages:
+              diff = subprocess.check_output(["git", "-C", str(checkout), "diff", "--full-index", "HEAD", "--"])
+              assert hashlib.sha256(diff).hexdigest() == item["working_diff_sha256"], checkout
+          PY
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true

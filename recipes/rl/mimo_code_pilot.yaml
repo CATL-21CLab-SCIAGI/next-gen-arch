@@ -1,0 +1,23 @@
+# Data contract only. Execution uses XiaomiMiMo/verl's existing code agent runner.
+source:
+  repository: XiaomiMiMo/MiMo-V2.6-RL-oss
+  revision: 639865fd3374018d6cb29b9fb82dd531406fcf5f
+  file: code.parquet
+  license: apache-2.0
+selection:
+  train: 8
+  validation: 3
+  seed: 42
+  method: sha256(seed + NUL + instance_id)
+  candidates: env:MIMO_CODE_CANDIDATES
+  basis: ready_task_templates_memory_le_4GiB_and_source_images_le_3GiB
+  scope: availability_selected_pilot_not_a_representative_benchmark
+index_root: env:MIMO_CODE_DATA_ROOT
+runtime:
+  dataset_class: recipes.code.dataset.MimoAgentSWEDataset
+  runner: recipes.code.mimoagent_runner.mimoagent_runner
+  tools: bash-only
+  environment: archlab.training.sandbox.E2BEnvironment
+  verifier: upstream_test_patch_then_test_command
+  tokenization: native_multi_turn_no_pretruncation
+  require_environment_reward_smoke: true

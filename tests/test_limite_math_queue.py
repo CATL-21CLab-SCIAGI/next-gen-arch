@@ -780,3 +780,39 @@ def test_invalid_recovery_and_backfill_settings_reject(setup_queue, field, value
     config[field] = value
     with pytest.raises(ValueError):
         validate_queue(config)
+
+
+@pytest.mark.parametrize("blocked", ["running", "failed", "memory_overflow", "wrong_hash", "missing"])
+def test_composite_evaluation_gate_requires_every_controller(tmp_path, blocked):
+    from archlab.automodel.limite_math_queue import evaluation_ready
+
+    gates = []
+    for index in range(4):
+        state = tmp_path / f"state-{index}.json"
+        gates.append(dict(state=str(state), stages={"evaluation": f"hash-{index}"}))
+        state.write_text(json.dumps(dict(
+            status="complete", stages={"evaluation": dict(status="complete", plan_sha256=f"hash-{index}")}
+        )))
+    gate = dict(gates=gates)
+    assert evaluation_ready(gate)
+    state = Path(gates[2]["state"])
+    data = json.loads(state.read_text())
+    if blocked == "missing":
+        state.unlink()
+    else:
+        if blocked in ("failed", "memory_overflow"):
+            data["status"] = blocked
+        elif blocked == "wrong_hash":
+            data["stages"]["evaluation"]["plan_sha256"] = "wrong"
+        else:
+            data["stages"]["evaluation"]["status"] = "running"
+        state.write_text(json.dumps(data))
+    assert not evaluation_ready(gate)
+
+
+@pytest.mark.parametrize("gates", [[], None, {}])
+def test_composite_gate_rejects_empty_or_invalid_list(gates):
+    from archlab.automodel.limite_math_queue import evaluation_ready
+
+    with pytest.raises(ValueError, match="nonempty gates list"):
+        evaluation_ready(dict(gates=gates))

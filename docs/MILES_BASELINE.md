@@ -1,16 +1,18 @@
-# Miles RL: supported execution path
+# Miles RL: historical execution record
 
-**Current contract, one update/save/handoff cycle observed:** [2-simplicial, 8K responses, filtered partial rollouts](DEEPSEEK_V41_2SIMPLICIAL_MILES.md), using `recipes/deepseek_v41/2simplicial_stock_fp8.yaml` with the same canonical launcher. Repeated live 8K updates remain unqualified. The normal baseline described below is its historical predecessor; its qualification does not certify the new variant.
+> Historical record: this execution stack was retired on 2026-10-12. Commands and status below describe the recorded experiment, not a supported launcher or current job. Use the [current training workflow](TRAINING.md).
 
-Use **`archlab.megatron.miles_v41_stock_launch`** with
-[`deepseek_v41_2simplicial_stock_fp8.yaml`](../recipes/deepseek_v41/2simplicial_stock_fp8.yaml).
+**Recorded contract, one update/save/handoff cycle observed:** [2-simplicial, 8K responses, filtered partial rollouts](DEEPSEEK_V41_2SIMPLICIAL_MILES.md), using `recipes/deepseek_v41/2simplicial_stock_fp8.yaml` with the same canonical launcher. Repeated live 8K updates remain unqualified. The normal baseline described below is its historical predecessor; its qualification does not certify the new variant.
+
+The retired launcher was **`archlab.megatron.miles_v41_stock_launch`**, using
+`recipes/deepseek_v41/2simplicial_stock_fp8.yaml` (preserved in Git history and the local archive).
 It resolves explicit native arguments and calls pinned Miles `train.py`. It does
 not import the upstream recipe, intercept `execute_train`, call private `_train`,
 or implement a training loop. The upstream V4.1 recipe remains the provenance
 for the argument contract. Paths are explicit launch inputs, not machine names
 embedded in the recipe.
 
-The current experiment identity is `deepseek-v41-2simplicial-adam-fp8-grpo-8k-partial-v2`:
+The recorded experiment identity was `deepseek-v41-2simplicial-adam-fp8-grpo-8k-partial-v2`:
 32 B300s (TP8/PP4/EP8), BF16 training, distributed Adam with BF16 stored moments
 and FP32 masters/arithmetic, frozen BF16 Engram tables, FP32 adapters, native FP8
 rollout, routing replay, and GRPO. Optimizer states stream to **node-local disk**;
@@ -20,7 +22,7 @@ are different experiments and must not inherit this qualification.
 
 ## Status and evidence
 
-This is a maintained entry page, not a live monitor. Retry 1 produced a real
+This page preserves the historical execution evidence. Retry 1 produced a real
 rollout but failed before its first optimizer update because of deterministic
 mode; retry 2 was stopped by the user during parent import. Both are historical.
 The corrected run root is
@@ -38,7 +40,7 @@ The native checkpoint completed at **06:45 UTC** in 54.2 minutes. All model file
 extents and optimizer manifests were checked; four adapter tensors were loaded
 through native DCP and had nonzero changes from the parent. Sampled moments were
 finite and nonzero. All four serving engines then published **policy version 2**,
-and live 8K generation began. The [dated current-run record](recorded-results/deepseek-v41-2simplicial-stock-fp8-20260926.json)
+and live 8K generation began. The [dated run record](recorded-results/deepseek-v41-2simplicial-stock-fp8-20260926.json)
 links the receipts and records the exact scope of these observations.
 **A live 8K training update, full checkpoint restoration, and learning improvement
 are not established by this first retained-batch update.**
@@ -46,11 +48,11 @@ are not established by this first retained-batch update.**
 The normal predecessor was intentionally retired after **34 updates**, with its
 final native checkpoint `iter_0000033` completed at **2026-09-25 17:28 UTC**.
 The following table records that predecessor's earlier three-update qualification;
-it does not qualify the current 2-simplicial run.
+it did not qualify the subsequent 2-simplicial run.
 
 | Claim | Evidence / limitation |
 | --- | --- |
-| Canonical launch contract | CPU rendering and equivalence tests compare every effective argument against attempt 6. The canonical launcher subsequently launched the distinct 2-simplicial contract on 32 GPUs; see the current status above. |
+| Canonical launch contract | CPU rendering and equivalence tests compare every effective argument against attempt 6. The canonical launcher subsequently launched the distinct 2-simplicial contract on 32 GPUs; see the recorded status above. |
 | Operational and numerical observations | Attempt 6 completed three finite, nonzero updates, reward counts 20/10/10 out of 128, KL 0.00162–0.00202, and synchronized next rollouts. This is short-run evidence, not proof of FP8/BF16 parity or answer-quality improvement. |
 | Checkpoint save/readback | Full first-update checkpoint saved; all model extents and optimizer manifests checked, four adapter tensors read through native DCP, moments sampled. Eight-GPU synthetic save/load passed. |
 | Full training restoration | **Not demonstrated.** Restoring the full model, optimizer, RNG, and rollout cursor and continuing useful updates still needs a separate distributed qualification. |
@@ -61,7 +63,7 @@ links the exact run and receipts. The [dated attempt history](DEEPSEEK_V41_STOCK
 explains failures and fixes. Large raw receipts stay under the recorded run root
 on team storage. CPU tests cannot replace the missing full-resume experiment.
 
-## Reproduce the environment and prepare a fresh run
+## Historical environment and launch procedure
 
 1. Use the image digest and exact package versions in the YAML `runtime` section.
    The image alone is insufficient: the qualified installation uses a separate

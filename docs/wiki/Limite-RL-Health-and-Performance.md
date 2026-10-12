@@ -1,5 +1,12 @@
 # Limite RL health and lessons
 
+**Historical execution retired on 2026-10-12.** The native/TRL mathematical-RL
+trainers, private queues and recipes now live in the ignored local archive;
+links below retain their immutable published versions. New agentic phases use
+[the package-backed recipe](../../recipes/rl/limite_code.yaml) and the unified
+`train / resolve / qualify` entry point. Model, distributed restart and real
+tool/verifier qualification remain required before production admission.
+
 **Evidence snapshot: 2026-10-07.** This page summarizes recorded experiments;
 it does not report current node occupancy, queues, or completion estimates.
 The detailed operational chronology is retained in the private archive.
@@ -35,7 +42,7 @@ response groups had no reward contrast.
   exhaustion frequently accompanies repetition; a longer limit alone does not
   repair that learned behavior.
 
-The [native-context Violetto successor](../../recipes/limite/violetto_math_rl_native_context.yaml)
+The [native-context Violetto successor](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/violetto_math_rl_native_context.yaml)
 removes extra length/unfinished penalties and records each response budget.
 This is a distinct protocol phase and has no claimed benchmark improvement in
 this snapshot. The original direct-base pilot was different again: 8K response
@@ -82,14 +89,14 @@ Raw run evidence remains in team storage. Public aggregates are in
 
 ## Matched restart contract, 2026-10-09
 
-The [new matched protocol](../../recipes/limite/full_math_rl_native_context.yaml)
+The [new matched protocol](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/full_math_rl_native_context.yaml)
 restarts normal and simplicial from their respective matched 10B SFT weights,
 with fresh full-weight RL optimizers and identical data, seed, curriculum,
 sampling and loss settings. Each variant uses eight B300 GPUs. The response
 budget is the native 131,072-token context minus the actual prompt; an exhausted
 budget is recorded explicitly and never relabeled as a natural EOS.
 
-The root [`verl` submodule](https://github.com/XiaomiMiMo/verl/tree/a2ad9f6160b03ff2d47e59832bfb6b289f37c917)
+The [`third_party/verl` submodule](https://github.com/XiaomiMiMo/verl/tree/a2ad9f6160b03ff2d47e59832bfb6b289f37c917)
 pins XiaomiMiMo's code. The native Limite executor loads its repetition detector
 directly and records the component hash. This is reuse of upstream components;
 the complete verl Ray/FSDP execution stack is not qualified for these custom

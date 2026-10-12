@@ -1,0 +1,101 @@
+diff --git a/uni_agent/framework/entry.py b/uni_agent/framework/entry.py
+index f93cf13..faeb117 100644
+--- a/uni_agent/framework/entry.py
++++ b/uni_agent/framework/entry.py
+@@ -41,6 +41,7 @@ def build_gateway_manager(*, config, llm_client) -> GatewayManager:
+     gateway_actor_config = GatewayActorConfig(
+         tokenizer=model_config.tokenizer,
+         processor=model_config.processor,
++        generation_eos_token_id=getattr(getattr(model_config, "generation_config", None), "eos_token_id", None),
+         tool_parser_name=config.actor_rollout_ref.rollout.get("multi_turn", {}).get("format"),
+         rollout_backend=config.actor_rollout_ref.rollout.get("name"),
+         enable_tool_parser_cache=af_cfg.get("enable_tool_parser_cache", True),
+diff --git a/uni_agent/gateway/config.py b/uni_agent/gateway/config.py
+index a2dee93..9f76d1f 100644
+--- a/uni_agent/gateway/config.py
++++ b/uni_agent/gateway/config.py
+@@ -39,6 +39,7 @@ class GatewayActorConfig:
+ 
+     tokenizer: Any
+     processor: Any | None = None
++    generation_eos_token_id: int | list[int] | None = None
+     tool_parser_name: str | None = None
+     rollout_backend: str | None = None
+     enable_tool_parser_cache: bool = True
+diff --git a/uni_agent/gateway/gateway.py b/uni_agent/gateway/gateway.py
+index 3239c68..374f076 100644
+--- a/uni_agent/gateway/gateway.py
++++ b/uni_agent/gateway/gateway.py
+@@ -73,6 +73,7 @@ class _GatewayActor:
+         self._codec = MessageCodec(
+             tokenizer=config.tokenizer,
+             processor=config.processor,
++            generation_eos_token_id=config.generation_eos_token_id,
+             vision_info_extractor=config.vision_info_extractor,
+             vision_info_extractor_kwargs=config.vision_info_extractor_kwargs,
+             tool_parser_name=config.tool_parser_name,
+diff --git a/uni_agent/gateway/session/codec.py b/uni_agent/gateway/session/codec.py
+index abd24e8..3861ad0 100644
+--- a/uni_agent/gateway/session/codec.py
++++ b/uni_agent/gateway/session/codec.py
+@@ -483,6 +483,7 @@ class MessageCodec:
+         tokenizer,
+         *,
+         processor=None,
++        generation_eos_token_id: int | list[int] | None = None,
+         vision_info_extractor=None,
+         vision_info_extractor_kwargs: dict[str, Any] | None = None,
+         tool_parser_name: str | None = None,
+@@ -491,6 +492,17 @@ class MessageCodec:
+         apply_chat_template_kwargs: dict[str, Any] | None = None,
+     ):
+         self._tokenizer = tokenizer
++        # Publisher generation EOS owns stopping; tokenizer EOS is only a fallback.
++        # Preserve both publisher files instead of silently unioning their contracts.
++        self.generation_eos_override = generation_eos_token_id is not None
++        value = generation_eos_token_id if self.generation_eos_override else getattr(tokenizer, "eos_token_id", None)
++        stop_ids = set(value if isinstance(value, (list, tuple, set)) else [value]) if value is not None else set()
++        self.stop_token_ids = sorted(stop_ids)
++        stop_strings = {tokenizer.decode([token], skip_special_tokens=False) for token in stop_ids}
++        tokenizer_eos = getattr(tokenizer, "eos_token", None)
++        if not self.generation_eos_override and isinstance(tokenizer_eos, str) and tokenizer_eos:
++            stop_strings.add(tokenizer_eos)
++        self._stop_token_strings = sorted(stop_strings, key=len, reverse=True)
+         self._processor = processor
+         self._vision_info_extractor = vision_info_extractor or self._default_vision_info_extractor
+         self._vision_info_extractor_kwargs = dict(vision_info_extractor_kwargs or {})
+@@ -1100,11 +1112,11 @@ class MessageCodec:
+         EOS inside the assistant turn whenever the session falls back to a full
+         encode. The no-tool branch already decodes with ``skip_special_tokens=True``.
+         """
+-        eos = getattr(self._tokenizer, "eos_token", None)
+-        if not isinstance(eos, str) or not eos.strip():
+-            return content
+         stripped = content.rstrip()
+-        while stripped.endswith(eos):
++        while True:
++            eos = next((token for token in self._stop_token_strings if token and stripped.endswith(token)), None)
++            if eos is None:
++                break
+             stripped = stripped[: -len(eos)].rstrip()
+         return stripped if stripped != content.rstrip() else content
+ 
+diff --git a/uni_agent/gateway/session/session.py b/uni_agent/gateway/session/session.py
+index da21237..4df2684 100644
+--- a/uni_agent/gateway/session/session.py
++++ b/uni_agent/gateway/session/session.py
+@@ -447,6 +447,14 @@ class GatewaySession:
+         messages = request["messages"]
+         tools = request["tools"]
+         sampling_params = dict(request["sampling_params"])
++        if self._codec.generation_eos_override:
++            # vLLM otherwise adds tokenizer EOS back into its own stop set.
++            sampling_params["ignore_eos"] = True
++            sampling_params["stop_token_ids"] = list(self._codec.stop_token_ids)
++        elif self._codec.stop_token_ids:
++            sampling_params["stop_token_ids"] = sorted(
++                set(sampling_params.get("stop_token_ids") or []) | set(self._codec.stop_token_ids)
++            )
+         incoming_message_prefix_hashes = self._extend_message_prefix_hashes([], messages)
+         selection = self._select_chain(
+             tools=tools,

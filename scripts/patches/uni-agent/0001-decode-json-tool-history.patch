@@ -1,0 +1,30 @@
+diff --git a/uni_agent/gateway/session/codec.py b/uni_agent/gateway/session/codec.py
+index 2114d6e..abd24e8 100644
+--- a/uni_agent/gateway/session/codec.py
++++ b/uni_agent/gateway/session/codec.py
+@@ -322,12 +322,20 @@ def _assistant_history_message(
+                 rendered_calls.append({"name": name, "input": raw_input})
+             else:
+                 rendered_calls.append({"name": name, "arguments": {"input": raw_input}})
+-        elif isinstance(arguments, dict):
+-            rendered_calls.append({"name": name, "arguments": arguments})
+         else:
+-            rendered_calls.append(
+-                {"name": name, "arguments": {"arguments": _freeform_call_input(arguments)}}
+-            )
++            # OpenAI tool-call arguments are JSON strings on the wire, whereas
++            # native chat templates expect the decoded argument object.
++            if isinstance(arguments, str):
++                try:
++                    arguments = json.loads(arguments)
++                except json.JSONDecodeError:
++                    pass
++            if isinstance(arguments, dict):
++                rendered_calls.append({"name": name, "arguments": arguments})
++            else:
++                rendered_calls.append(
++                    {"name": name, "arguments": {"arguments": _freeform_call_input(arguments)}}
++                )
+     if rendered_calls:
+         normalized["tool_calls"] = rendered_calls
+     else:

@@ -1,0 +1,15 @@
+diff --git a/src/mimoagent/environments/datasets/base.py b/src/mimoagent/environments/datasets/base.py
+index daa159f..4754806 100644
+--- a/src/mimoagent/environments/datasets/base.py
++++ b/src/mimoagent/environments/datasets/base.py
+@@ -713,7 +713,9 @@ true
+         lang = self._language
+         lang_keep = self._CLEAN_KEEP.get(lang, self._CLEAN_KEEP_UNKNOWN)
+         keep = list(dict.fromkeys(self._CLEAN_KEEP_COMMON + lang_keep))  # dedup, keep order
+-        excludes = " ".join(f"--exclude={d}" for d in keep)
++        # Dependency locations are repository-relative. Bare names also match
++        # nested build/lib, accidentally preserving the project's build output.
++        excludes = " ".join(f"--exclude=/{d}" for d in keep)
+         try:
+             # ① git clean: drop untracked/ignored build OUTPUT (target/build/dist/
+             #    __pycache__/*.class ...), keep dep caches via --exclude.

@@ -1,0 +1,113 @@
+# Fresh full-weight agentic RL from the matched 2B adapter-warmup endpoint.
+# Runtime paths are deployment inputs; optimizer values use verl's own names.
+name: limite-normal-sft2b-mimo-code-fresh-v1
+family: limite
+variant: normal
+engine: megatron
+# Use the publisher FA2 reduction in both learner and vLLM normal rollouts.
+# Historical TileLang recipes/weights remain intact; this migration is explicit.
+attention: native
+execution: colocate_async
+throughput:
+  baseline: ${oc.env:ARCHLAB_THROUGHPUT_BASELINE,null}
+native_context: 131072
+parent_checkpoint: ${oc.env:ARCHLAB_PARENT_CHECKPOINT}
+parent_stage: adapter_sft
+parent_tokens: 2000158720
+data_manifest: ${oc.env:ARCHLAB_CODE_DATA}/manifest.json
+settings:
+  ray_kwargs.ray_init:
+    address: local
+    num_cpus: 32
+    runtime_env:
+      # Select the installed FA4 namespace before stock workers import engines.
+      worker_process_setup_hook: archlab.architectures.fa4_attention.fa4_runtime_contract
+      env_vars:
+        VERL_MFU_DEVICE_NAME: B300
+        TRANSFER_QUEUE_ENABLE: "1"
+        MIXED_HARNESS_SPEC: ${oc.env:ARCHLAB_HARNESS_SPEC}
+        MIXED_HARNESS_MODE: step-hash
+        E2B_DOMAIN: ${oc.env:E2B_DOMAIN}
+        ARCHLAB_E2B_KEY_FILE: ${oc.env:ARCHLAB_E2B_KEY_FILE}
+        ARCHLAB_E2B_TEMPLATE_MAP: ${oc.env:ARCHLAB_E2B_TEMPLATE_MAP}
+  actor_rollout_ref.model.path: ${oc.env:ARCHLAB_POLICY}
+  actor_rollout_ref.model.external_lib: archlab.training.megatron
+  actor_rollout_ref.model.trust_remote_code: false
+  actor_rollout_ref.model.use_remove_padding: false
+  actor_rollout_ref.model.use_fused_kernels: false
+  actor_rollout_ref.model.enable_gradient_checkpointing: true
+  actor_rollout_ref.actor.optim.lr: 1.0e-5
+  actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler: true
+  actor_rollout_ref.actor.megatron.tensor_model_parallel_size: 1
+  actor_rollout_ref.actor.megatron.pipeline_model_parallel_size: 1
+  actor_rollout_ref.actor.megatron.context_parallel_size: 1
+  actor_rollout_ref.actor.megatron.expert_model_parallel_size: 1
+  actor_rollout_ref.actor.megatron.sequence_parallel: false
+  actor_rollout_ref.actor.megatron.use_distributed_optimizer: true
+  actor_rollout_ref.actor.megatron.use_remove_padding: false
+  actor_rollout_ref.actor.megatron.pad_bshd_to_minibatch_max: false
+  actor_rollout_ref.actor.megatron.patch_recomputation_backward: false
+  actor_rollout_ref.actor.megatron.override_ddp_config:
+    grad_reduce_in_fp32: true
+    overlap_grad_reduce: false
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.actor.use_dynamic_bsz: false
+  actor_rollout_ref.actor.ppo_mini_batch_size: 8
+  actor_rollout_ref.actor.ppo_max_token_len_per_gpu: 131072
+  actor_rollout_ref.actor.loss_agg_mode: token-mean
+  actor_rollout_ref.rollout.name: vllm
+  actor_rollout_ref.rollout.enforce_eager: true
+  actor_rollout_ref.rollout.enable_prefix_caching: false
+  actor_rollout_ref.rollout.checkpoint_engine.backend: naive
+  actor_rollout_ref.rollout.engine_kwargs:
+    vllm:
+      attention_config:
+        backend: FLASH_ATTN
+        flash_attn_version: 2
+  actor_rollout_ref.rollout.multi_turn.format: hermes
+  actor_rollout_ref.rollout.n: 4
+  actor_rollout_ref.rollout.tensor_model_parallel_size: 1
+  actor_rollout_ref.rollout.max_model_len: 131072
+  actor_rollout_ref.rollout.prompt_length: 16384
+  actor_rollout_ref.rollout.response_length: 114688
+  actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu: 131072
+  actor_rollout_ref.rollout.log_prob_use_dynamic_bsz: false
+  actor_rollout_ref.rollout.top_p: 1.0
+  actor_rollout_ref.rollout.top_k: -1
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.7
+  actor_rollout_ref.rollout.max_num_seqs: 1
+  actor_rollout_ref.rollout.agent.num_workers: 1
+  actor_rollout_ref.rollout.custom.agent_framework.gateway_count: 1
+  actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode: false
+  actor_rollout_ref.rollout.custom.agent_framework.trajectory_validator: archlab.training.rollout.RolloutContract
+  actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mimoagent.max_concurrent_sessions: 1
+  algorithm.norm_adv_by_std_in_grpo: true
+  algorithm.rollout_correction.bypass_mode: false
+  algorithm.rollout_correction.rollout_is: token
+  algorithm.rollout_correction.rollout_is_threshold: 2.0
+  algorithm.rollout_correction.rollout_is_batch_normalize: false
+  algorithm.rollout_correction.rollout_rs: null
+  algorithm.filter_groups.enable: false
+  data.train_files: ["${oc.env:ARCHLAB_CODE_DATA}/train.parquet"]
+  data.val_files: ["${oc.env:ARCHLAB_CODE_DATA}/validation.parquet"]
+  data.max_prompt_length: 16384
+  data.max_response_length: 114688
+  data.train_batch_size: 8
+  data.val_batch_size: 3
+  data.dataloader_num_workers: 2
+  # The 32-core node reserves 24 cores for learner placement. Leave room for
+  # the controller, gateway and agent; eight default storage actors deadlock it.
+  transfer_queue.backend.SimpleStorage.num_data_storage_units: 2
+  data.seed: 42
+  trainer.nnodes: 1
+  trainer.n_gpus_per_node: 8
+  trainer.total_training_steps: 20
+  trainer.total_epochs: 20
+  trainer.save_freq: 1
+  trainer.test_freq: 5
+  trainer.project_name: Limite — RL
+  trainer.default_local_dir: ${oc.env:ARCHLAB_OUTPUT}/checkpoints
+  trainer.logger: [console, mlflow]
+  trainer.metrics_extension: archlab.training.metrics.step_metrics
+  trainer.resume_mode: disable
+  trainer.v1.sampler.max_off_policy_threshold: 1

@@ -1,5 +1,7 @@
 # SGLang integration preflight — 2026-09-20
 
+> Historical record: this execution stack was retired on 2026-10-12. Commands and status below describe the recorded experiment, not a supported launcher or current job. Use the [current training workflow](TRAINING.md).
+
 **Type:** dated component evidence. This page does not establish deployment status or full-model readiness.
 
 ## Project-owned components

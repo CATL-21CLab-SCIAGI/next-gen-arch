@@ -1,6 +1,6 @@
 # Documentation
 
-**Matched pretrained comparison:** [Limite SFT](wiki/Limite-SFT-Comparison.md). [DeepSeek Miles](MILES_BASELINE.md) is a separate integration.
+**Matched pretrained comparison:** [Limite SFT](wiki/Limite-SFT-Comparison.md). [DeepSeek Miles](MILES_BASELINE.md) records a retired integration. The current RL workflow is [package-backed training](TRAINING.md).
 
 The reader guides are checked in under **[`wiki/`](wiki/Home.md)**. These page sources can also be published to the [GitHub Wiki](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki).
 
@@ -31,6 +31,7 @@ The checked-in pages are authoritative and readable without GitHub Wiki. Wiki av
 | Qwen/DeepSeek evidence audit | [2026-09-22 conclusions](TRAINING_CONCLUSIONS_20260922.md) |
 | Upstream optimization ideas and dispositions | [Optimization audit](OPTIMIZATION_AUDIT.md) |
 | Scientific contracts | [Experiment contracts](EXPERIMENT_CONTRACTS.md) |
+| Pretrained architecture conversion and the next reasoning experiment | [Research review and proposal](ARCHITECTURE_MIGRATION_RESEARCH.md) |
 | Compact source evidence | [Recorded results](recorded-results/README.md) |
 
 Dated reports describe their recorded experiment. They are not live runbooks. Local `results/` paths identify team-storage artifacts; they are not GitHub downloads.

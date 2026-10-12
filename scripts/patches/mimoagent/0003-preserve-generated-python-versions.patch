@@ -1,0 +1,100 @@
+--- a/src/mimoagent/environments/datasets/base.py
++++ b/src/mimoagent/environments/datasets/base.py
+@@ -16,9 +16,12 @@
+ dataset needs in some combination.
+ """
+ 
++import base64
+ import os
+ import re
++import shlex
+ import tempfile
++import tomllib
+ import uuid
+ from abc import ABC, abstractmethod
+ 
+@@ -41,6 +44,17 @@
+     """Return the commit hash while ignoring shell startup diagnostics."""
+     hashes = _GIT_SHA_RE.findall(output or "")
+     return hashes[-1].lower() if hashes else None
++
++
++def _generated_version_paths(pyproject: str) -> list[str]:
++    """Explicit generated Python build metadata, never directory/glob exemptions."""
++    tool = tomllib.loads(pyproject).get("tool", {})
++    hatch = tool.get("hatch", {}).get("build", {}).get("hooks", {}).get("vcs", {})
++    scm = tool.get("setuptools_scm", {})
++    candidates = (hatch.get("version-file"), scm.get("write_to"), scm.get("version_file"))
++    return [path for path in candidates if isinstance(path, str)
++            and re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", path)
++            and not any(part in (".", "..") for part in path.split("/"))]
+ 
+ 
+ GIT_LEAK_PREVENTION_MODES = ("hide", "strip", "none")
+@@ -139,6 +153,7 @@
+         # inside its own setup (to control ordering). Once run, the
+         # ``setup_environment`` post-hook skips it instead of running it twice.
+         self._anti_hack_cleanup_done = False
++        self._generated_version_snapshots: dict[str, tuple[str, bytes]] = {}
+ 
+         # Rubric-judge reward stage (see REWARD_MODES). ``rubrics`` is parsed
+         # from the instance's optional ``rubric.rubrics`` (None when absent);
+@@ -334,6 +349,17 @@
+             result.setdefault(k, v)
+         result["rubric_reward"] = j_reward
+ 
++    def _restore_generated_versions(self) -> None:
++        """Restore original build metadata; policy edits are not submitted source."""
++        for path, (canonical, content) in self._generated_version_snapshots.items():
++            current = self.env.execute(f"realpath -m -- {shlex.quote(path)}", cwd=self.repo_path, timeout=10)
++            if current.get("returncode") != 0 or current["output"].strip() != canonical:
++                raise RuntimeError("Generated version path changed during rollout")
++            with tempfile.NamedTemporaryFile(mode="wb") as snapshot:
++                snapshot.write(content)
++                snapshot.flush()
++                self.env.copy_to(snapshot.name, canonical)
++
+     def calculate_reward(self, timeout: int | float | None = None) -> tuple[float, str, dict]:
+         """Template method: runs reward with TransportError handling + git restore.
+ 
+@@ -354,6 +380,7 @@
+         try:
+             if self._git_hidden:
+                 self._restore_git()
++            self._restore_generated_versions()
+             model_patch, patch_error = self._capture_model_diff()
+             run_judge, run_verifier = self.resolve_reward_plan()
+             if run_judge:
+@@ -713,9 +740,29 @@
+         lang = self._language
+         lang_keep = self._CLEAN_KEEP.get(lang, self._CLEAN_KEEP_UNKNOWN)
+         keep = list(dict.fromkeys(self._CLEAN_KEEP_COMMON + lang_keep))  # dedup, keep order
+-        # Dependency locations are repository-relative. Bare names also match
+-        # nested build/lib, accidentally preserving the project's build output.
+-        excludes = " ".join(f"--exclude=/{d}" for d in keep)
++        # Read declarations from the captured base before any policy edits.
++        # Snapshot failure is fatal: preserving mutable metadata without a
++        # restorable original would let hidden files escape submitted diffs.
++        base_ref = getattr(self, "_base_ref", "")
++        if re.fullmatch(r"[0-9a-f]{40}", base_ref):
++            metadata = self.env.execute(f"git show {base_ref}:pyproject.toml", cwd=self.repo_path, timeout=10)
++            if metadata.get("returncode") == 0:
++                for path in _generated_version_paths(metadata["output"]):
++                    quoted = shlex.quote(path)
++                    regular = self.env.execute(f"test -f {quoted} && test ! -L {quoted}", cwd=self.repo_path, timeout=10)
++                    if regular.get("returncode") != 0:
++                        continue
++                    canonical = self.env.execute(f"realpath -- {quoted}", cwd=self.repo_path, timeout=10)
++                    encoded = self.env.execute(f"base64 -w0 -- {quoted}", cwd=self.repo_path, timeout=10)
++                    if canonical.get("returncode") != 0 or encoded.get("returncode") != 0:
++                        raise RuntimeError("Could not snapshot generated version metadata")
++                    if canonical["output"].strip() != f"{self.repo_path.rstrip('/')}/{path}":
++                        raise RuntimeError("Generated version metadata is outside its declared task path")
++                    content = base64.b64decode(encoded["output"].strip(), validate=True)
++                    self._generated_version_snapshots[path] = (canonical["output"].strip(), content)
++                    keep.append(path)
++        # Anchor dependency locations: bare names also retain nested build/lib.
++        excludes = " ".join(f"--exclude={shlex.quote('/' + d)}" for d in keep)
+         try:
+             # ① git clean: drop untracked/ignored build OUTPUT (target/build/dist/
+             #    __pycache__/*.class ...), keep dep caches via --exclude.

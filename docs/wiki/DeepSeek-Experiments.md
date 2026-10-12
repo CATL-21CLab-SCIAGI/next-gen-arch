@@ -1,6 +1,6 @@
 # DeepSeek Experiments
 
-Current DeepSeek RL launch and qualification entry: [Miles baseline](../MILES_BASELINE.md).
+Current package-backed RL workflow: [training guide](../TRAINING.md). The [Miles experiment](../MILES_BASELINE.md) is a retired historical integration.
 
 ## Lineages and controls
 

@@ -1,0 +1,13 @@
+--- a/recipes/code/mimoagent_runner.py
++++ b/recipes/code/mimoagent_runner.py
+@@ -110,8 +110,8 @@
+ 
+     spec_file = Path(spec_path).expanduser().resolve()
+     entries = _load_config(spec_file).get("harnesses")
+-    if not isinstance(entries, list) or len(entries) < 2:
+-        raise ValueError(f"{spec_file}: 'harnesses' must be a list of at least two entries")
++    if not isinstance(entries, list) or len(entries) < 1:
++        raise ValueError(f"{spec_file}: 'harnesses' must be a list with at least one entry")
+     specs: list[tuple[str, str]] = []
+     for entry in entries:
+         if not isinstance(entry, dict):
