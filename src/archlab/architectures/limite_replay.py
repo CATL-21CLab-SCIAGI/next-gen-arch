@@ -66,6 +66,36 @@ def _shared_window_mask(length, window_span, device):
     return allowed.logical_and_(keys > queries - window_span)
 
 
+def shared_training_masks(hidden, positions, padding_mask, window_span):
+    """The publisher's unpadded masks, without quadratic integer temporaries.
+
+    These are plain tensors consumed by the original attention dispatcher. This
+    helper changes mask allocation only; it does not bind another reduction.
+    Cached, padded or noncontiguous calls retain the original mask factory.
+    """
+    if padding_mask is not None and (
+        not isinstance(padding_mask, torch.Tensor)
+        or padding_mask.shape != hidden.shape[:2]
+        or not bool((padding_mask == 1).all())
+    ):
+        return None
+    expected = torch.arange(hidden.shape[1], device=hidden.device)[None]
+    if positions.shape not in (expected.shape, hidden.shape[:2]):
+        return None
+    if not bool((positions == expected).all()):
+        return None
+    # HF keeps an explicit causal mask exactly at the window boundary. Even
+    # when mathematically redundant, retaining that dispatch avoids changing
+    # mixed-precision backward rounding through SDPA's is_causal fast path.
+    length = hidden.shape[1]
+    if window_span == length:
+        allowed = expected.T >= expected
+    else:
+        allowed = _shared_window_mask(length, window_span, hidden.device)
+    local = None if allowed is None else allowed[None, None].expand(hidden.shape[0], 1, length, length)
+    return dict(full_attention=None, sliding_attention=local)
+
+
 def native_replay_masks(length, window_span, device, backend):
     """Share native replay descriptors between the backbone and its preludes."""
     allowed = _shared_window_mask(length, window_span, device) if backend == "sdpa_native" else None

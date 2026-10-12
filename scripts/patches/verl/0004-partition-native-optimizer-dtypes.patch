@@ -1,0 +1,42 @@
+diff --git a/verl/utils/checkpoint/megatron_checkpoint_manager.py b/verl/utils/checkpoint/megatron_checkpoint_manager.py
+index 02be397d..f52c1740 100644
+--- a/verl/utils/checkpoint/megatron_checkpoint_manager.py
++++ b/verl/utils/checkpoint/megatron_checkpoint_manager.py
+@@ -853,6 +853,7 @@ class MegatronCheckpointManager(BaseCheckpointManager):
+                 metadata = self._build_sharded_state_dict_metadata()
+         return metadata
+ 
++    @torch.no_grad()
+     def load_checkpoint(self, local_path: str, hdfs_path: str = None, del_local_after_load=False):
+         """Load a Megatron checkpoint in the v2 split layout.
+ 
+diff --git a/verl/utils/megatron/optimizer.py b/verl/utils/megatron/optimizer.py
+index faa9043a..2400871c 100644
+--- a/verl/utils/megatron/optimizer.py
++++ b/verl/utils/megatron/optimizer.py
+@@ -222,10 +222,25 @@ def get_megatron_optimizer(
+     model,
+     config: OptimizerConfig,
+ ):
++    # MCore's distributed optimizer packs FP32 and BF16 shards separately.
++    # Mixing both storage dtypes in one group can invalidate its checkpoint
++    # parameter-index map. Preserve all standard LR/decay overrides and add a
++    # metadata-only partition; no optimizer or scheduler value is changed.
++    dtypes = {p.dtype for chunk in model for p in chunk.parameters() if p.requires_grad}
++    overrides = None
++    if len(dtypes) > 1:
++        from megatron.core.optimizer import get_standard_config_overrides
++        from megatron.core.optimizer.optimizer_config import ParamKey, ParamPredicate
++
++        overrides = get_standard_config_overrides(config)
++        for dtype in sorted(dtypes, key=str):
++            predicate = ParamPredicate(name=f"storage_{dtype}", fn=lambda p, dtype=dtype: p.dtype == dtype)
++            overrides[ParamKey(predicate=predicate)] = {"_storage_dtype_partition": str(dtype)}
+     # Base optimizer.
+     return get_megatron_optimizer_native(
+         config=config,
+         model_chunks=model,
++        config_overrides=overrides,
+     )
+ 
+ 

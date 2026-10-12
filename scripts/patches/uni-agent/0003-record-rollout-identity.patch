@@ -1,0 +1,25 @@
+diff --git a/tests/uni_agent/framework/test_generate_sequences_on_cpu.py b/tests/uni_agent/framework/test_generate_sequences_on_cpu.py
+index 12e6cf6..07ddff9 100644
+--- a/tests/uni_agent/framework/test_generate_sequences_on_cpu.py
++++ b/tests/uni_agent/framework/test_generate_sequences_on_cpu.py
+@@ -1139,6 +1139,8 @@ async def test_failed_session_snapshot_is_observation_only(tmp_path, fake_tq):
+     assert len(failed_dirs) == 1
+     failed_dir = failed_dirs[0]
+     manifest = json.loads((failed_dir / "session.json").read_text())
++    assert manifest["prompt_uid"] == "uid-0"
++    assert f"{manifest['prompt_uid']}_{manifest['session_index']}_0" == "uid-0_1_0"
+     assert manifest["status"] == "timeout"
+     assert manifest["termination_kind"] == "framework_timeout"
+     assert manifest["num_turns"] == 7
+diff --git a/uni_agent/framework/framework.py b/uni_agent/framework/framework.py
+index 8c200d5..81314b2 100644
+--- a/uni_agent/framework/framework.py
++++ b/uni_agent/framework/framework.py
+@@ -1468,6 +1468,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
+             selected_harness = reward_info.get("selected_harness") or reward_info.get("agent_type")
+             payload = {
+                 "session_id": session_id,
++                "prompt_uid": str(sample_fields["uid"]) if sample_fields.get("uid") is not None else None,
+                 "sample_index": sample_index,
+                 "session_index": session_index,
+                 "dataset_index": dataset_index,

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from archlab.automodel.limite_decode_controls import (
+from archlab.qualification.limite_decode import (
     cache_equal,
     cache_selection_equal,
     decode_reference,

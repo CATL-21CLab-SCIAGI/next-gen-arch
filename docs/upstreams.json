@@ -1,9 +1,81 @@
 {
   "verl": {
-    "url": "https://github.com/XiaomiMiMo/verl.git",
-    "path": "verl",
     "revision": "a2ad9f6160b03ff2d47e59832bfb6b289f37c917",
-    "runtime": "native Limite executor with pinned upstream repetition detector; full verl serving/training stack not qualified",
-    "patches": []
+    "patches": [
+      {
+        "path": "scripts/patches/verl/0001-reject-incomplete-swe-rewards.patch",
+        "sha256": "69eb8d7ff4256ece0df44bc7031cb11ce4d80be31831b49bc5c97a2298713ed7"
+      },
+      {
+        "path": "scripts/patches/verl/0003-allow-single-harness.patch",
+        "sha256": "e3d18aa9d52fc0dba430417e78c1a900a12f10e583f5a61afa1ba2cc8e325123"
+      },
+      {
+        "path": "scripts/patches/verl/0004-partition-native-optimizer-dtypes.patch",
+        "sha256": "97c69fc3b851dcd46c8776421ab0ac7611b1b9ba21b68ef93958d51a16898ed7"
+      },
+      {
+        "path": "scripts/patches/verl/0005-native-chunked-logits-processor.patch",
+        "sha256": "fa91361e5f0393216edd9f993e860eeac9b79621facb71676a4e5168f2aa6a58"
+      },
+      {
+        "path": "scripts/patches/verl/0006-optional-recomputation-patch.patch",
+        "sha256": "afeafed764f6b1203eb2bc1d9ab6d8f42094a9888cd205901f133831b3c6c56f"
+      },
+      {
+        "path": "scripts/patches/verl/0007-observability-extensions.patch",
+        "sha256": "903646bd07518c734dd25f63b364c620e7bb9c8adfe5dea9599ce863822695dc"
+      }
+    ],
+    "working_diff_sha256": "1063916071f330c3cf90df25f4456c872ca8ff054cf605514ae4887de07df469",
+    "url": "https://github.com/XiaomiMiMo/verl.git",
+    "path": "third_party/verl",
+    "runtime": "Primary agentic RL engine and monitoring; native Limite learner and serving integration remain under GPU qualification. Agent execution requires an authorized sandbox.",
+    "dependencies": {
+      "uni_agent": {
+        "revision": "c63e0b01c375ebede95e01fe92bc367df24e5bf3",
+        "patches": [
+          {
+            "path": "scripts/patches/uni-agent/0001-decode-json-tool-history.patch",
+            "sha256": "50a97b5af8daf1d4eafa8175e4fa2d0660342e77b957c053ed5dc92b9e243840"
+          },
+          {
+            "path": "scripts/patches/uni-agent/0002-use-generation-stop-contract.patch",
+            "sha256": "0e6972808be67f23b568ff702c9ed17ed78db1164f86c7bcf389fca21055c673"
+          },
+          {
+            "path": "scripts/patches/uni-agent/0003-record-rollout-identity.patch",
+            "sha256": "7f14dc7efc93154c0e127617398dd5d43f7fda0ef661d058c35f47d7c69c9af5"
+          },
+          {
+            "path": "scripts/patches/uni-agent/0004-validate-trajectory-metadata.patch",
+            "sha256": "5ae1631134b37f43a003979b578df57abbbe1c13f957e5daa31bc26ebd1485ab"
+          }
+        ],
+        "working_diff_sha256": "72c3bb4dece2441d035565e4486c269d52ee90861cf4b869b3f3366a1c720ba9",
+        "path": "third_party/uni_agent",
+        "url": "https://github.com/XiaomiMiMo/uni-agent.git"
+      },
+      "mimoagent": {
+        "revision": "467f0a19016f0ac4d63b8d17a1f0da9ba07f232c",
+        "patches": [
+          {
+            "path": "scripts/patches/mimoagent/0001-report-context-exhaustion.patch",
+            "sha256": "78430b23f98d4b5d0166ad1c753ffc500a0bba81a84076c045e9cd677aff299d"
+          },
+          {
+            "path": "scripts/patches/mimoagent/0002-anchor-cleanup-dependency-paths.patch",
+            "sha256": "2ed8bae5bb4d0969cc98bef31ce5a145bfcb14f9efe383c709eae434582dc59e"
+          },
+          {
+            "path": "scripts/patches/mimoagent/0003-preserve-generated-python-versions.patch",
+            "sha256": "1baf61c67589e94395af170d335646a8f3a06f294ea8e900d4cf5f9002ccf028"
+          }
+        ],
+        "working_diff_sha256": "82171cd1df67bb8781fba596ffa1c82f022d29e5b940a2622fbceaa4d3e5d672",
+        "path": "third_party/mimoagent-osr",
+        "url": "https://github.com/XiaomiMiMo/MiMo-Agent.git"
+      }
+    }
   }
 }

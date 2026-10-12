@@ -1,0 +1,36 @@
+diff --git a/verl/trainer/config/engine/megatron.yaml b/verl/trainer/config/engine/megatron.yaml
+index d4df4e56..6ac498f5 100644
+--- a/verl/trainer/config/engine/megatron.yaml
++++ b/verl/trainer/config/engine/megatron.yaml
+@@ -153,3 +153,6 @@ qat:
+   activation_observer: null
+   # Path to quantization config JSON for vLLM weight export
+   quantization_config_path: null
++
++# Native providers may own checkpointing without replacing MCore runtime methods.
++patch_recomputation_backward: true
+diff --git a/verl/workers/config/engine.py b/verl/workers/config/engine.py
+index 059bf392..5c0f1ed0 100644
+--- a/verl/workers/config/engine.py
++++ b/verl/workers/config/engine.py
+@@ -196,6 +196,7 @@ class McoreEngineConfig(EngineConfig):
+     sequence_parallel: bool = True
+     use_distributed_optimizer: bool = True
+     pad_bshd_to_minibatch_max: bool = True
++    patch_recomputation_backward: bool = True
+     use_dist_checkpointing: bool = False
+     dist_checkpointing_path: Optional[str] = None
+     dist_checkpointing_prefix: str = ""
+diff --git a/verl/workers/engine/megatron/transformer_impl.py b/verl/workers/engine/megatron/transformer_impl.py
+index 6a7bed15..7bafc67f 100644
+--- a/verl/workers/engine/megatron/transformer_impl.py
++++ b/verl/workers/engine/megatron/transformer_impl.py
+@@ -144,7 +144,7 @@ class MegatronEngine(BaseEngine):
+ 
+             apply_mtp_inference_patch()
+ 
+-        if is_cuda_available:
++        if is_cuda_available and self.engine_config.patch_recomputation_backward:
+             from verl.models.mcore.patch import apply_patch_megatron_recomputation_backward
+ 
+             apply_patch_megatron_recomputation_backward()

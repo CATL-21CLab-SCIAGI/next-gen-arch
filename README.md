@@ -1,55 +1,43 @@
 # Next-Gen Architecture Lab
 
-**Architecture search for language models—from controlled component experiments to distributed pretraining, frontier-model adaptation, and reinforcement learning.**
+Controlled experiments on attention, memory and reasoning in language models.
 
-[中文研究愿景](https://catl-21clab-sciagi.github.io/next-gen-arch/zh/) · [Documentation](docs/README.md) · [Results](docs/RESULTS.md) · [Recipes](recipes/) · [Contributing](docs/wiki/Contributing.md)
+[中文研究愿景](https://catl-21clab-sciagi.github.io/next-gen-arch/zh/) · [Research wiki](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/wiki) · [Recorded results](docs/RESULTS.md)
 
-## Research
+## Structure
 
-| Track | Scope |
-| --- | --- |
-| Components | Attention, recurrent mixers, memory, residual routing, positional encoding |
-| Models and scale | Dense and MoE Qwen families; DeepSeek scratch models |
-| Pretrained adaptation | Ordinary and simplicial architecture adapters; frozen-backbone and full-weight fine-tuning |
-| RL | Verifiable rewards, policy optimization, trajectory completion and generation efficiency |
+- `src/archlab/architectures`: model definitions, attention mechanisms and numerical kernels.
+- `src/archlab/training`: typed experiment contracts, model integration and a thin verl launcher.
+- `src/archlab/data`: reproducible dataset indexes and provenance.
+- `recipes/rl`: the current agentic pilot and its data contract.
+- `third_party/verl`: pinned XiaomiMiMo trainer, agent harness, rollout contracts and monitoring.
 
-We compare capability, stability, memory, and training/inference cost under explicit experiment contracts. Completed evidence and experimental proposals are labeled separately.
+Megatron/Transformer Engine and TileLang have different responsibilities: Megatron distributes training, while TileLang implements attention kernels. Support requires model construction, numerical, optimizer, checkpoint and distributed tests for the particular combination. Selecting a configuration does not establish support.
 
-## Execution
+The Limite agentic migration is under qualification. Its lossless model export and code-data index are implemented; an executable task sandbox and GPU integration admission are required before training. The new launcher rejects incomplete qualification.
 
-For the matched pretrained experiment, start with the [Limite SFT comparison](docs/wiki/Limite-SFT-Comparison.md). The [Miles baseline runbook](docs/MILES_BASELINE.md) covers the separate DeepSeek integration and its qualification limits.
+## Run
 
-| Integration | Role |
-| --- | --- |
-| `archlab.speedrun` | Frozen small-model reference |
-| `archlab.megatron` | Distributed pretraining and scaling |
-| `archlab.automodel` | Pretrained-model integration and post-training |
-| `archlab.serving` | Inference and evaluation integration |
-
-GPU work uses the validated container's existing runtime packages. Backend support is qualified per model, mechanism, and topology.
-
-Qwen integration is under `automodel/qwen/`; independent DeepSeek diagnostics are under `automodel/deepseek_v41/qualification/`. Checkpoint-bound DeepSeek execution files retain their recorded paths. Dataset scoring lives in `evaluation/`, run analysis in `reporting/`, operational watchers in `tracking/`, and checkpoint retention in `storage/`. SGLang model registration uses `archlab.serving.sglang`.
-
-## Explore
-
-From a prepared environment at the repository root:
+Use the prepared GPU container's PyTorch, CUDA, NCCL, Transformer Engine and Megatron packages. Initialize the agent dependencies:
 
 ```bash
-PYTHONPATH=src python -m archlab.cli verify
-PYTHONPATH=src python -m archlab.cli list
+git submodule update --init --recursive third_party/verl
 ```
 
-The CLI above inspects frozen campaign evidence. Model-specific entries and recipes are mapped in the [documentation index](docs/README.md).
+Apply the declared [upstream patches](docs/TRAINING.md#upstream-patches) before qualification.
 
-For paired training curves, use `python -m archlab.reporting.paired_curves --help` with explicit run directories. Command ownership is mapped in the documentation index.
+Set the model export, parent checkpoint, code-data and output paths documented in [the training guide](docs/TRAINING.md), then:
 
-Compact evidence is versioned under `docs/recorded-results/` and `src/archlab/data/`. Large run artifacts and checkpoints stay outside Git.
+```bash
+archlab resolve recipes/rl/limite_code.yaml --output results/code-pilot
+archlab train recipes/rl/limite_code.yaml --output results/code-pilot
+```
 
-[Apache 2.0 license](LICENSE) · [Attribution](docs/NOTICE.md) · [Citation](CITATION.cff)
+`train` runs admission before launching. Use `qualify` instead for checks without
+training; running both repeats the checks.
 
-Publication uses a curated source snapshot; earlier experiment revisions remain in a private archive. See the [workspace and publication policy](docs/PUBLICATION.md).
+The launcher composes the pinned upstream configuration. verl owns training, rollouts, checkpoints, MLflow and performance monitoring. Project code preserves the experimental model and verifies its contracts.
 
-The pinned [XiaomiMiMo/verl](https://github.com/XiaomiMiMo/verl) dependency is a
-root submodule. Run `git submodule update --init verl` for the matched RL recipe.
-[Upstream pins](docs/upstreams.json) record the integration scope; GPU framework
-packages remain owned by the validated container.
+Core model definitions, retained SFT/scratch integrations and the frozen speedrun reference remain. Superseded Miles RL, DeepSeek native RL and SGLang prototype execution stacks have been retired. Retired experiment launchers and diagnostics are stored only in the ignored local `.legacy/` archive; production snapshots and checkpoint states remain independent of the working tree.
+
+[Apache 2.0](LICENSE) · [Attribution](docs/NOTICE.md) · [Citation](CITATION.cff)

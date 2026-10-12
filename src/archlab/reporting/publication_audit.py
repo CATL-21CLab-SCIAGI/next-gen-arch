@@ -14,7 +14,9 @@ ROOT_FILES = frozenset({
     ".gitignore", ".gitmodules", ".python-version", "AGENTS.md", "CITATION.cff",
     "LICENSE", "README.md", "pyproject.toml", "uv.lock",
 })
-REGISTERED_SUBMODULES = {"verl": "https://github.com/XiaomiMiMo/verl.git"}
+REGISTERED_SUBMODULES = {
+    "third_party/verl": ("verl", "https://github.com/XiaomiMiMo/verl.git"),
+}
 FORBIDDEN_PARTS = frozenset({
     ".runtime", "results", "result", ".git", ".aws", ".ssh", ".agents", ".codex",
     "__pycache__", ".venv", "node_modules", "checkpoints", "mlruns", "wandb",
@@ -90,15 +92,16 @@ def audit_tree(root: Path, revision: str = "HEAD") -> dict:
     if gitlinks or any(path == ".gitmodules" for _, _, path in entries):
         expected_config = []
         for path, oid in gitlinks:
-            url = REGISTERED_SUBMODULES.get(path)
-            if url is None:
+            registration = REGISTERED_SUBMODULES.get(path)
+            if registration is None:
                 findings.append({"path": path, "reasons": ["unapproved_submodule"]})
                 continue
+            name, url = registration
             expected_config.extend([
-                (f"submodule.{path}.path", path),
-                (f"submodule.{path}.url", url),
+                (f"submodule.{name}.path", path),
+                (f"submodule.{name}.url", url),
             ])
-            submodules.append({"name": path, "path": path, "url": url, "revision": oid})
+            submodules.append({"name": name, "path": path, "url": url, "revision": oid})
         try:
             config = git("config", "--null", "--no-includes", "--blob",
                          f"{resolved}:.gitmodules", "--list")

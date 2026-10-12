@@ -1,6 +1,6 @@
 # Limite base math RL
 
-Launch contract: `recipes/limite/base_nemotron_grpo.yaml`, upstream
+[Historical contract](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/base_nemotron_grpo.yaml), upstream
 TRL 1.4.0 with the verified Limite base `cc612bafcd4a` implementation. The existing
 NeMo container's PyTorch, CUDA and Transformers are unchanged. The isolated
 Python overlay also pins math-verify 0.8.0, latex2sympy2_extended 1.10.2 and

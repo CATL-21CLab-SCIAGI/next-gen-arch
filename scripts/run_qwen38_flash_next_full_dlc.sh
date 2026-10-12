@@ -8,7 +8,7 @@ set -euo pipefail
 
 NGA_REPO_ROOT="${NGA_REPO_ROOT:?set the immutable repository root}"
 NGA_EXPECTED_COMMIT="${NGA_EXPECTED_COMMIT:?set the immutable repository commit}"
-NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100BT-qwen38-de4b8e4d43b9}"
+NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100b-qwen38-de4b8e4d43b9}"
 NGA_TOKENIZER="${NGA_TOKENIZER:-/mnt/oss/models/qwen38-flash-next-de4b8e4d43b9}"
 NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:?set a fresh /mnt/oss/evergreen/next-gen-arch run directory}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"

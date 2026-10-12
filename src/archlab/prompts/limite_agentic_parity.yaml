@@ -1,0 +1,13 @@
+cases:
+  math:
+    messages:
+      - role: system
+        content: You are a helpful assistant. Solve the mathematical problem carefully.
+      - role: user
+        content: Let x, y, z be positive integers satisfying x+y+z=30. What is the maximum value of xyz? Prove the answer.
+  code:
+    messages:
+      - role: system
+        content: You are a helpful assistant. Solve the programming problem carefully.
+      - role: user
+        content: Implement a Python function that counts distinct prime factors of a positive integer. Explain why trial division only needs to continue while d*d <= n. Return runnable code and three tests.

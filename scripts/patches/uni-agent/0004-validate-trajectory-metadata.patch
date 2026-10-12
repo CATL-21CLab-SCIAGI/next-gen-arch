@@ -1,0 +1,46 @@
+diff --git a/uni_agent/framework/framework.py b/uni_agent/framework/framework.py
+--- a/uni_agent/framework/framework.py
++++ b/uni_agent/framework/framework.py
+@@ -639,6 +639,7 @@
+         mask_unfinished_episode: bool = False,
+         repetition_detect: dict[str, object] | None = None,
+         ship_turn_index: bool = False,
++        trajectory_validator=None,
+     ):
+         self.gateway_manager = gateway_manager
+         self.runner_registry = runner_registry
+@@ -659,6 +660,7 @@
+         self._mask_unfinished_episode = mask_unfinished_episode
+         self._repetition_detect = _normalize_repetition_detect_config(repetition_detect)
+         self._ship_turn_index = ship_turn_index
++        self._trajectory_validator = trajectory_validator
+ 
+     @classmethod
+     def from_config(
+@@ -711,6 +713,8 @@
+             mask_unfinished_episode=mask_unfinished_episode,
+             repetition_detect=repetition_detect,
+             ship_turn_index=ship_turn_index,
++            trajectory_validator=(load_class_from_fqn(af_cfg["trajectory_validator"])(config)
++                                  if af_cfg.get("trajectory_validator") else None),
+         )
+ 
+     def _build_session_sampling_params(
+@@ -1598,7 +1602,16 @@
+                 global_steps=global_steps,
+                 uid=uid,
+             )
+-            keys.append(f"{uid}_{session_index}_{index}")
++            key = f"{uid}_{session_index}_{index}"
++            if self._trajectory_validator is not None:
++                metadata = self._trajectory_validator(
++                    trajectory=trajectory, sample_fields=sample_fields,
++                    group_id=uid, response_id=key, session_id=session_index,
++                )
++                if set(metadata) & set(tag):
++                    raise ValueError("trajectory metadata must not overwrite framework tags")
++                tag.update(metadata)
++            keys.append(key)
+             fields.append(field)
+             tags.append(tag)
+ 

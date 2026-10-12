@@ -35,7 +35,7 @@ def test_tree_audit_reads_committed_content_not_ignored_or_modified_working_file
     assert not audit_tree(tmp_path)["passed"]
 
 
-def _submodule_tree(tmp_path, configuration, path="verl"):
+def _submodule_tree(tmp_path, configuration, path="third_party/verl"):
     def git(*args):
         return subprocess.run(["git", "-C", str(tmp_path), *args], check=True,
                               capture_output=True).stdout.decode().strip()
@@ -57,31 +57,32 @@ def _submodule_tree(tmp_path, configuration, path="verl"):
 
 
 def test_registered_submodule_records_pin_without_reading_upstream_source(tmp_path):
-    config = '[submodule "verl"]\n\tpath = verl\n\turl = https://github.com/XiaomiMiMo/verl.git\n'
+    config = '[submodule "verl"]\n\tpath = third_party/verl\n\turl = https://github.com/XiaomiMiMo/verl.git\n'
     pin = _submodule_tree(tmp_path, config)
-    (tmp_path / "verl").mkdir()
-    (tmp_path / "verl" / "weights.pt").write_bytes(b"not a published project blob")
+    (tmp_path / "third_party/verl").mkdir(parents=True)
+    (tmp_path / "third_party/verl/weights.pt").write_bytes(b"not a published project blob")
     (tmp_path / ".gitmodules").write_text("modified working copy\n")
     result = audit_tree(tmp_path)
     assert result["passed"]
     assert result["files"] == 2
     assert result["submodules"] == [{
-        "name": "verl", "path": "verl", "url": "https://github.com/XiaomiMiMo/verl.git",
+        "name": "verl", "path": "third_party/verl", "url": "https://github.com/XiaomiMiMo/verl.git",
         "revision": pin,
     }]
 
 
 @pytest.mark.parametrize(("configuration", "path"), [
-    (None, "verl"),
-    ('[submodule "verl"]\npath = verl\nurl = https://example.invalid/verl.git\n', "verl"),
-    ('[submodule "verl"]\npath = verl\nurl = ../verl.git\n', "verl"),
+    (None, "third_party/verl"),
+    ('[submodule "verl"]\npath = third_party/verl\nurl = https://example.invalid/verl.git\n', "third_party/verl"),
+    ('[submodule "verl"]\npath = third_party/verl\nurl = ../verl.git\n', "third_party/verl"),
     ('[submodule "other"]\npath = other\nurl = https://github.com/XiaomiMiMo/verl.git\n', "other"),
-    ('[submodule "verl"]\npath = verl\nurl = https://github.com/XiaomiMiMo/verl.git\n'
-     'update = !unsafe\n', "verl"),
-    ('[submodule "verl"]\npath = verl\nurl = https://github.com/XiaomiMiMo/verl.git\n'
-     'url = https://example.invalid/other.git\n', "verl"),
-    ('[submodule "verl"]\npath = verl\nurl = https://github.com/XiaomiMiMo/verl.git\n', None),
-    ("invalid configuration\n", "verl"),
+    ('[submodule "verl"]\npath = third_party/verl\nurl = https://github.com/XiaomiMiMo/verl.git\n'
+     'update = !unsafe\n', "third_party/verl"),
+    ('[submodule "verl"]\npath = third_party/verl\nurl = https://github.com/XiaomiMiMo/verl.git\n'
+     'url = https://example.invalid/other.git\n', "third_party/verl"),
+    ('[submodule "verl"]\npath = third_party/verl\nurl = https://github.com/XiaomiMiMo/verl.git\n', None),
+    ('[submodule "verl"]\npath = verl\nurl = https://github.com/XiaomiMiMo/verl.git\n', "verl"),
+    ("invalid configuration\n", "third_party/verl"),
 ])
 def test_tree_audit_rejects_unregistered_or_misconfigured_submodules(tmp_path, configuration, path):
     _submodule_tree(tmp_path, configuration, path)

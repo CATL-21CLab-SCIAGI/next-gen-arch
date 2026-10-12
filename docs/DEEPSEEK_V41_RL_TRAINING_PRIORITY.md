@@ -1,6 +1,6 @@
 # DeepSeek V4.1 training-first RL restart
 
-> Historical experiment record. For the supported command and current qualification scope, use [Miles baseline](MILES_BASELINE.md). Statements below refer to their dated attempts, not live health.
+> Historical record: this execution stack was retired on 2026-10-12. Commands and status below describe the recorded experiment, not a supported launcher or current job. Use the [current training workflow](TRAINING.md).
 
 **Retired by user request (2026-09-24):** the replacement is Miles using the
 MiMo report's RL recipe, starting from the matched step-4537 SFT parents.
@@ -9,7 +9,7 @@ The fallback and admission notes below describe the historical AutoModel run.
 
 The scientific comparison is matched normal versus simplicial (three-body) attention.
 
-**Active fallback candidate:** `recipes/deepseek_v41/nemotron_rloo_retained.yaml`.
+**Historical fallback candidate:** `recipes/deepseek_v41/nemotron_rloo_retained.yaml`.
 It retains gathered weights during sampling, disables the rejected KV cache, and avoids
 unused full-vocabulary projections. No CPU offloading or concurrent general evaluation.
 Actual replay admission and real optimizer updates remain required.

@@ -1,0 +1,39 @@
+diff --git a/verl/models/mcore/model_forward.py b/verl/models/mcore/model_forward.py
+index c03b45c6..8309994c 100644
+--- a/verl/models/mcore/model_forward.py
++++ b/verl/models/mcore/model_forward.py
+@@ -439,12 +439,11 @@ def gptmodel_forward_model_engine(
+         else:
+             attention_mask = attention_mask_bshd
+ 
+-        output_orig = model(
+-            input_ids=input_ids_bshd,
+-            attention_mask=attention_mask,
+-            position_ids=None if vision_model else position_ids_bshd,
+-            **model_kwargs,
++        process_in_model = (
++            post_process and logits_processor is not None
++            and getattr(unwrap_model(model), "supports_chunked_logits", False)
+         )
++        args = {}
+         if post_process and logits_processor is not None:
+             args = {
+                 k: preprocess_bshd_engine(
+@@ -456,7 +455,16 @@ def gptmodel_forward_model_engine(
+                 )[0]
+                 for k, v in logits_processor_args.items()
+             }
+-            output_dict = logits_processor(output_orig, **args)
++        if process_in_model:
++            model_kwargs.update(logits_processor=logits_processor, logits_processor_args=args)
++        output_orig = model(
++            input_ids=input_ids_bshd,
++            attention_mask=attention_mask,
++            position_ids=None if vision_model else position_ids_bshd,
++            **model_kwargs,
++        )
++        if post_process and logits_processor is not None:
++            output_dict = output_orig if process_in_model else logits_processor(output_orig, **args)
+             output = {
+                 k: postprocess_bshd_engine(v, attention_mask_bshd, post_process=post_process)
+                 for k, v in output_dict.items()

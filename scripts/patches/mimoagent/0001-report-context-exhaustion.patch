@@ -1,0 +1,35 @@
+diff --git a/src/mimoagent/agents/base.py b/src/mimoagent/agents/base.py
+index 5b051af..389431d 100644
+--- a/src/mimoagent/agents/base.py
++++ b/src/mimoagent/agents/base.py
+@@ -261,6 +261,10 @@ class BaseAgent(ABC):
+             raise LimitsExceeded("Empty assistant response")
+         self._steps_taken += 1
+         self.add_message("assistant", **response)
++        if getattr(self.model, "last_finish_reason", None) == "length":
++            # Keep generated tokens/history, but never report context exhaustion
++            # as a normal Idle completion or dispatch an incomplete tool call.
++            raise LimitsExceeded("Model context length exhausted")
+         return response
+ 
+     def render_template(self, template: str, **kwargs) -> str:
+diff --git a/src/mimoagent/models/openai_chat.py b/src/mimoagent/models/openai_chat.py
+index cf5d8e2..b335162 100644
+--- a/src/mimoagent/models/openai_chat.py
++++ b/src/mimoagent/models/openai_chat.py
+@@ -86,6 +86,7 @@ class OpenAIChatModel:
+         self.shared_stats = shared_stats
+         self.n_calls = 0
+         self.token_stats = TokenStats()
++        self.last_finish_reason = None
+ 
+         model_kwargs = self.config.model_kwargs
+         api_key = model_kwargs.get("api_key") or self.config.api_key or os.getenv("OPENAI_API_KEY") or "EMPTY"
+@@ -115,6 +116,7 @@ class OpenAIChatModel:
+             payload = _build_assistant_payload(response.choices[0].message)
+             token_count = _extract_token_stats(getattr(response, "usage", None))
+             finish_reason = getattr(response.choices[0], "finish_reason", None)
++        self.last_finish_reason = finish_reason
+         if not (payload.get("content") or payload.get("reasoning_content") or payload.get("tool_calls")):
+             if _is_length_exhausted(finish_reason):
+                 return token_count, payload

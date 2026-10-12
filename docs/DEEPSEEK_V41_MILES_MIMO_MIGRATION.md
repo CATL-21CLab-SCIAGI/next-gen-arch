@@ -1,6 +1,6 @@
 # Miles / MiMo RL migration — 2026-09-24
 
-> Historical experiment record. For the supported command and current qualification scope, use [Miles baseline](MILES_BASELINE.md). Statements below refer to their dated attempts, not live health.
+> Historical record: this execution stack was retired on 2026-10-12. Commands and status below describe the recorded experiment, not a supported launcher or current job. Use the [current training workflow](TRAINING.md).
 
 The user retired the slow AutoModel RLOO backend and selected the
 [MiMo-V2.6 technical report](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL/resolve/main/MiMo_V2_6_technical_report.pdf)
@@ -8,8 +8,8 @@ as the replacement algorithm contract. Restart **both normal and simplicial arms
 from their matched fine-tuned step-4537 parents**, with fresh RL state.
 The old RL checkpoints are recovery artifacts, not the new run's parents.
 
-**Historical migration record:** the two 16-GPU drivers were retired. Current work uses one 32-GPU arm at a time; see resident qualification (historical record in the private archive). Production training is not yet verified. The portable migration
-contract is `recipes/deepseek_v41/proposals.yaml#miles_mimo`. It is not an executable
+**Historical migration record:** the two 16-GPU drivers were retired. The subsequent attempt used one 32-GPU arm at a time; see resident qualification (historical record in the private archive). Production training is not yet verified. The retired portable migration
+contract was `recipes/deepseek_v41/proposals.yaml#miles_mimo`. It is not an executable
 recipe or a claim of Miles support for the custom models.
 
 ## Selected recipe
@@ -46,7 +46,7 @@ Do not silently replace Muown with Adam, generic Muon, or the old Adafactor.
   documentation but lacks the referenced V4.1 model and launch implementation.
 - Existing four-node DLC job: `dlc1hig7iitpry5n`, x86_64, eight B300 GPUs/node.
   Refreshed through `GetJob`; all four pods were Running.
-- Current image: `${NGA_CONTAINER_DIGEST}`.
+- Recorded image: `${NGA_CONTAINER_DIGEST}`.
   Head-node `/opt/venv` reports PyTorch `2.12.0a0+0291f960b6.nv26.4.48445190`,
   Megatron Core `0.18.2`, Transformer Engine `2.16.0+b9d690e0`, Ray `2.55.1`.
   SGLang and mbridge are absent. Megatron lacks `transformer.hyper_connection`
@@ -98,7 +98,7 @@ Preserve old weights, optimizer/RNG state, logs and metrics. Do not overwrite
 The DLC allocation remains available; a stopped old trainer is not evidence that
 the Miles replacement has launched.
 
-## Current implementation and checks
+## Recorded implementation and checks
 
 Project extensions implement the matched adapters, trainable BF16 Engram tables, checksum-verified parent import, bounded FP32-master Muown updates, and transactional rollout weight refresh. TP8/PP2/EP8 uses BF16 gradient accumulation; FP32 optimizer masters and momentum are streamed through persistent storage to fit the allocation.
 

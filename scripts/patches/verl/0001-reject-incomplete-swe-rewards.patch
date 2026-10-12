@@ -1,0 +1,44 @@
+diff --git a/recipes/code/mimoagent_runner.py b/recipes/code/mimoagent_runner.py
+index 89ad4f67..2709aeeb 100644
+--- a/recipes/code/mimoagent_runner.py
++++ b/recipes/code/mimoagent_runner.py
+@@ -42,6 +42,31 @@ _MODEL_BACKED_AGENT_TYPES = {"default", "bashonly-agent", "mimocode-agent", "cc-
+ _UNGRADABLE_AGENT_STATUSES = {"InfraError"}
+ 
+ 
++class RewardInfrastructureError(RuntimeError):
++    """The SWE verifier did not produce an admissible completed verdict."""
++
++
++def _require_code_verdict(instance: dict, reward: float, extra: dict | None) -> None:
++    if instance.get("dataset_type") != "opensource-code":
++        return
++    extra = extra or {}
++    faults = [key for key in ("error_category", "transport_error", "model_patch_error") if extra.get(key)]
++    returncode = extra.get("verifier_returncode")
++    # Timeout/signal exits and command-not-found are infrastructure failures,
++    # not evidence that a candidate patch failed the executable test suite.
++    completed = type(returncode) is int and 0 <= returncode < 124
++    if faults or not completed:
++        raise RewardInfrastructureError(
++            f"{instance.get('instance_id')}: invalid verifier completion "
++            f"(returncode={returncode!r}, faults={faults})"
++        )
++    expected = 1.0 if returncode == 0 else 0.0
++    if reward != expected or extra.get("resolved") is not (returncode == 0):
++        raise RewardInfrastructureError(
++            f"{instance.get('instance_id')}: verifier result and reward disagree"
++        )
++
++
+ @dataclass
+ class _TokenStats:
+     input_tokens: int = 0
+@@ -281,6 +306,7 @@ def _run_sync(
+             raise RuntimeError(f"{agent_type} rollout failed with status={status}: {str(result)[-500:]}")
+         _notify_agent_finished(session, agent_status=status)
+         reward, test_output, reward_extra_info = environment.calculate_reward()
++        _require_code_verdict(instance, reward, reward_extra_info)
+         reward_info = {
+             **(reward_extra_info or {}),
+             "reward": float(reward),

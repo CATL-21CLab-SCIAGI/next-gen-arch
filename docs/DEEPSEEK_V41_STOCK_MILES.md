@@ -1,6 +1,6 @@
 # Stock Miles baseline
 
-> Historical experiment record. For the supported command and current qualification scope, use [Miles baseline](MILES_BASELINE.md). Statements below refer to their dated attempts, not live health.
+> Historical record: this execution stack was retired on 2026-10-12. Commands and status below describe the recorded experiment, not a supported launcher or current job. Use the [current training workflow](TRAINING.md).
 
 The baseline passed operational qualification on September 25 in attempt 6:
 three finite, nonzero updates, varied rewards, stable train/rollout policy gap,

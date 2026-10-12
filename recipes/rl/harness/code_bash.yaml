@@ -1,0 +1,18 @@
+# Native Limite Base tool grammar uses the upstream Hermes JSON parser.
+# Agent prompts/tool declarations come from MiMo's BashOnlyAgentConfig defaults.
+use_dataset_env: true
+agent:
+  type: bashonly-agent
+  step_limit: 500
+environment:
+  environment_class: archlab.training.sandbox.E2BEnvironment
+  timeout: 300
+  sandbox_timeout: 7200
+  anti_hack_cleanup: true
+  git_leak_prevention: none
+model:
+  model_name: policy
+  protocol: chat
+  model_kwargs:
+    temperature: 1.0
+    # Omit max_tokens: the gateway subtracts actual tokens from native context.

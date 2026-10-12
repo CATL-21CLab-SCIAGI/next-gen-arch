@@ -47,13 +47,13 @@ Use the [full-finetuning recipe](../../recipes/limite/full_finetune_math.yaml)
 for the actual matched continuation. The
 [original adapter recipe](../../recipes/limite/native_adapters_math.yaml)
 documents the original 10B adapter-only proposal, which was superseded at 2B.
-The [later RL protocol](../../recipes/limite/full_math_rl_async.yaml)
+The [later RL protocol](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/full_math_rl_async.yaml)
 overrides the earlier embedded 8K RL settings with a 16K completion budget and
 asynchronous rollouts of at most one policy version of lag. The newer
-[Violetto native-context recipe](../../recipes/limite/violetto_math_rl_native_context.yaml)
+[Violetto native-context recipe](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/violetto_math_rl_native_context.yaml)
 is a separate successor; it did not produce the historical comparison below.
 
-The [fresh matched RL restart](../../recipes/limite/full_math_rl_native_context.yaml)
+The [fresh matched RL restart](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/full_math_rl_native_context.yaml)
 starts each variant from its own matched 10B SFT endpoint with a fresh optimizer,
 eight GPUs per variant, and 131,072 total tokens minus each actual prompt.
 It removes the historical extra length and unfinished-response penalties. This

@@ -33,11 +33,16 @@ def implementation_manifest() -> dict:
     return dict(files=files, aggregate_sha256=digest)
 
 
+def distribution_error(actual, expected):
+    delta = actual.float().log_softmax(-1) - expected.float().log_softmax(-1)
+    probabilities = actual.float().softmax(-1)
+    return dict(weighted_error=float((delta.abs() * probabilities).sum(-1).mean()),
+                kl=float((delta * probabilities).sum(-1).mean()))
+
+
 @torch.no_grad()
 def qualify_decode(model, prompt_ids, token, *, capacity: int, steps: int = 32) -> dict:
     """Compare complete native eager and graph probability distributions."""
-    from archlab.automodel.limite_decode_qualification import distribution_error
-
     output = model(input_ids=prompt_ids, use_cache=True, logits_to_keep=1)
     source = output.past_key_values
     del output

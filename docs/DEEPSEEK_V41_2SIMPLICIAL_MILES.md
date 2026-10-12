@@ -1,5 +1,7 @@
 # 2-simplicial Miles RL: useful learning per compute
 
+> Historical record: this execution stack was retired on 2026-10-12. Commands and status below describe the recorded experiment, not a supported launcher or current job. Use the [current training workflow](TRAINING.md).
+
 This experiment corrects the September 24 normal baseline's short-response,
 `debug_minimal` sampling contract. It uses the same canonical launcher and pinned
 Miles driver, with `recipes/deepseek_v41/2simplicial_stock_fp8.yaml`.
