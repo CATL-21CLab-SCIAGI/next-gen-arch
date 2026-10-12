@@ -66,7 +66,6 @@ def smoke_config(source, output):
         "actor_rollout_ref.actor.ppo_mini_batch_size": 2,
         "actor_rollout_ref.rollout.n": 4,
         "actor_rollout_ref.rollout.agent.num_workers": 1,
-        "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mimoagent.max_concurrent_sessions": 1,
         "actor_rollout_ref.rollout.custom.agent_framework.log_dir": str(output / "sessions"),
         "trainer.total_training_steps": 1,
         "trainer.total_epochs": 1,
@@ -471,10 +470,13 @@ def test_smoke_owns_ray_cluster_without_changing_source(tmp_path):
     source = OmegaConf.create({"trainer": {"experiment_name": "production"},
                               "ray_kwargs": {"ray_init": {"address": "ray://shared.invalid:10001",
                                                            "runtime_env": {"env_vars": {}}}}})
+    capacity = "actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mimoagent.max_concurrent_sessions"
+    OmegaConf.update(source, capacity, 8)
     smoke = smoke_config(source, tmp_path)
     assert smoke.ray_kwargs.ray_init.address == "local"
     assert source.ray_kwargs.ray_init.address == "ray://shared.invalid:10001"
     assert source.trainer.experiment_name == "production"
+    assert OmegaConf.select(smoke, capacity) == OmegaConf.select(source, capacity) == 8
 
 
 def test_probe_timeout_terminates_only_its_own_child(tmp_path):

@@ -85,7 +85,7 @@ settings:
   actor_rollout_ref.rollout.custom.agent_framework.gateway_count: 1
   actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode: false
   actor_rollout_ref.rollout.custom.agent_framework.trajectory_validator: archlab.training.rollout.RolloutContract
-  actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mimoagent.max_concurrent_sessions: 1
+  actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mimoagent.max_concurrent_sessions: 8
   algorithm.norm_adv_by_std_in_grpo: true
   algorithm.rollout_correction.bypass_mode: false
   algorithm.rollout_correction.rollout_is: token
