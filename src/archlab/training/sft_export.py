@@ -47,16 +47,51 @@ def _inventory(path):
                 for name in source.keys()}
 
 
-def native_state_digest(weights, *, parent_weights):
-    """Match Limite's policy state digest, including its validated tied alias."""
+def _stored_aliases(source):
+    keys = set(source.keys())
+    return {name: value for name, value in (source.metadata() or {}).items()
+            if name.startswith("policy.") or value.startswith("policy.") or value in keys}
+
+
+def _native_aliases(parent_weights, parent_chain):
+    root = Path(parent_weights).resolve().parent
+    if root in parent_chain:
+        raise ValueError("Cyclic package-SFT parent lineage")
+    config = _json(root / "config.json")
+    aliases = {"policy." + name: "policy.lm_head.weight"
+               for name in ("model.embed_tokens.weight", "model.base.embed_tokens.weight")
+               if name in config.get("parameter_dtypes", {})}
+    if (config.get("model_type") != "archlab_limite" or config.get("trainable_mode") != "full"
+            or config.get("tie_word_embeddings") is not True or len(aliases) != 1):
+        raise ValueError("Native full tied-weight configuration is required")
     with safe_open(parent_weights, framework="pt", device="cpu") as parent:
-        keys = set(parent.keys())
-        aliases = {name: value for name, value in (parent.metadata() or {}).items()
-                   if value in keys}
-    if aliases not in ({"policy.model.embed_tokens.weight": "policy.lm_head.weight"},
-                       {"policy.model.base.embed_tokens.weight": "policy.lm_head.weight"}):
+        stored, keys = _stored_aliases(parent), set(parent.keys())
+        alias, target = next(iter(aliases.items()))
+        if target not in keys or alias in keys:
+            raise ValueError("Native tied-weight storage inventory differs")
+        head = parent.get_slice(target)
+        dtype = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}.get(head.get_dtype())
+        if (head.get_shape() != [config.get("vocab_size"), config.get("hidden_size")]
+                or dtype != config["parameter_dtypes"][alias.removeprefix("policy.")]):
+            raise ValueError("Native tied-weight shape or dtype differs")
+    if stored and stored != aliases:
         raise ValueError("Unknown native tied-weight alias inventory")
+    if not stored:
+        # Package HF writers omit the alias header. Existing trained lineage
+        # must prove the same config/inventory and reconstruct its saved digest
+        # through the original explicit alias before that omission is accepted.
+        verify_package_sft_export(root, _parent_chain=(*parent_chain, root))
+    return aliases
+
+
+def native_state_digest(weights, *, parent_weights, _parent_chain=()):
+    """Match Limite's policy digest using proven native tied-weight storage."""
+    aliases = _native_aliases(parent_weights, _parent_chain)
     with safe_open(weights, framework="pt", device="cpu") as source:
+        stored, keys = _stored_aliases(source), set(source.keys())
+        if ((stored and stored != aliases) or set(aliases) & keys
+                or not set(aliases.values()) <= keys):
+            raise ValueError("Unknown native tied-weight alias inventory")
         lookup = {name.removeprefix("policy."): name for name in source.keys()}
         lookup.update({name.removeprefix("policy."): value for name, value in aliases.items()})
         digest = hashlib.sha256()
@@ -172,7 +207,7 @@ def _lineage(parent, checkpoint, launch_path, hf_root):
     return parent_receipt, lineage, source_checkpoint
 
 
-def _validate_weights(root, parent):
+def _validate_weights(root, parent, *, _parent_chain=()):
     if list(root.glob("model*.safetensors")) != [root / "model.safetensors"] or (root / "model.safetensors.index.json").exists():
         raise ValueError("Native SFT export requires the parent's single safetensors layout")
     if _inventory(root / "model.safetensors") != _inventory(parent / "model.safetensors"):
@@ -186,7 +221,8 @@ def _validate_weights(root, parent):
             or candidate.get("bos_token_id") not in {None, 151643}
             or candidate.get("pad_token_id") not in {None, 151643}):
         raise ValueError("Unknown package native token metadata normalization")
-    return native_state_digest(root / "model.safetensors", parent_weights=parent / "model.safetensors")
+    return native_state_digest(root / "model.safetensors", parent_weights=parent / "model.safetensors",
+                               _parent_chain=_parent_chain)
 
 
 def _conversion(parent_receipt):
@@ -198,7 +234,7 @@ def _conversion(parent_receipt):
     return conversion
 
 
-def verify_package_sft_export(hf_root):
+def verify_package_sft_export(hf_root, *, _parent_chain=()):
     """Return the verified trained receipt; retain separate SFT resume lineage."""
     root = Path(hf_root).resolve()
     receipt = verify_export(root)
@@ -212,7 +248,8 @@ def verify_package_sft_export(hf_root):
     )
     if training != expected or receipt["source_checkpoint"] != checkpoint or receipt.get("conversion", {}) != _conversion(parent_receipt):
         raise ValueError("SFT export lineage changed after finalization")
-    if receipt["state_sha256"] != _validate_weights(root, parent) or receipt["state_sha256"] == parent_receipt["state_sha256"]:
+    if (receipt["state_sha256"] != _validate_weights(root, parent, _parent_chain=_parent_chain)
+            or receipt["state_sha256"] == parent_receipt["state_sha256"]):
         raise ValueError("SFT export does not establish changed trained weights")
     for name in _ASSETS + ("config.json",):
         if sha256_file(root / name) != sha256_file(parent / name):

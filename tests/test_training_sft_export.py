@@ -9,6 +9,7 @@ from types import ModuleType
 import pytest
 import torch
 import yaml
+from safetensors import safe_open
 from safetensors.torch import save_file
 
 from archlab.artifacts import atomic_write_json, sha256_file
@@ -228,3 +229,103 @@ def test_streaming_digest_matches_the_native_policy_digest(run):
         expected.update(tensor.reshape(-1).view(torch.uint8).numpy().tobytes())
     assert native_state_digest(run["hf_root"] / "model.safetensors",
                                parent_weights=run["parent_export"] / "model.safetensors") == expected.hexdigest()
+
+
+@pytest.fixture
+def continuation(run, tmp_path):
+    """A second actual package save whose trained parent omitted alias metadata."""
+    from safetensors.torch import load_file
+
+    finalize_package_hf_export(**run)
+    parent = run["hf_root"]
+    launch_root = tmp_path / "continuation"
+    shutil.copytree(run["training_receipt"].parent, launch_root)
+    checkpoint = launch_root / "checkpoints/global_step_2"
+    hf = checkpoint / "model/huggingface"
+    (hf / "EXPORT.json").unlink()
+    save_file({name: value + .25 for name, value in load_file(parent / "model.safetensors").items()},
+              hf / "model.safetensors")
+    config_path = launch_root / "resolved.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["model"]["path"] = str(parent)
+    config["trainer"]["default_local_dir"] = str(launch_root / "checkpoints")
+    config_path.write_text(yaml.safe_dump(config))
+    experiment_path = launch_root / "experiment.json"
+    experiment = json.loads(experiment_path.read_text())
+    experiment["parent_checkpoint"] = str(parent)
+    write_json(experiment_path, experiment)
+    launch_path = launch_root / "bootstrap-launch.json"
+    launch = json.loads(launch_path.read_text())
+    launch["resolved_config_sha256"] = sha256_file(config_path)
+    launch["assets"]["export_receipt_sha256"] = sha256_file(parent / "EXPORT.json")
+    write_json(launch_path, launch)
+    return {"hf_root": hf, "parent_export": parent, "package_checkpoint": checkpoint,
+            "training_receipt": launch_path}
+
+
+def test_package_sft_parent_recovers_proven_alias_without_rewriting_parent(continuation):
+    parent, hf = continuation["parent_export"], continuation["hf_root"]
+    before = {path.name: sha256_file(path) for path in parent.iterdir() if path.is_file()}
+    with safe_open(parent / "model.safetensors", framework="pt") as source:
+        assert source.metadata() is None
+    existing = json.loads((parent / "EXPORT.json").read_text())
+    assert native_state_digest(parent / "model.safetensors", parent_weights=parent / "model.safetensors") == existing["state_sha256"]
+    receipt = finalize_package_hf_export(**continuation)
+    assert receipt == verify_package_sft_export(hf)
+    assert receipt["training"]["parent_export"]["state_sha256"] == existing["state_sha256"]
+    assert before == {path.name: sha256_file(path) for path in parent.iterdir() if path.is_file()}
+    with safe_open(hf / "model.safetensors", framework="pt") as source:
+        assert source.metadata() is None
+
+
+@pytest.mark.parametrize("defect,match", [("state", "changed trained weights"),
+                                        ("lineage", "lineage changed"),
+                                        ("not_package_sft", "package-SFT trained-state")])
+def test_missing_alias_requires_existing_parent_state_and_full_lineage(continuation, defect, match):
+    parent = continuation["parent_export"]
+    receipt = json.loads((parent / "EXPORT.json").read_text())
+    if defect == "state":
+        receipt["state_sha256"] = "0" * 64
+    elif defect == "lineage":
+        receipt["training"]["parent_export"]["receipt_sha256"] = "0" * 64
+    else:
+        receipt.pop("training")
+    write_json(parent / "EXPORT.json", receipt)
+    launch = json.loads(continuation["training_receipt"].read_text())
+    launch["assets"]["export_receipt_sha256"] = sha256_file(parent / "EXPORT.json")
+    write_json(continuation["training_receipt"], launch)
+    with pytest.raises(ValueError, match=match):
+        finalize_package_hf_export(**continuation)
+    assert not (continuation["hf_root"] / "EXPORT.json").exists()
+
+
+@pytest.mark.parametrize("defect,match", [("untied", "full tied-weight"),
+                                        ("missing_head", "storage inventory"),
+                                        ("stored_embedding", "storage inventory"),
+                                        ("unknown_alias", "alias inventory"),
+                                        ("missing_original_alias", "package-SFT trained-state")])
+def test_native_alias_proof_rejects_untied_unknown_or_incomplete_parent(run, defect, match):
+    from safetensors.torch import load_file
+
+    parent = run["parent_export"]
+    path = parent / "model.safetensors"
+    weights = load_file(path)
+    metadata = {"policy.model.embed_tokens.weight": "policy.lm_head.weight"}
+    if defect == "untied":
+        config = json.loads((parent / "config.json").read_text())
+        config["tie_word_embeddings"] = False
+        write_json(parent / "config.json", config)
+    elif defect == "missing_head":
+        weights.pop("policy.lm_head.weight")
+    elif defect == "stored_embedding":
+        weights["policy.model.embed_tokens.weight"] = weights["policy.lm_head.weight"].clone()
+    elif defect == "unknown_alias":
+        metadata = {"policy.model.unknown.weight": "policy.lm_head.weight"}
+    else:
+        metadata = None
+    save_file(weights, path, metadata=metadata)
+    receipt = json.loads((parent / "EXPORT.json").read_text())
+    receipt["files"]["model.safetensors"] = sha256_file(path)
+    write_json(parent / "EXPORT.json", receipt)
+    with pytest.raises(ValueError, match=match):
+        native_state_digest(path, parent_weights=path)
