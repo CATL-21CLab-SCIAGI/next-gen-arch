@@ -16,6 +16,7 @@ done
 - `0003-record-rollout-identity.patch`: add the prompt UID to session manifests so each consumed `{uid}_{session}_{trajectory}` key maps to its exact token/mask/verifier artifacts, without counting unrelated asynchronous prefetch.
 
 - `0004-validate-trajectory-metadata.patch`: optional typed boundary validator checks each original trajectory before TransferQueue transport and attaches task/group/session, policy-version, termination and EOS metadata without replacing upstream token transport.
+- `0005-preserve-length-finish-reason.patch`: retain backend `length` / `max_tokens` termination when earlier complete tool calls parse. Keep their message and tokens for history, while the gateway's OpenAI response lets MiMo report `LimitsExceeded` before dispatching any calls from that truncated turn. EOS-completed tool turns still report `tool_calls`.
 
 Run `tests/test_native_agentic_contract.py` in the package runtime with
 `ARCHLAB_NATIVE_TOKENIZER` pointing to the local Limite Base snapshot. It uses
@@ -23,3 +24,7 @@ upstream BashOnlyAgent tool declarations, Hermes parsing and GatewaySession;
 checks exact two-turn rendering, full native-context allowance, and masks tool
 observations out of policy loss. Its backend replays recorded tokens; this test
 neither executes task code nor establishes GPU inference or sandbox readiness.
+The same test file also checks the native tokenizer, Hermes parser, gateway,
+OpenAI serialization and MiMo length guard together: capped turns retain their
+parsed calls and tokens but execute no actions; EOS-completed turns execute one
+mocked action. Run it with `pytest -q tests/test_native_agentic_contract.py`.

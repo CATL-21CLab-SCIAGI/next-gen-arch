@@ -26,9 +26,10 @@ at native width 1280 and KV width 256, instead of another full attention stack.
 
 The first recovery stage is a small, assistant-only CE bootstrap on complete
 successful public bash trajectories, rendered by the actual MiMo agent codec
-and unchanged Limite tokenizer/template. The initial budget is five passes over
+and unchanged Limite tokenizer/template. The initial run used five passes over
 135 training trajectories, with 14 held-out trajectories, no clipping, and
-validation/checkpoints each epoch. The two-update smoke run is separate from
+validation/checkpoints each epoch. The maintained recipe now uses the tested
+ten-pass revision below. The two-update smoke run is separate from
 the completed 80-update bootstrap. See [data contract](agentic-sft-data.md)
 for filtering, provenance and evaluation exclusions.
 
@@ -80,9 +81,13 @@ data, learning rate 0.0001, ten epochs / 160 updates, validation every 16 update
 and five full-state checkpoints every 32 updates. It completed 9,384,127 input
 tokens. Validation CE reached 1.1437 at update 32 and ended at 1.4101, while
 training CE continued decreasing. Update 32 still failed all six bounded
-greedy/sampled first-turn tool probes; final behavior remains a separate check.
-It must demonstrate generated tool behavior before a costly RL pilot. The
-initial run and failed diagnostics remain preserved; neither qualifies RL.
+greedy/sampled first-turn tool probes. At update 160, all three greedy probes
+and two of three sampled probes produced a valid bash call and native EOS in
+57–67 tokens. The remaining sampled response exhausted its 512-token probe
+budget, despite containing five parseable calls, and was rejected as unfinished.
+These six first-turn checks establish protocol recovery, not executable reward
+or sustained RL learning. All five full-state checkpoints are preserved; actual
+serving, verifier and nonzero-update qualification remain required.
 
 An additional native-head audit found a genuinely broad vocabulary distribution
 at protocol boundaries: over 85,000 tokens within two logits of the maximum in

@@ -40,7 +40,10 @@ def input_lineage(source, experiment_path=None):
         assert Path(name).name == name, "export receipt contains an external path"
         files[f"export/{name}"] = export / name
     parent = receipt["source_checkpoint"]
-    files["parent_receipt"] = Path(parent["path"]) / "COMPLETE.json"
+    parent_receipt = ("ckpt_contents.json"
+                      if receipt.get("training", {}).get("format") == "archlab-limite-agentic-sft-v1"
+                      else "COMPLETE.json")
+    files["parent_receipt"] = Path(parent["path"]) / parent_receipt
     if experiment_path:
         files["experiment"] = Path(experiment_path).resolve()
         experiment = json.loads(files["experiment"].read_text())
@@ -443,22 +446,30 @@ def test_artifact_admission_rejects_false_success(tmp_path, defect, monkeypatch)
         assert result["learnability"]["status"] == "observed"
 
 
-def test_input_lineage_verifies_actual_export_bytes(tmp_path):
+@pytest.mark.parametrize("package_sft", [False, True])
+def test_input_lineage_verifies_actual_export_bytes(tmp_path, package_sft):
     from archlab.artifacts import sha256_file
 
     export, parent = tmp_path / "export", tmp_path / "parent"
     export.mkdir()
     parent.mkdir()
-    (parent / "COMPLETE.json").write_text("{}")
+    parent_receipt = parent / ("ckpt_contents.json" if package_sft else "COMPLETE.json")
+    parent_receipt.write_text("{}")
     for name in ("model.safetensors", "config.json"):
         (export / name).write_bytes(b"original")
     (export / "EXPORT.json").write_text(json.dumps({
         "files": {name: sha256_file(export / name) for name in ("model.safetensors", "config.json")},
-        "source_checkpoint": {"path": str(parent), "receipt_sha256": sha256_file(parent / "COMPLETE.json")}}))
+        "training": {"format": "archlab-limite-agentic-sft-v1"} if package_sft else {},
+        "source_checkpoint": {"path": str(parent), "receipt_sha256": sha256_file(parent_receipt)}}))
     config = tmp_path / "resolved.yaml"
     config.write_text(f"actor_rollout_ref:\n  model:\n    path: {export}\n")
     lineage = input_lineage(config)
+    assert lineage["parent_receipt"]["path"] == str(parent_receipt)
     assert lineage["export/model.safetensors"]["bytes"] == 8
+    parent_receipt.write_text('{"tampered": true}')
+    with pytest.raises(AssertionError):
+        input_lineage(config)
+    parent_receipt.write_text("{}")
     (export / "model.safetensors").write_bytes(b"modified")
     with pytest.raises(AssertionError, match="export bytes changed"):
         input_lineage(config)
