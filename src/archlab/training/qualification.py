@@ -258,9 +258,8 @@ def check_execution(experiment, config):
     rollout = config.actor_rollout_ref.rollout
     if rollout.name != "vllm":
         raise ValueError("the selected serving engine has no qualified Limite implementation")
-    if (rollout.tensor_model_parallel_size != 1 or not rollout.enforce_eager
-            or rollout.enable_prefix_caching):
-        raise ValueError("normal serving currently requires TP=1, eager execution and prefix caching disabled")
+    if rollout.tensor_model_parallel_size != 1 or rollout.enable_prefix_caching:
+        raise ValueError("normal serving currently requires TP=1 and prefix caching disabled")
     from vllm.config import ModelConfig
     from vllm.model_executor.models import ModelRegistry
     from vllm.plugins import load_general_plugins

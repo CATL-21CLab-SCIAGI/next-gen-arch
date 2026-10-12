@@ -154,19 +154,23 @@ def _check_worker_parity(source, root, prompts, context, tmp_path, description, 
         "ARCHLAB_VLLM_ATTENTION_CONFIG", '{"backend":"FLASH_ATTN","flash_attn_version":2}'))
     max_num_seqs = int(os.getenv("ARCHLAB_PARITY_MAX_NUM_SEQS", "4"))
     memory_utilization, prefill_budget = .15, 8192
+    execution = dict(enforce_eager=True)
     if deployment is not None:
         from omegaconf import OmegaConf
 
         attention_config = OmegaConf.to_container(
             deployment.actor_rollout_ref.rollout.engine_kwargs.vllm.attention_config, resolve=True)
         assert deployment.actor_rollout_ref.rollout.tensor_model_parallel_size == 1
-        assert deployment.actor_rollout_ref.rollout.enforce_eager
+        rollout = deployment.actor_rollout_ref.rollout
+        execution = dict(enforce_eager=rollout.enforce_eager,
+                         compilation_config=OmegaConf.to_container(
+                             rollout.engine_kwargs.vllm, resolve=True).get("compilation_config"))
         assert not deployment.actor_rollout_ref.rollout.enable_prefix_caching
         max_num_seqs = int(deployment.actor_rollout_ref.rollout.max_num_seqs)
         memory_utilization = float(deployment.actor_rollout_ref.rollout.gpu_memory_utilization)
         prefill_budget = int(deployment.actor_rollout_ref.rollout.max_num_batched_tokens)
     llm = LLM(model=str(root), skip_tokenizer_init=True, dtype="bfloat16", max_model_len=context,
-              enforce_eager=True, gpu_memory_utilization=memory_utilization, max_num_seqs=max_num_seqs,
+              **execution, gpu_memory_utilization=memory_utilization, max_num_seqs=max_num_seqs,
               max_num_batched_tokens=prefill_budget,
               enable_prefix_caching=False, seed=42, tensor_parallel_size=1,
               worker_extension_cls="archlab.training.serving.QualificationWorker",
@@ -355,7 +359,8 @@ def _check_worker_parity(source, root, prompts, context, tmp_path, description, 
                         window=source.model.base.config.sliding_window,
                         scaling=source.model.base.config.attention_softmax_scale,
                     ),
-                    attention_config=attention_config, temperature=temperature, generated_tokens=generated_tokens,
+                    attention_config=attention_config, execution=execution,
+                    temperature=temperature, generated_tokens=generated_tokens,
                     max_num_seqs=max_num_seqs, gpu_memory_utilization=memory_utilization,
                     verl_initialization=verl_initialization,
                     max_num_batched_tokens=prefill_budget)
@@ -586,16 +591,20 @@ def test_vllm_native_context_capacity(tmp_path):
     assert length == 131072
     register()
     attention_config = {"backend": "FLASH_ATTN", "flash_attn_version": 2}
+    execution = dict(enforce_eager=True)
     if deployment is not None:
         from omegaconf import OmegaConf
 
         rollout = deployment.actor_rollout_ref.rollout
         attention_config = OmegaConf.to_container(rollout.engine_kwargs.vllm.attention_config)
         assert rollout.max_model_len == length
-        assert rollout.enforce_eager and not rollout.enable_prefix_caching
+        assert not rollout.enable_prefix_caching
         assert rollout.tensor_model_parallel_size == 1
+        execution = dict(enforce_eager=rollout.enforce_eager,
+                         compilation_config=OmegaConf.to_container(
+                             rollout.engine_kwargs.vllm, resolve=True).get("compilation_config"))
     llm = LLM(model=str(root), skip_tokenizer_init=True, dtype="bfloat16",
-              max_model_len=length, enforce_eager=True, enable_prefix_caching=False,
+              max_model_len=length, **execution, enable_prefix_caching=False,
               gpu_memory_utilization=.15, max_num_seqs=1, max_num_batched_tokens=8192,
               tensor_parallel_size=1, attention_config=attention_config)
     started = time.monotonic()
@@ -611,6 +620,6 @@ def test_vllm_native_context_capacity(tmp_path):
                   export_config_sha256=receipt["files"]["config.json"],
                   context=length, prompt_tokens=len(ids), response_tokens=1,
                   selected_logprob=value, seconds=time.monotonic() - started,
-                  attention_config=attention_config, tensor_parallel_size=1)
+                  attention_config=attention_config, execution=execution, tensor_parallel_size=1)
     (tmp_path / "serving-native-context.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)

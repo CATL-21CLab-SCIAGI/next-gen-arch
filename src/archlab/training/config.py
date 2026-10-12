@@ -103,6 +103,13 @@ def validate_science(experiment: Experiment, config: DictConfig) -> None:
     if config.actor_rollout_ref.model.override_config:
         raise ValueError("model geometry overrides require a new verified export")
     rollout = config.actor_rollout_ref.rollout
+    if not rollout.enforce_eager:
+        compilation = rollout.engine_kwargs.vllm.get("compilation_config", {})
+        if (rollout.max_num_seqs != 1 or compilation.get("mode") != 0
+                or compilation.get("cudagraph_mode") != "FULL_DECODE_ONLY"
+                or compilation.get("cudagraph_capture_sizes") != [1]
+                or compilation.get("max_cudagraph_capture_size") != 1):
+            raise ValueError("native serving requires eager execution or explicit single-sequence decode graphs")
     if experiment.attention == "native":
         attention = rollout.engine_kwargs.vllm.attention_config
         if (experiment.variant != "normal" or attention.backend != "FLASH_ATTN"

@@ -62,6 +62,32 @@ def policy(native, variant="normal"):
     return model
 
 
+def test_serving_weight_refresh_keeps_graph_addresses_and_updates_every_fold(native):
+    from archlab.training.serving import _refresh_inference_buffers
+
+    reference = policy(deepcopy(native))
+    model = policy(native).eval()
+    before = {name: (buffer.data_ptr(), buffer.clone())
+              for name, buffer in model.named_buffers(remove_duplicate=False)
+              if "._inference_" in name}
+    assert before
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.add_(.125)
+    reference.load_state_dict(model.state_dict())
+    reference.train().eval()
+    _refresh_inference_buffers(model)
+    expected = dict(reference.named_buffers(remove_duplicate=False))
+    changed = 0
+    for name, buffer in model.named_buffers(remove_duplicate=False):
+        if name in before:
+            pointer, previous = before[name]
+            assert buffer.data_ptr() == pointer, name
+            torch.testing.assert_close(buffer, expected[name], rtol=0, atol=0)
+            changed += int(not torch.equal(buffer, previous))
+    assert changed > 10, "the fixture must exercise projections, gates, residuals and MUDD"
+
+
 @pytest.mark.parametrize("variant", ["normal", "simplicial"])
 def test_lossless_auto_model_roundtrip_and_global_cast_preserves_dtypes(tmp_path, native, variant):
     expected = policy(native, variant)

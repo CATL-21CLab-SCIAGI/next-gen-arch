@@ -20,6 +20,16 @@ The pilot batch has 8 tasks and 4 rollouts per task. One agent worker admits one
 
 The current qualification candidate uses the publisher's `flash_attention_2` for both backbone and normal preludes. The backbone choice is recorded in the export configuration; the source weights remain unchanged. The original SDPA candidate produced non-finite backward gradients at 131,072 tokens. FlashAttention-2 passed that full-context check, with small measured BF16 differences at short contexts. The fresh 2B candidate also passed eight-rank gradient and optimizer restart checks. Serving/replay agreement and a real-policy learning signal remain required before production admission.
 
+Normal serving now selects vLLM's single-sequence `FULL_DECODE_ONLY` CUDA graphs,
+with Torch compilation disabled. The model extension refreshes the publisher's
+folded inference buffers in place after weight loading, preserving addresses
+captured by those graphs. A matched 2026-10-12 probe measured 5.7–7.6× faster
+decoding across 128-, 1,100- and 2,000-token prompts, with identical generated
+tokens and log probabilities before and after reloading weights produced by an
+actual optimizer update. This is a decoding measurement; tools, rewards and learner time are
+excluded. Full-context serving and end-to-end agentic admission must also pass
+for this configuration before production starts.
+
 Deployment supplies these paths:
 
 ```bash
