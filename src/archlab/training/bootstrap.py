@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -23,11 +24,17 @@ from omegaconf import MISSING, DictConfig, OmegaConf
 from archlab.artifacts import sha256_file
 
 
+class BootstrapParentStage(str, Enum):
+    original_base = "original_base"
+    package_sft = "package_sft"
+
+
 @dataclass
 class BootstrapExperiment:
     name: str = MISSING
     parent_checkpoint: str = MISSING
     data_manifest: str = MISSING
+    parent_stage: BootstrapParentStage = BootstrapParentStage.original_base
     variant: str = "simplicial"
     objective: str = "assistant_ce"
     native_context: int = 131072
@@ -168,27 +175,60 @@ def validate_assets(experiment: BootstrapExperiment, config: DictConfig) -> dict
     if manifest["files"]["train"]["rows"] < config.data.train_batch_size:
         raise ValueError("bootstrap data cannot provide one complete DP8 training batch")
 
-    # Reuse the model's checksum verifier at training time; resolve stays CPU/lightweight.
-    from archlab.training.limite import verify_export
+    # Verify export files independently of the model runtime.
+    from archlab.training.limite_artifacts import verify_export
 
-    receipt = verify_export(root)
+    if experiment.parent_stage == BootstrapParentStage.package_sft:
+        from archlab.training.sft_export import verify_package_sft_export
+
+        receipt = verify_package_sft_export(root)
+        training = receipt["training"]
+        if (not converted or exported.get("num_hidden_layers") != 48
+                or exported.get("publisher_config", {}).get("num_hidden_layers") != 48
+                or exported.get("max_position_embeddings") != experiment.native_context
+                or exported.get("conversion") != {"short_window": 16, "backend": "tilelang"}
+                or training.get("format") != "archlab-limite-agentic-sft-v1"
+                or training.get("objective") != experiment.objective
+                or training.get("initialization") != "inherited_trained_weights"
+                or training.get("original_publisher") != {
+                    "repo": source["repo"], "revision": source["revision"],
+                    "receipt_sha256": sha256_file(source_path)}
+                or type(training.get("global_step")) is not int or training["global_step"] <= 0
+                or training.get("token_budget", {}).get("completed_samples", 0) <= 0
+                or not receipt.get("state_sha256")
+                or receipt["state_sha256"] == training.get("parent_export", {}).get("state_sha256")):
+            raise ValueError("package SFT parent does not establish trained original-base replacement weights")
+    else:
+        receipt = verify_export(root)
     if converted:
         conversion = receipt.get("conversion", {})
         if (conversion.get("format") != "archlab-limite-conversion-v1"
                 or conversion.get("intervention") != "replace_attention"
                 or conversion.get("mechanism") != "joint-softmax-2-simplicial"
                 or conversion.get("config") != exported["conversion"]
-                or conversion.get("layers") != list(range(exported["num_hidden_layers"]))
-                or conversion.get("initialization") != (
-                    "zero_short_deltas;inherited_native_attention_parameters")):
-            raise ValueError("conversion receipt does not establish the replacement initialization")
-    return {
+                or conversion.get("layers") != list(range(exported["num_hidden_layers"]))):
+            raise ValueError("conversion receipt does not establish the declared replacement")
+        if experiment.parent_stage == BootstrapParentStage.original_base:
+            if conversion.get("initialization") != "zero_short_deltas;inherited_native_attention_parameters":
+                raise ValueError("conversion receipt does not establish the replacement initialization")
+        elif (conversion.get("weights_state") != "trained_by_assistant_ce"
+              or conversion.get("initialization")):
+            raise ValueError("package SFT parent lacks explicit trained conversion metadata")
+    result = {
         "export_receipt_sha256": sha256_file(root / "EXPORT.json"),
         "publisher_receipt_sha256": sha256_file(source_path),
         "publisher_repo": source["repo"], "publisher_revision": source["revision"],
         "data_manifest_sha256": sha256_file(manifest_path),
         "conversion": receipt.get("conversion"),
+        "parent_stage": experiment.parent_stage.value,
     }
+    if experiment.parent_stage == BootstrapParentStage.package_sft:
+        result["parent_training"] = receipt["training"]
+    if "supervision" in manifest:
+        if not isinstance(manifest["supervision"], dict):
+            raise ValueError("prepared supervision must be an explicit manifest object")
+        result["supervision"] = manifest["supervision"]
+    return result
 
 
 def source_snapshot(upstream: Path, recipe: Path) -> dict:

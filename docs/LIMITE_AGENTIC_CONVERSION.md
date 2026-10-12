@@ -77,9 +77,27 @@ tool-use control and is not yet an admitted agentic teacher.
 
 A separate fresh bootstrap revision uses the same original converted parent and
 data, learning rate 0.0001, ten epochs / 160 updates, validation every 16 updates,
-and five full-state checkpoints every 32 updates. It must demonstrate generated
-tool behavior before a costly RL pilot. The initial run and failed diagnostics
-remain preserved; neither qualifies production RL.
+and five full-state checkpoints every 32 updates. It completed 9,384,127 input
+tokens. Validation CE reached 1.1437 at update 32 and ended at 1.4101, while
+training CE continued decreasing. Update 32 still failed all six bounded
+greedy/sampled first-turn tool probes; final behavior remains a separate check.
+It must demonstrate generated tool behavior before a costly RL pilot. The
+initial run and failed diagnostics remain preserved; neither qualifies RL.
+
+An additional native-head audit found a genuinely broad vocabulary distribution
+at protocol boundaries: over 85,000 tokens within two logits of the maximum in
+one training example, versus one such token for ordinary content. Manual head
+calculation and native forward matched exactly. Output gradients were nonzero,
+so a saturated negative-logit floor does not explain this failure. A targeted
+protocol-supervision fallback preserves the complete source conversations and
+splits, selecting only assistant EOS and tool-delimiter targets. It is prepared
+as a separate dataset, not silently mixed into the original loss or claimed as
+task-solving evidence.
+
+Staged SFT must declare `parent_stage=package_sft`; it verifies the actual trained
+export, original publisher lineage and full replacement geometry. The default
+`original_base` stage retains the zero-initialized conversion checks. Both start
+fresh optimizers and record the exact supervision manifest.
 
 ## Admission and RL health
 
@@ -128,6 +146,7 @@ because SFT loss decreases. The existing math RL job is preserved meanwhile.
 - `architectures/limite_conversion.py`: native replacement and numerical contract.
 - `data/agentic_sft.py`: reproducible prepared assistant targets.
 - `training/bootstrap.py`: thin upstream SFT composition/admission.
+- `training/limite_artifacts.py`: export checksums without a model dependency.
 - `training/limite.py` and `megatron/limite.py`: native model/checkpoint boundaries.
 - `training/serving_conversion.py`: stock vLLM paged-cache bridge.
 - `recipes/sft/limite_agentic_bootstrap.yaml`: portable initial bootstrap contract.

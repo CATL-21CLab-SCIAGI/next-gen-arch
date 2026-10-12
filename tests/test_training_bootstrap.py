@@ -4,7 +4,12 @@ import types
 from pathlib import Path
 
 import pytest
-from omegaconf.errors import ConfigAttributeError, ConfigKeyError, MissingMandatoryValue
+from omegaconf.errors import (
+    ConfigAttributeError,
+    ConfigKeyError,
+    MissingMandatoryValue,
+    ValidationError,
+)
 
 from archlab.artifacts import sha256_file
 from archlab.training import bootstrap
@@ -35,6 +40,7 @@ def test_bootstrap_composes_pinned_upstream_schema(deployment):
     experiment = read_bootstrap(RECIPE)
     config = compose_sft(experiment, UPSTREAM)
     assert experiment.parent_checkpoint == str(deployment / "model")
+    assert experiment.parent_stage == bootstrap.BootstrapParentStage.original_base
     assert experiment.data_manifest == str(deployment / "data/manifest.json")
     assert config.model.path == experiment.parent_checkpoint
     assert config.model.external_lib == "archlab.training.megatron"
@@ -149,9 +155,9 @@ def prepared_assets(deployment, monkeypatch):
                               "config": export_config["conversion"], "layers": [0, 1],
                               "initialization": "zero_short_deltas;inherited_native_attention_parameters"}}
     (model / "EXPORT.json").write_text(json.dumps(receipt))
-    module = types.ModuleType("archlab.training.limite")
+    module = types.ModuleType("archlab.training.limite_artifacts")
     module.verify_export = lambda root: json.loads((root / "EXPORT.json").read_text())
-    monkeypatch.setitem(sys.modules, "archlab.training.limite", module)
+    monkeypatch.setitem(sys.modules, "archlab.training.limite_artifacts", module)
     return model, data, publisher
 
 
@@ -188,3 +194,112 @@ def test_bootstrap_admission_rejects_mismatched_assets(prepared_assets, changed)
         path.write_text(json.dumps(receipt))
     with pytest.raises(ValueError):
         bootstrap.validate_assets(experiment, config)
+
+
+def test_bootstrap_rejects_unknown_parent_stage(deployment):
+    with pytest.raises(ValidationError):
+        read_bootstrap(RECIPE, ["parent_stage=rl_resume"])
+
+
+@pytest.fixture
+def trained_assets(prepared_assets, monkeypatch):
+    model, data, publisher = prepared_assets
+    config = json.loads((model / "config.json").read_text())
+    config.update(num_hidden_layers=48, publisher_config={"num_hidden_layers": 48},
+                  max_position_embeddings=131072)
+    (model / "config.json").write_text(json.dumps(config))
+    receipt = json.loads((model / "EXPORT.json").read_text())
+    receipt.update(state_sha256="trained-state", training={
+        "format": "archlab-limite-agentic-sft-v1", "objective": "assistant_ce",
+        "initialization": "inherited_trained_weights", "global_step": 32,
+        "token_budget": {"completed_samples": 256}, "parent_export": {"state_sha256": "identity-state"},
+        "original_publisher": {"repo": "paradigma-inc/limite-1b-base", "revision": "pinned-base",
+                               "receipt_sha256": sha256_file(publisher / "DOWNLOAD_VERIFIED.json")}})
+    receipt["conversion"].pop("initialization")
+    receipt["conversion"].update(layers=list(range(48)), weights_state="trained_by_assistant_ce")
+    (model / "EXPORT.json").write_text(json.dumps(receipt))
+    manifest = json.loads((data / "manifest.json").read_text())
+    manifest["supervision"] = {"selection": "assistant_protocol_tokens_only",
+                              "token_ids": [151645, 151657, 151658],
+                              "input_ids_positions_attention_unchanged": True,
+                              "observations_have_loss": False}
+    (data / "manifest.json").write_text(json.dumps(manifest))
+    calls = []
+    module = types.ModuleType("archlab.training.sft_export")
+
+    def verify(root):
+        calls.append(root)
+        return json.loads((root / "EXPORT.json").read_text())
+
+    module.verify_package_sft_export = verify
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    return model, data, publisher, calls
+
+
+def test_bootstrap_admits_explicit_trained_parent_and_records_subset_supervision(trained_assets):
+    model, data, _, calls = trained_assets
+    experiment = read_bootstrap(RECIPE, ["parent_stage=package_sft"])
+    config = compose_sft(experiment, UPSTREAM)
+    result = bootstrap.validate_assets(experiment, config)
+    assert calls == [model]
+    assert result["parent_stage"] == "package_sft"
+    assert result["parent_training"]["global_step"] == 32
+    assert result["supervision"] == json.loads((data / "manifest.json").read_text())["supervision"]
+    assert experiment.objective == "assistant_ce" and config.trainer.resume_mode == "disable"
+
+
+def test_bootstrap_original_parent_does_not_admit_trained_conversion(trained_assets):
+    experiment = read_bootstrap(RECIPE)
+    with pytest.raises(ValueError, match="initialization"):
+        bootstrap.validate_assets(experiment, compose_sft(experiment, UPSTREAM))
+
+
+def test_bootstrap_cannot_bypass_strict_trained_export_verifier(trained_assets, monkeypatch):
+    def reject(root):
+        raise ValueError("trained export checksum differs")
+
+    monkeypatch.setattr(sys.modules["archlab.training.sft_export"], "verify_package_sft_export", reject)
+    experiment = read_bootstrap(RECIPE, ["parent_stage=package_sft"])
+    with pytest.raises(ValueError, match="checksum differs"):
+        bootstrap.validate_assets(experiment, compose_sft(experiment, UPSTREAM))
+
+
+@pytest.mark.parametrize("defect", [
+    "layers", "geometry", "backend", "publisher", "objective", "initialization",
+    "untrained_state", "zero_steps", "zero_samples", "weights_state", "zero_claim", "eos", "supervision",
+])
+def test_bootstrap_trained_parent_rejects_wrong_lineage_or_geometry(trained_assets, defect):
+    model, data, _, _ = trained_assets
+    config = json.loads((model / "config.json").read_text())
+    receipt = json.loads((model / "EXPORT.json").read_text())
+    if defect == "layers":
+        receipt["conversion"]["layers"].pop()
+    elif defect == "geometry":
+        config["num_hidden_layers"] = 47
+    elif defect == "backend":
+        config["conversion"]["backend"] = "other"
+    elif defect == "publisher":
+        receipt["training"]["original_publisher"]["repo"] = "paradigma-inc/limite-1b-violetto"
+    elif defect in {"objective", "initialization"}:
+        receipt["training"][defect] = "other"
+    elif defect == "untrained_state":
+        receipt["state_sha256"] = "identity-state"
+    elif defect == "zero_steps":
+        receipt["training"]["global_step"] = 0
+    elif defect == "zero_samples":
+        receipt["training"]["token_budget"]["completed_samples"] = 0
+    elif defect == "weights_state":
+        receipt["conversion"]["weights_state"] = "zero"
+    elif defect == "zero_claim":
+        receipt["conversion"]["initialization"] = "zero_short_deltas;inherited_native_attention_parameters"
+    elif defect == "eos":
+        config["eos_token_id"] = 151643
+    else:
+        manifest = json.loads((data / "manifest.json").read_text())
+        manifest["supervision"] = "unrecorded mask"
+        (data / "manifest.json").write_text(json.dumps(manifest))
+    (model / "config.json").write_text(json.dumps(config))
+    (model / "EXPORT.json").write_text(json.dumps(receipt))
+    experiment = read_bootstrap(RECIPE, ["parent_stage=package_sft"])
+    with pytest.raises(ValueError):
+        bootstrap.validate_assets(experiment, compose_sft(experiment, UPSTREAM))

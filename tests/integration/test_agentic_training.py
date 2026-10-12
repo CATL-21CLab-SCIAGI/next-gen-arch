@@ -559,7 +559,8 @@ def test_native_context_forward_backward_memory(tmp_path):
     from verl.workers.engine.megatron.transformer_impl import MegatronEngineWithLMHead
 
     from archlab.architectures.limite_head import chunked_logits_processor
-    from archlab.training.limite import LimiteForCausalLM, verify_export
+    from archlab.training.limite import LimiteForCausalLM
+    from archlab.training.limite_artifacts import verify_export
 
     deployment = _deployment()
     root = Path(deployment.actor_rollout_ref.model.path if deployment is not None
@@ -702,7 +703,8 @@ def test_vllm_native_context_capacity(tmp_path):
 
     from vllm import LLM, SamplingParams
 
-    from archlab.training.limite import LimiteConfig, verify_export
+    from archlab.training.limite import LimiteConfig
+    from archlab.training.limite_artifacts import verify_export
     from archlab.training.serving import register
 
     deployment = _deployment()

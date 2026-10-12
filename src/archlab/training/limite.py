@@ -32,6 +32,7 @@ from archlab.architectures.limite_conversion import (
 )
 from archlab.architectures.limite_loader import load_model, upstream_classes
 from archlab.artifacts import atomic_write_json, sha256_file
+from archlab.training.limite_artifacts import verify_export
 
 
 class LimiteConfig(PretrainedConfig):
@@ -217,19 +218,6 @@ class LimiteForCausalLM(PreTrainedModel):
         if output_loading_info:
             return model, dict(missing_keys=[], unexpected_keys=[], mismatched_keys=[], error_msgs=[])
         return model
-
-
-def verify_export(path):
-    root = Path(path)
-    receipt = json.loads((root / "EXPORT.json").read_text())
-    if receipt.get("format") != "archlab-limite-hf-v1":
-        raise ValueError("unknown Limite export format")
-    if not {"config.json", "model.safetensors"} <= set(receipt["files"]):
-        raise ValueError("incomplete Limite export")
-    for name, digest in receipt["files"].items():
-        if Path(name).name != name or sha256_file(root / name) != digest:
-            raise ValueError("export checksum mismatch: " + name)
-    return receipt
 
 
 def _state_digest(state):

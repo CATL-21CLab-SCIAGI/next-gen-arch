@@ -122,7 +122,7 @@ def package_sft_export(tmp_path, monkeypatch):
                                  original_publisher=dict(repo="paradigma-inc/limite-1b-base"),
                                  token_budget=dict(completed_samples=680, maximum_input_tokens=11141120)))
     (export / "EXPORT.json").write_text(json.dumps(receipt))
-    monkeypatch.setitem(sys.modules, "archlab.training.limite", SimpleNamespace(verify_export=lambda root: receipt))
+    monkeypatch.setitem(sys.modules, "archlab.training.limite_artifacts", SimpleNamespace(verify_export=lambda root: receipt))
     monkeypatch.setitem(sys.modules, "archlab.training.sft_export", SimpleNamespace(verify_package_sft_export=lambda root: receipt))
     experiment = Experiment(name="replacement", variant="simplicial", intervention="replace_attention",
                             parent_stage="package_sft", parent_tokens=None, parent_checkpoint=str(checkpoint))

@@ -223,7 +223,7 @@ def check_sft_parent(experiment, *, package_receipt=None):
 
 
 def check_model(experiment, config):
-    from archlab.training.limite import verify_export
+    from archlab.training.limite_artifacts import verify_export
 
     if experiment.family != "limite" or experiment.variant not in {"normal", "simplicial"}:
         raise ValueError("this pretrained migration has no qualified model bridge for the selected family/variant")

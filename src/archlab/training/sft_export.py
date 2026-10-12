@@ -19,7 +19,7 @@ import yaml
 from safetensors import safe_open
 
 from archlab.artifacts import atomic_write_json, sha256_file
-from archlab.training.limite import verify_export
+from archlab.training.limite_artifacts import verify_export
 
 _ASSETS = ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
            "chat_template.jinja", "generation_config.json")

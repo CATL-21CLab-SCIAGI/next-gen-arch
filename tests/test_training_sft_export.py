@@ -3,6 +3,8 @@
 import hashlib
 import json
 import shutil
+import sys
+from types import ModuleType
 
 import pytest
 import torch
@@ -23,12 +25,12 @@ def write_json(path, value):
 
 @pytest.fixture
 def run(tmp_path, monkeypatch):
-    from archlab.training.limite import LimiteForCausalLM
-
     def forbidden(*args, **kwargs):
-        raise AssertionError("Finalization must not construct a model")
+        raise AssertionError("Finalization must not import or construct a model")
 
-    monkeypatch.setattr(LimiteForCausalLM, "__init__", forbidden)
+    model_module = ModuleType("archlab.training.limite")
+    model_module.__getattr__ = forbidden
+    monkeypatch.setitem(sys.modules, model_module.__name__, model_module)
     publisher, parent = tmp_path / "publisher", tmp_path / "parent"
     publisher.mkdir()
     parent.mkdir()
