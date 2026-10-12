@@ -1,0 +1,28 @@
+diff --git a/uni_agent/gateway/session/codec.py b/uni_agent/gateway/session/codec.py
+index 3861ad04314cb07366e1bdb5a1f05721a0cf52d8..349c83a926944ab9577cd94451b56ee1b7707f25 100644
+--- a/uni_agent/gateway/session/codec.py
++++ b/uni_agent/gateway/session/codec.py
+@@ -1054,6 +1054,7 @@
+         stop_reason: str | None = None,
+     ) -> tuple[dict[str, Any], str]:
+         """Decode model output tokens into an assistant message and finish reason."""
++        finish_reason = _FINISH_REASON_MAP.get(stop_reason, stop_reason) if stop_reason else "stop"
+         parser_tools = parser_tools or tools
+         if self._tool_parser_name and parser_tools:
+             content, function_calls = await self._extract_tool_calls(
+@@ -1086,13 +1087,13 @@
+                 }
+                 if reasoning:
+                     message["reasoning_content"] = reasoning
+-                return message, "tool_calls"
++                # Earlier parseable calls do not complete a length-capped turn.
++                return message, "length" if finish_reason == "length" else "tool_calls"
+         response_text = self._tokenizer.decode(response_ids, skip_special_tokens=True)
+         reasoning, visible_content = _split_generation_thinking(
+             response_text,
+             prompt_opens_thinking=self._generation_prompt_opens_thinking,
+         )
+-        finish_reason = _FINISH_REASON_MAP.get(stop_reason, stop_reason) if stop_reason else "stop"
+         message: dict[str, Any] = {"role": "assistant", "content": visible_content}
+         if reasoning:
+             message["reasoning_content"] = reasoning

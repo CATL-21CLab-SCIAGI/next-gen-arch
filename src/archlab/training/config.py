@@ -15,18 +15,32 @@ from archlab.training.performance import ThroughputContract
 
 
 @dataclass
+class AgenticPilot:
+    max_turn_tokens: int = 8192
+    step_limit: int = 500
+    minimum_prompt_groups: int = 2
+    minimum_completed_verifiers: int = 8
+    minimum_tool_calls: int = 1
+    minimum_observation_tokens: int = 1
+    minimum_reward_contrast_groups: int = 1
+    maximum_truncated_trajectories: int = 0
+
+
+@dataclass
 class Experiment:
     name: str = MISSING
     family: str = "limite"
     variant: str = "normal"
+    intervention: str = "insert_attention"
     engine: str = "megatron"
     attention: str = "tilelang"
     execution: str = "colocate_async"
     native_context: int = 131072
     parent_checkpoint: str = MISSING
     parent_stage: str = "adapter_sft"
-    parent_tokens: int = 2_000_158_720
+    parent_tokens: int | None = 2_000_158_720
     data_manifest: str = MISSING
+    pilot: AgenticPilot | None = None
     throughput: ThroughputContract = field(default_factory=ThroughputContract)
     # Overrides use upstream names; there is no second set of optimizer defaults.
     settings: dict[str, Any] = field(default_factory=dict)
@@ -55,10 +69,19 @@ def read_experiment(path: Path, overrides: list[str] = ()) -> Experiment:
         raise ValueError("execution must be sync or colocate_async")
     if experiment.variant not in {"normal", "simplicial", "linsimp", "triadic"}:
         raise ValueError("unknown architecture variant")
+    if experiment.intervention not in {"insert_attention", "replace_attention"}:
+        raise ValueError("unknown architecture intervention")
     if experiment.native_context <= 0:
         raise ValueError("native_context must be positive")
-    if experiment.parent_stage not in {"adapter_sft", "full_sft"} or experiment.parent_tokens <= 0:
+    if experiment.parent_stage == "package_sft":
+        if (experiment.intervention != "replace_attention" or experiment.variant != "simplicial"
+                or experiment.attention != "tilelang" or experiment.parent_tokens is not None):
+            raise ValueError("package SFT replacement uses simplicial TileLang and receipt-derived token budgets")
+    elif (experiment.parent_stage not in {"adapter_sft", "full_sft"}
+          or experiment.parent_tokens is None or experiment.parent_tokens <= 0):
         raise ValueError("this fresh RL pilot requires an explicit SFT token endpoint")
+    if experiment.intervention == "replace_attention" and experiment.parent_stage != "package_sft":
+        raise ValueError("attention replacement RL requires a trained package SFT endpoint")
     return experiment
 
 
@@ -103,6 +126,8 @@ def validate_science(experiment: Experiment, config: DictConfig) -> None:
     if config.actor_rollout_ref.model.override_config:
         raise ValueError("model geometry overrides require a new verified export")
     rollout = config.actor_rollout_ref.rollout
+    if experiment.intervention == "replace_attention":
+        _validate_conversion_science(experiment, config)
     if not rollout.enforce_eager:
         compilation = rollout.engine_kwargs.vllm.get("compilation_config", {})
         if (rollout.max_num_seqs != 1 or compilation.get("mode") != 0
@@ -136,7 +161,8 @@ def validate_science(experiment: Experiment, config: DictConfig) -> None:
         raise ValueError("the pilot requires one upstream token importance correction, capped at 2")
     if config.actor_rollout_ref.actor.use_kl_loss or config.algorithm.use_kl_in_reward:
         raise ValueError("this controlled code pilot does not include a reference-policy KL")
-    if rollout.custom.agent_framework.mask_unfinished_episode:
+    if (experiment.intervention != "replace_attention"
+            and rollout.custom.agent_framework.mask_unfinished_episode):
         raise ValueError("unfinished trajectories must remain visible in this pilot")
     if not 0 <= config.trainer.v1.sampler.max_off_policy_threshold <= 1:
         raise ValueError("initial agentic pilot permits at most one policy version of lag")
@@ -147,6 +173,58 @@ def validate_science(experiment: Experiment, config: DictConfig) -> None:
         raise ValueError("the primary pilot requires validated rollout and performance contracts")
     if config.ray_kwargs.ray_init.runtime_env.env_vars.get("VERL_MFU_DEVICE_NAME") != "B300":
         raise ValueError("MFU hardware must reflect the actual B300 allocation")
+
+
+def _validate_conversion_science(experiment: Experiment, config: DictConfig) -> None:
+    """The replacement cache bridge supports only its explicit eager geometry."""
+    actor = config.actor_rollout_ref.actor
+    model = config.actor_rollout_ref.model
+    rollout = config.actor_rollout_ref.rollout
+    if (experiment.parent_stage != "package_sft" or experiment.parent_tokens is not None
+            or experiment.variant != "simplicial" or experiment.attention != "tilelang"
+            or experiment.execution != "colocate_async"):
+        raise ValueError("replacement RL requires package SFT lineage and bounded async TileLang execution")
+    if (model.external_lib != "archlab.training.megatron" or model.use_remove_padding
+            or model.use_fused_kernels or model.lora_rank or model.lora.rank
+            or actor.megatron.use_remove_padding or actor.megatron.pad_bshd_to_minibatch_max
+            or actor.ppo_micro_batch_size_per_gpu != 1 or actor.use_dynamic_bsz):
+        raise ValueError("replacement RL requires full-weight native BSHD microbatches of one")
+    if (any(actor.megatron[name] != 1 for name in (
+        "tensor_model_parallel_size", "pipeline_model_parallel_size",
+        "context_parallel_size", "expert_model_parallel_size",
+    )) or actor.megatron.sequence_parallel or actor.megatron.dynamic_context_parallel
+            or actor.megatron.virtual_pipeline_model_parallel_size is not None
+            or config.trainer.nnodes != 1 or config.trainer.n_gpus_per_node != 8):
+        raise ValueError("replacement learner requires DP8 with TP=PP=CP=EP=1")
+    attention = rollout.engine_kwargs.vllm.attention_config
+    if (rollout.name != "vllm" or not rollout.enforce_eager or rollout.max_num_seqs != 1
+            or rollout.enable_prefix_caching or rollout.enable_chunked_prefill
+            or rollout.max_num_batched_tokens < experiment.native_context
+            or rollout.tensor_model_parallel_size != 1 or rollout.pipeline_model_parallel_size != 1
+            or rollout.data_parallel_size != 1
+            or attention.backend != "FLASH_ATTN" or attention.flash_attn_version != 2):
+        raise ValueError("replacement serving requires eager FA2, one request, TP=PP=1 and no prefix/chunked prefill")
+    conflicting = {
+        "enforce_eager", "max_num_seqs", "enable_prefix_caching", "enable_chunked_prefill",
+        "tensor_parallel_size", "pipeline_parallel_size", "decode_context_parallel_size",
+        "prefill_context_parallel_size", "quantization", "kv_cache_dtype", "speculative_config",
+        "hf_overrides", "model",
+    } & set(rollout.engine_kwargs.vllm)
+    if conflicting:
+        raise ValueError("replacement engine kwargs override the serving contract: " + ", ".join(sorted(conflicting)))
+    if actor.optim.use_checkpoint_opt_param_scheduler:
+        raise ValueError("replacement RL requires a fresh optimizer and parameter scheduler")
+    pilot = experiment.pilot
+    if (pilot is None or not 0 < pilot.max_turn_tokens <= 8192 or pilot.step_limit != 500
+            or pilot.minimum_prompt_groups < 2
+            or pilot.minimum_completed_verifiers < pilot.minimum_prompt_groups * rollout.n
+            or min(pilot.minimum_tool_calls, pilot.minimum_observation_tokens,
+                   pilot.minimum_reward_contrast_groups) < 1
+            or pilot.maximum_truncated_trajectories != 0
+            or config.data.train_batch_size < pilot.minimum_prompt_groups
+            or actor.ppo_mini_batch_size * rollout.n < 8
+            or not rollout.custom.agent_framework.mask_unfinished_episode):
+        raise ValueError("replacement pilot requires explicit short turns, usable traces and stock truncation masking")
 
 
 def fingerprint(config: DictConfig) -> str:

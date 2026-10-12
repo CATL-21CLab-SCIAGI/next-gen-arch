@@ -1,0 +1,14 @@
+--- a/recipes/code/mimoagent_runner.py
++++ b/recipes/code/mimoagent_runner.py
+@@ -310,7 +310,10 @@
+         reward_info = {
+             **(reward_extra_info or {}),
+             "reward": float(reward),
+-            "finished": True,
++            # Uni-Agent masks unfinished episodes before packing policy loss.
++            # A completed verifier does not make a capped agent run complete.
++            "finished": agent_completed,
++            "verifier_finished": True,
+             "agent_type": agent_type,
+             "agent_status": status,
+             "agent_completed": agent_completed,

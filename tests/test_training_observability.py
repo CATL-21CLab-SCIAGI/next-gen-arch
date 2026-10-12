@@ -84,6 +84,22 @@ def test_actual_uni_agent_writer_attaches_validated_metadata_before_transport(tm
     namespace["tq"].async_kv_batch_put.assert_not_called()
 
 
+def test_stock_mask_contract_rejects_incorrect_finished_tag_before_transport(tmp_path):
+    (tmp_path / "generation_config.json").write_text('{"eos_token_id":9}')
+    config = OmegaConf.create(dict(actor_rollout_ref=dict(model=dict(path=str(tmp_path)),
+        rollout=dict(name="vllm", seed=42, max_model_len=7,
+                     custom=dict(agent_framework=dict(mask_unfinished_episode=True))))))
+    value = trajectory()
+    value.reward_info.update(termination_kind="truncated", finished=True)
+    contract = RolloutContract(config)
+    args = dict(trajectory=value, sample_fields={"extra_info": {"instance_id": "task"}},
+                group_id="group", response_id="group_0_0", session_id=0)
+    with pytest.raises(ValueError, match="before stock"):
+        contract(**args)
+    value.reward_info["finished"] = False
+    assert contract(**args)["termination_reason"] == "truncated"
+
+
 def metric_inputs():
     config = OmegaConf.create(dict(trainer=dict(v1=dict(trainer_mode="colocate_async"), nnodes=1, n_gpus_per_node=8),
                                    actor_rollout_ref=dict(rollout=dict(n=2))))

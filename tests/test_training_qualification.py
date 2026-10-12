@@ -99,6 +99,91 @@ def test_full_sft_requires_an_explicit_different_source_contract(tmp_path):
     assert qualification.check_sft_parent(experiment)["path"] == str(tmp_path)
 
 
+@pytest.fixture
+def package_sft_export(tmp_path, monkeypatch):
+    import sys
+
+    from archlab.artifacts import sha256_file
+
+    checkpoint, export = tmp_path / "global_step_85", tmp_path / "global_step_85/model/huggingface"
+    export.mkdir(parents=True)
+    (checkpoint / "ckpt_contents.json").write_text('{"global_step":85}')
+    model = dict(model_type="archlab_limite", trainable_mode="full", adapter={},
+                 conversion=dict(short_window=16, backend="tilelang"), eos_token_id=151645,
+                 publisher_config=dict(max_position_embeddings=131072, num_hidden_layers=48))
+    (export / "config.json").write_text(json.dumps(model))
+    (export / "generation_config.json").write_text('{"eos_token_id":151645,"pad_token_id":151643}')
+    receipt = dict(optimizer_migrated=False,
+                   source_checkpoint=dict(path=str(checkpoint), receipt_sha256=sha256_file(checkpoint / "ckpt_contents.json")),
+                   conversion=dict(format="archlab-limite-conversion-v1", intervention="replace_attention",
+                                   mechanism="joint-softmax-2-simplicial", config=model["conversion"], layers=list(range(48))),
+                   training=dict(format="archlab-limite-agentic-sft-v1", objective="assistant_ce",
+                                 initialization="inherited_trained_weights",
+                                 original_publisher=dict(repo="paradigma-inc/limite-1b-base"),
+                                 token_budget=dict(completed_samples=680, maximum_input_tokens=11141120)))
+    (export / "EXPORT.json").write_text(json.dumps(receipt))
+    monkeypatch.setitem(sys.modules, "archlab.training.limite_artifacts", SimpleNamespace(verify_export=lambda root: receipt))
+    monkeypatch.setitem(sys.modules, "archlab.training.sft_export", SimpleNamespace(verify_package_sft_export=lambda root: receipt))
+    experiment = Experiment(name="replacement", variant="simplicial", intervention="replace_attention",
+                            parent_stage="package_sft", parent_tokens=None, parent_checkpoint=str(checkpoint))
+    config = OmegaConf.create(dict(actor_rollout_ref=dict(model=dict(path=str(export)))))
+    return experiment, config, receipt, model, export
+
+
+def test_replacement_model_uses_verified_trained_package_receipt_without_inventing_tokens(package_sft_export):
+    experiment, config, receipt, _, _ = package_sft_export
+    result = qualification.check_model(experiment, config)
+    assert result["parent"] == receipt["source_checkpoint"]
+    assert result["training"]["token_budget"]["completed_samples"] == 680
+    assert "parent_tokens" not in result
+    assert result["intervention"] == "replace_attention"
+
+
+@pytest.mark.parametrize("defect", ["source", "checkpoint_sha", "publisher", "objective", "untrained",
+                                   "optimizer", "layers", "insertion", "eos"])
+def test_replacement_receipt_must_match_actual_sft_architecture_and_native_tokens(package_sft_export, defect):
+    experiment, config, receipt, model, export = package_sft_export
+    if defect == "source":
+        receipt["source_checkpoint"]["path"] += "-other"
+    elif defect == "checkpoint_sha":
+        receipt["source_checkpoint"]["receipt_sha256"] = "wrong"
+    elif defect == "publisher":
+        receipt["training"]["original_publisher"]["repo"] = "paradigma-inc/limite-1b-violetto"
+    elif defect == "objective":
+        receipt["training"]["objective"] = "math_rl"
+    elif defect == "untrained":
+        receipt["training"]["initialization"] = "zero_short_deltas"
+    elif defect == "optimizer":
+        receipt["optimizer_migrated"] = True
+    elif defect == "layers":
+        receipt["conversion"]["layers"] = list(range(47))
+    elif defect == "insertion":
+        model["adapter"] = {"variant": "simplicial"}
+        (export / "config.json").write_text(json.dumps(model))
+    else:
+        (export / "generation_config.json").write_text('{"eos_token_id":151643,"pad_token_id":151643}')
+    with pytest.raises(ValueError):
+        qualification.check_model(experiment, config)
+
+
+@pytest.mark.parametrize("changed", [None, "truncated_trajectories", "tool_calls", "masked_observation_tokens",
+                                     "reward_contrast_groups", "completed_verifiers", "grad_norm"])
+def test_bootstrap_health_gate_rejects_capped_or_unusable_learning_samples(tmp_path, changed):
+    from archlab.training.config import AgenticPilot
+
+    path = tmp_path / "artifacts"
+    path.mkdir()
+    evidence = dict(completed_verifiers=8, tool_calls=2, masked_observation_tokens=40,
+                    truncated_trajectories=0, reward_contrast_groups=1, grad_norm=.2,
+                    consumed_rollout_uids=[f"prompt{group}_{session}_0" for group in range(2) for session in range(4)])
+    if changed:
+        evidence[changed] = 1 if changed == "truncated_trajectories" else 0
+    (path / "pipeline-evidence.json").write_text(json.dumps(evidence))
+    result = qualification._check("health", lambda: qualification.check_learning_signal(tmp_path, AgenticPilot()))
+    assert result["status"] == ("failed" if changed else "passed")
+    assert result["thresholds"]["maximum_truncated_trajectories"] == 0
+
+
 @pytest.mark.parametrize("change", ["edit", "add", "delete"])
 def test_admission_detects_uncommitted_source_changes(tmp_path, monkeypatch, change):
     monkeypatch.setattr(qualification, "ROOT", tmp_path)

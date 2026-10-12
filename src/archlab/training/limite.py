@@ -25,14 +25,21 @@ from archlab.architectures.limite_adapter import (
     set_normal_attention_kernel,
     set_trainable_mode,
 )
+from archlab.architectures.limite_conversion import (
+    LimiteConversionConfig,
+    conversion_metadata,
+    replace_limite_attention,
+)
 from archlab.architectures.limite_loader import load_model, upstream_classes
 from archlab.artifacts import atomic_write_json, sha256_file
+from archlab.training.limite_artifacts import verify_export
 
 
 class LimiteConfig(PretrainedConfig):
     model_type = "archlab_limite"
 
     def __init__(self, publisher_snapshot="", publisher_config=None, adapter=None,
+                 conversion=None,
                  parameter_dtypes=None, normal_kernel="shared", normal_backward="tilelang",
                  trainable_mode="full", backbone_attention="sdpa", **kwargs):
         native = dict(publisher_config or {})
@@ -44,6 +51,9 @@ class LimiteConfig(PretrainedConfig):
         self.publisher_snapshot = str(publisher_snapshot)
         self.publisher_config = native
         self.adapter = adapter or {}
+        self.conversion = conversion or {}
+        if self.adapter and self.conversion:
+            raise ValueError("attention insertion and replacement are distinct experiments")
         self.parameter_dtypes = parameter_dtypes or {}
         self.normal_kernel = normal_kernel
         self.normal_backward = normal_backward
@@ -74,15 +84,23 @@ class LimiteForCausalLM(PreTrainedModel):
         config_class, model_class = upstream_classes(config.publisher_snapshot)
         native = config_class.from_dict(config.publisher_config)
         native._attn_implementation = config.backbone_attention
-        self.policy = install_adapters(model_class(native), _adapter_config(config.adapter))
-        if self.policy.model.adapter_config != config.adapter:
-            raise ValueError("exported adapter geometry differs from publisher construction")
-        set_normal_attention_kernel(self.policy, config.normal_kernel)
-        set_normal_attention_backward(self.policy, config.normal_backward)
-        set_trainable_mode(self.policy, config.trainable_mode)
+        self.policy = model_class(native)
+        if config.conversion:
+            replace_limite_attention(self.policy, LimiteConversionConfig(**config.conversion))
+            if config.trainable_mode != "full":
+                raise ValueError("converted agentic bootstrap requires full-weight training")
+            layers = self.policy.model.layers
+        else:
+            self.policy = install_adapters(self.policy, _adapter_config(config.adapter))
+            if self.policy.model.adapter_config != config.adapter:
+                raise ValueError("exported adapter geometry differs from publisher construction")
+            set_normal_attention_kernel(self.policy, config.normal_kernel)
+            set_normal_attention_backward(self.policy, config.normal_backward)
+            set_trainable_mode(self.policy, config.trainable_mode)
+            layers = (*self.policy.model.base.layers, *self.policy.model.adapters)
         self._restore_dtypes()
         self._activation_checkpointing = False
-        for layer in (*self.policy.model.base.layers, *self.policy.model.adapters):
+        for layer in layers:
             self._bind_checkpointing(layer)
 
     def _bind_checkpointing(self, layer):
@@ -101,7 +119,8 @@ class LimiteForCausalLM(PreTrainedModel):
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
         if (gradient_checkpointing_kwargs or {}).get("use_reentrant", False):
             raise ValueError("Limite requires non-reentrant activation checkpointing")
-        self.policy.model._share_training_masks = True
+        if not self.config.conversion:
+            self.policy.model._share_training_masks = True
         self._activation_checkpointing = True
 
     def gradient_checkpointing_disable(self):
@@ -131,10 +150,32 @@ class LimiteForCausalLM(PreTrainedModel):
         return super()._apply(preserve_dtype, recurse=recurse)
 
     def forward(self, input_ids=None, attention_mask=None, position_ids=None, **kwargs):
+        if self.config.conversion:
+            attention_mask, position_ids = self.conversion_inputs(
+                input_ids, attention_mask, position_ids,
+            )
         return self.policy(input_ids=input_ids, attention_mask=attention_mask,
                            position_ids=position_ids, **kwargs)
 
+    @staticmethod
+    def conversion_inputs(input_ids, attention_mask, position_ids):
+        """Validate one unpadded document once; kernels own causal/window masks."""
+        if input_ids is None or input_ids.ndim != 2 or input_ids.shape[0] != 1:
+            raise ValueError("conversion training requires one unpadded document per microbatch")
+        if attention_mask is not None and (
+            not isinstance(attention_mask, torch.Tensor)
+            or attention_mask.shape != input_ids.shape
+            or not bool((attention_mask == 1).all())
+        ):
+            raise ValueError("conversion training does not accept padding or custom masks")
+        positions = torch.arange(input_ids.shape[1], device=input_ids.device)[None]
+        if position_ids is not None and not torch.equal(position_ids, positions):
+            raise ValueError("conversion training requires contiguous document positions")
+        return dict(full_attention=None, sliding_attention=None), positions
+
     def generate(self, *args, **kwargs):
+        if self.config.conversion:
+            raise ValueError("conversion generation requires a separately qualified cached serving path")
         return self.policy.generate(*args, **kwargs)
 
     def get_input_embeddings(self):
@@ -177,19 +218,6 @@ class LimiteForCausalLM(PreTrainedModel):
         if output_loading_info:
             return model, dict(missing_keys=[], unexpected_keys=[], mismatched_keys=[], error_msgs=[])
         return model
-
-
-def verify_export(path):
-    root = Path(path)
-    receipt = json.loads((root / "EXPORT.json").read_text())
-    if receipt.get("format") != "archlab-limite-hf-v1":
-        raise ValueError("unknown Limite export format")
-    if not {"config.json", "model.safetensors"} <= set(receipt["files"]):
-        raise ValueError("incomplete Limite export")
-    for name, digest in receipt["files"].items():
-        if Path(name).name != name or sha256_file(root / name) != digest:
-            raise ValueError("export checksum mismatch: " + name)
-    return receipt
 
 
 def _state_digest(state):
@@ -298,15 +326,19 @@ def export_model(model, snapshot, destination, *, source_checkpoint=None):
     """Export every weight, then reload and compare its exact state digest."""
     root = Path(destination)
     root.mkdir(parents=True, exist_ok=False)
+    from dataclasses import asdict
+
+    conversion = getattr(model.model, "conversion_config", None)
     config = LimiteConfig(
         publisher_snapshot=str(Path(snapshot).resolve()), publisher_config=model.config.to_dict(),
-        adapter=model.model.adapter_config,
+        adapter={} if conversion else model.model.adapter_config,
+        conversion=asdict(conversion) if conversion else {},
         parameter_dtypes={name: str(p.dtype).removeprefix("torch.")
                           for name, p in model.named_parameters()},
-        trainable_mode=model.model.trainable_mode,
+        trainable_mode="full" if conversion else model.model.trainable_mode,
         normal_kernel=getattr(model.model, "normal_kernel", "shared"),
         normal_backward=getattr(model.model, "normal_backward", "tilelang"),
-        backbone_attention=model.model.base.config._attn_implementation,
+        backbone_attention=(model.model if conversion else model.model.base).config._attn_implementation,
     )
     # Avoid constructing a second full model just to serialize an unchanged one.
     wrapper = LimiteForCausalLM.__new__(LimiteForCausalLM)
@@ -323,6 +355,8 @@ def export_model(model, snapshot, destination, *, source_checkpoint=None):
     receipt = dict(format="archlab-limite-hf-v1", source_checkpoint=source,
                    optimizer_migrated=False, state_sha256=_state_digest(model.state_dict()),
                    files={p.name: sha256_file(p) for p in root.iterdir() if p.is_file()})
+    if conversion:
+        receipt["conversion"] = conversion_metadata(model)
     atomic_write_json(root / "EXPORT.json", receipt)
     loaded = LimiteForCausalLM.from_pretrained(root)
     if _state_digest(loaded.policy.state_dict()) != receipt["state_sha256"]:

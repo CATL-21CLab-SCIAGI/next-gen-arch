@@ -25,9 +25,13 @@
       {
         "path": "scripts/patches/verl/0007-observability-extensions.patch",
         "sha256": "903646bd07518c734dd25f63b364c620e7bb9c8adfe5dea9599ce863822695dc"
+      },
+      {
+        "path": "scripts/patches/verl/0008-preserve-truncated-agent-status.patch",
+        "sha256": "dc8afdc6c38d247947cb61742b252308822531436cccca5663e043e8a036bf42"
       }
     ],
-    "working_diff_sha256": "8337bb85ec426d41d5f45cc91fb73419e2b2052a309bf470172bded1565016ec",
+    "working_diff_sha256": "871c59f032584f896007218326566a94e56744bb8ec9d778a21637257704b02d",
     "url": "https://github.com/XiaomiMiMo/verl.git",
     "path": "third_party/verl",
     "runtime": "Primary agentic RL engine and monitoring; native Limite learner and serving integration remain under GPU qualification. Agent execution requires an authorized sandbox.",
@@ -50,9 +54,13 @@
           {
             "path": "scripts/patches/uni-agent/0004-validate-trajectory-metadata.patch",
             "sha256": "5ae1631134b37f43a003979b578df57abbbe1c13f957e5daa31bc26ebd1485ab"
+          },
+          {
+            "path": "scripts/patches/uni-agent/0005-preserve-length-finish-reason.patch",
+            "sha256": "4d403ee7e5eac20d8215e5b4a85f94fadc3913c47b5d43ebf51e7b9da83318e4"
           }
         ],
-        "working_diff_sha256": "91842d5a4c62f2e619c7aad573fbbfc75394fd537525b22f93c72f244541ab9e",
+        "working_diff_sha256": "2503db165894e8cbda17a94052e867ef1d950ce8b854a94433973b67ed3fd15f",
         "path": "third_party/uni_agent",
         "url": "https://github.com/XiaomiMiMo/uni-agent.git"
       },

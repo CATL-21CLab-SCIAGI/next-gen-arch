@@ -57,6 +57,10 @@ class NativeLimiteModule(MegatronModule):
             from archlab.architectures.limite_head import chunked_logits_processor
 
             publisher = self.policy.policy
+            if self.policy.config.conversion:
+                attention_mask, position_ids = self.policy.conversion_inputs(
+                    input_ids, attention_mask, position_ids,
+                )
             hidden = publisher.model(input_ids=input_ids, attention_mask=attention_mask,
                                      position_ids=position_ids, use_cache=False,
                                      return_dict=True).last_hidden_state
@@ -128,10 +132,11 @@ class NativeLimiteBridge(MegatronModelBridge):
     def mapping_registry(self):
         # The extra prefix belongs only to this engine wrapper. No QKV fusion,
         # transposition, padding, cast or architecture reinterpretation occurs.
+        backbone = "model" if self.hf_config.conversion else "model.base"
         return MegatronMappingRegistry(
             # safetensors stores the tied pair once under lm_head, while
             # named_parameters visits the embedding alias first.
-            ReplicatedMapping("policy.policy.model.base.embed_tokens.weight", "policy.lm_head.weight"),
+            ReplicatedMapping(f"policy.policy.{backbone}.embed_tokens.weight", "policy.lm_head.weight"),
             ReplicatedMapping("policy.**", "**"),
         )
 
