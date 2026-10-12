@@ -91,7 +91,8 @@ def _verify_patch_set(checkout, specification):
     for patch in specification.get("patches", []):
         if sha256_file(ROOT / patch["path"]) != patch["sha256"]:
             raise ValueError("upstream patch differs from provenance: " + patch["path"])
-    actual = hashlib.sha256(_git(checkout, "diff", "HEAD", "--")).hexdigest()
+    # Automatic Git abbreviations depend on clone depth and object count.
+    actual = hashlib.sha256(_git(checkout, "diff", "--full-index", "HEAD", "--")).hexdigest()
     if actual != specification.get("working_diff_sha256"):
         raise ValueError(f"{checkout}: working changes differ from the declared patch set")
     return actual

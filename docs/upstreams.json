@@ -27,7 +27,7 @@
         "sha256": "903646bd07518c734dd25f63b364c620e7bb9c8adfe5dea9599ce863822695dc"
       }
     ],
-    "working_diff_sha256": "1063916071f330c3cf90df25f4456c872ca8ff054cf605514ae4887de07df469",
+    "working_diff_sha256": "8337bb85ec426d41d5f45cc91fb73419e2b2052a309bf470172bded1565016ec",
     "url": "https://github.com/XiaomiMiMo/verl.git",
     "path": "third_party/verl",
     "runtime": "Primary agentic RL engine and monitoring; native Limite learner and serving integration remain under GPU qualification. Agent execution requires an authorized sandbox.",
@@ -52,7 +52,7 @@
             "sha256": "5ae1631134b37f43a003979b578df57abbbe1c13f957e5daa31bc26ebd1485ab"
           }
         ],
-        "working_diff_sha256": "72c3bb4dece2441d035565e4486c269d52ee90861cf4b869b3f3366a1c720ba9",
+        "working_diff_sha256": "91842d5a4c62f2e619c7aad573fbbfc75394fd537525b22f93c72f244541ab9e",
         "path": "third_party/uni_agent",
         "url": "https://github.com/XiaomiMiMo/uni-agent.git"
       },
@@ -72,7 +72,7 @@
             "sha256": "1baf61c67589e94395af170d335646a8f3a06f294ea8e900d4cf5f9002ccf028"
           }
         ],
-        "working_diff_sha256": "82171cd1df67bb8781fba596ffa1c82f022d29e5b940a2622fbceaa4d3e5d672",
+        "working_diff_sha256": "8a44e1101575c645b58c5994e05737ea711f5a64ccb68060ac7232ea0de26713",
         "path": "third_party/mimoagent-osr",
         "url": "https://github.com/XiaomiMiMo/MiMo-Agent.git"
       }

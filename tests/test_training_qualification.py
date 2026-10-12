@@ -41,6 +41,32 @@ def test_declared_patch_file_must_match_its_provenance(tmp_path, monkeypatch):
         qualification._verify_patch_set(tmp_path, {"patches": [{"path": "fix.patch", "sha256": "wrong"}]})
 
 
+def test_upstream_diff_fingerprint_is_independent_of_git_abbreviations(tmp_path):
+    import hashlib
+    import subprocess
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args])
+
+    git("init", "-q")
+    source = tmp_path / "model.py"
+    source.write_text("value = 1\n")
+    git("add", "model.py")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+    source.write_text("value = 2\n")
+    expected = hashlib.sha256(git("diff", "--full-index", "HEAD", "--")).hexdigest()
+    abbreviated = []
+    for length in (7, 12):
+        git("config", "core.abbrev", str(length))
+        abbreviated.append(git("diff", "HEAD", "--"))
+        assert qualification._verify_patch_set(tmp_path, {"working_diff_sha256": expected}) == expected
+    assert abbreviated[0] != abbreviated[1]
+    source.write_text("value = 3\n")
+    with pytest.raises(ValueError, match="declared patch set"):
+        qualification._verify_patch_set(tmp_path, {"working_diff_sha256": expected})
+
+
 @pytest.mark.parametrize("defect", [None, "rl_payload", "rl_file", "rl_metadata", "tokens", "full_weights"])
 def test_fresh_rl_requires_actual_matched_sft_endpoint(tmp_path, defect):
     metadata = {"frozen_sha256": "a" * 64, "tokens": 2_000_158_720, "files": {"adapter.pt": "hash"}}
