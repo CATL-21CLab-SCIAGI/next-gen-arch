@@ -78,6 +78,9 @@ def test_invalid_override_does_not_silently_disappear(tmp_path):
     "settings.actor_rollout_ref.rollout.engine_kwargs.vllm.attention_config.backend=TRITON_ATTN",
     "variant=simplicial",
     "settings.actor_rollout_ref.rollout.custom.agent_framework.trajectory_validator=null",
+    "settings.actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.mode=3",
+    "settings.actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_capture_sizes=[1,2]",
+    "settings.actor_rollout_ref.rollout.max_num_seqs=2",
 ])
 def test_resolved_upstream_overrides_cannot_change_the_scientific_contract(monkeypatch, override):
     from archlab.training.config import compose_verl
@@ -90,5 +93,5 @@ def test_resolved_upstream_overrides_cannot_change_the_scientific_contract(monke
     for name in ("E2B_DOMAIN", "ARCHLAB_E2B_KEY_FILE", "ARCHLAB_E2B_TEMPLATE_MAP"):
         monkeypatch.setenv(name, "/fixture/" + name.lower())
     experiment = read_experiment(Path("recipes/rl/limite_code.yaml"), [override])
-    with pytest.raises(ValueError, match="strategy|GRPO|precision|patches|contracts|FlashAttention-2"):
+    with pytest.raises(ValueError, match="strategy|GRPO|precision|patches|contracts|FlashAttention-2|decode graphs"):
         compose_verl(experiment, upstream)

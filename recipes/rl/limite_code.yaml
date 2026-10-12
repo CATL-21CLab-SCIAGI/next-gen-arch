@@ -56,11 +56,16 @@ settings:
   actor_rollout_ref.actor.ppo_max_token_len_per_gpu: 131072
   actor_rollout_ref.actor.loss_agg_mode: token-mean
   actor_rollout_ref.rollout.name: vllm
-  actor_rollout_ref.rollout.enforce_eager: true
+  actor_rollout_ref.rollout.enforce_eager: false
   actor_rollout_ref.rollout.enable_prefix_caching: false
   actor_rollout_ref.rollout.checkpoint_engine.backend: naive
   actor_rollout_ref.rollout.engine_kwargs:
     vllm:
+      compilation_config:
+        mode: 0
+        cudagraph_mode: FULL_DECODE_ONLY
+        cudagraph_capture_sizes: [1]
+        max_cudagraph_capture_size: 1
       attention_config:
         backend: FLASH_ATTN
         flash_attn_version: 2

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from types import MethodType
 
-from torch import nn
+from torch import nn, no_grad
 
 from archlab.architectures.limite_bindings import bind_native_forward
 from archlab.training.limite import LimiteForCausalLM
@@ -17,6 +17,23 @@ from archlab.training.limite import LimiteForCausalLM
 class _AttentionInterface:
     def get_interface(self, name, fallback):
         return _paged_attention
+
+
+@no_grad()
+def _refresh_inference_buffers(policy):
+    """Refresh publisher folds without invalidating captured tensor addresses."""
+    buffers = [(module, name, value) for module in policy.modules()
+               for name, value in module.named_buffers(recurse=False, remove_duplicate=False)
+               if name.startswith("_inference_")]
+    policy.train()
+    policy.eval()
+    for module, name, original in buffers:
+        updated = module.get_buffer(name)
+        if (updated is None or updated.shape != original.shape
+                or updated.dtype != original.dtype or updated.device != original.device):
+            raise ValueError("inference buffer contract changed during weight reload: " + name)
+        original.copy_(updated)
+        setattr(module, name, original)
 
 
 def _paged_attention(module, query, key, value, attention_mask, *, scaling, **kwargs):
@@ -122,8 +139,7 @@ class NormalLimiteForCausalLM(nn.Module):
             default_weight_loader(parameter, tensor)
             loaded.update(key for key, value in parameters.items() if value is parameter)
         # Rebuild every folded projection after both the first load and updates.
-        self.policy.train()
-        self.policy.eval()
+        _refresh_inference_buffers(self.policy)
         return loaded
 
 
