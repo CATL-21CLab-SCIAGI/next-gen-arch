@@ -5,6 +5,7 @@ The latter executes real policy actions in the configured isolated sandboxes.
 Neither probe changes the production recipe or claims reward contrast exists.
 """
 
+import ast
 import json
 import math
 import os
@@ -88,6 +89,42 @@ def smoke_config(source, output):
     return config
 
 
+def _executed_bash_calls(messages):
+    """Count linked executions using MiMo's persisted return-code metadata.
+
+    DefaultAgent emits linked tool messages for argument errors too. Only real
+    BashTool outputs receive the runtime formatter's final metadata footer.
+    """
+    pending, completed = set(), 0
+    for message in messages:
+        if message.get("role") == "assistant":
+            for call in message.get("tool_calls", []):
+                function = call.get("function", {})
+                arguments = function.get("arguments", {})
+                try:
+                    arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+                except json.JSONDecodeError:
+                    continue
+                if (function.get("name") == "bash" and call.get("id")
+                        and isinstance(arguments, dict)
+                        and isinstance(arguments.get("command"), str) and arguments["command"].strip()):
+                    pending.add(call["id"])
+        elif message.get("role") == "tool" and message.get("tool_call_id") in pending:
+            pending.remove(message["tool_call_id"])
+            content = message.get("content")
+            if message.get("name") != "bash" or not isinstance(content, str):
+                continue
+            _, separator, footer = content.rpartition("\n\nTool metadata: ")
+            if not separator:
+                continue
+            try:
+                metadata = ast.literal_eval(footer)
+            except (SyntaxError, ValueError):
+                continue
+            completed += isinstance(metadata, dict) and type(metadata.get("returncode")) is int
+    return completed
+
+
 def inspect_artifacts(output, *, native_context=131072):
     """Check package-written tokens, masks, verdicts, metrics and saved update."""
     from recipes.code.mimoagent_runner import _require_code_verdict
@@ -132,7 +169,7 @@ def inspect_artifacts(output, *, native_context=131072):
         used.add(path)
         assert session["gradable"] is True and session["error_type"] is None
         semantic = json.loads((path / "traj.json").read_text())["trajs"]["main" if index == 0 else f"chain_{index + 1}"]
-        tools += sum(len(message.get("tool_calls", [])) for message in semantic["messages"])
+        tools += _executed_bash_calls(semantic["messages"])
         trajectory = json.loads((path / "trajectory.json").read_text())["trajectories"][index]
         with np.load(path / "trajectory.npz", allow_pickle=False) as arrays:
             prefix = f"traj{index}_"
@@ -354,10 +391,72 @@ def _run(mode, config_path, output):
         Path(output, "ray-lifecycle.json").write_text(json.dumps(_shutdown_ray(ray)))
 
 
+@pytest.fixture
+def recorded_bash(monkeypatch):
+    """Actual agent observations; command execution stays in a CPU fake env."""
+    upstream = Path(__file__).resolve().parents[2] / "third_party/verl"
+    monkeypatch.syspath_prepend(str(upstream / "third_party/mimoagent-osr/src"))
+    from mimoagent.agents.bashonly.bashonly_agent import BashOnlyAgent
+
+    def run(arguments, returncode=0):
+        class Environment:
+            calls = 0
+
+            def get_template_vars(self):
+                return {"cwd": "/testbed"}
+
+            def execute(self, command, **kwargs):
+                self.calls += 1
+                return {"output": "command output", "returncode": returncode}
+
+        class Model:
+            calls = 0
+
+            def get_template_vars(self):
+                return {}
+
+            def query(self, messages, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"content": "Inspect.", "tool_calls": [{"id": "call_test", "type": "function",
+                            "function": {"name": "bash", "arguments": arguments}}]}
+                return {"content": "Done."}
+
+        environment = Environment()
+        agent = BashOnlyAgent(Model(), environment)
+        status, _ = agent.run("Inspect the repository.")
+        assert status == agent.IDLE_STATUS
+        return agent.messages, environment.calls
+
+    return run
+
+
+@pytest.mark.parametrize("arguments,returncode,executions", [
+    ('{"command":"pwd"}', 0, 1),
+    ('{"command":"pwd"}', 2, 1),
+    ('{}', 0, 0),
+    ('{', 0, 0),
+    ('{"command":123}', 0, 0),
+])
+def test_tool_cycle_requires_actual_bash_execution(recorded_bash, arguments, returncode, executions):
+    messages, environment_calls = recorded_bash(arguments, returncode)
+    assert environment_calls == executions
+    assert _executed_bash_calls(messages) == executions
+
+
+@pytest.mark.parametrize("footer", [None, "invalid", "{}", "{'returncode': True}", "{'returncode': 0.0}"])
+def test_tool_cycle_rejects_absent_or_invalid_execution_metadata(recorded_bash, footer):
+    messages, environment_calls = recorded_bash('{"command":"pwd"}')
+    assert environment_calls == 1
+    messages[3]["content"] = "command output" + ("\n\nTool metadata: " + footer if footer is not None else "")
+    assert _executed_bash_calls(messages) == 0
+
+
 @pytest.mark.parametrize("defect", [None, "mask", "verifier", "nonfinite", "checkpoint", "wrong_uid",
                                   "policy_format", "transport", "infra", "unknown_tool_error",
-                                  "inconsistent_format_flags"])
-def test_artifact_admission_rejects_false_success(tmp_path, defect, monkeypatch):
+                                  "inconsistent_format_flags", "malformed_tools_only", "unobserved_bash",
+                                  "missing_command", "invalid_arguments"])
+def test_artifact_admission_rejects_false_success(tmp_path, defect, monkeypatch, recorded_bash):
     """A successful process alone cannot qualify incorrect RL artifacts."""
     upstream = Path(__file__).resolve().parents[2] / "third_party/verl"
     if not (upstream / "recipes/code/mimoagent_runner.py").is_file():
@@ -374,6 +473,12 @@ def test_artifact_admission_rejects_false_success(tmp_path, defect, monkeypatch)
     rollouts.mkdir()
     (rollouts / "1.jsonl").write_text("".join(json.dumps({"uid": f"group{group}_{i}_0", "score": 0}) + "\n"
                                              for group in range(2) for i in range(4)))
+    arguments = '{}' if defect == "missing_command" else '{' if defect == "invalid_arguments" else '{"command":"pwd"}'
+    messages, _ = recorded_bash(arguments)
+    if defect == "malformed_tools_only":
+        messages[2]["tool_calls"][0]["function"]["name"] = "__malformed_tool_call__"
+    if defect == "unobserved_bash":
+        messages[3]["tool_call_id"] = "other_call"
     for i in range(8):
         session = tmp_path / "sessions" / str(i)
         session.mkdir(parents=True)
@@ -394,8 +499,7 @@ def test_artifact_admission_rejects_false_success(tmp_path, defect, monkeypatch)
             reward.pop("verifier_returncode")
         (session / "session.json").write_text(json.dumps({"gradable": True, "error_type": None,
             "prompt_uid": "unrelated" if defect == "wrong_uid" else f"group{i // 4}", "session_index": i % 4}))
-        (session / "traj.json").write_text(json.dumps({"trajs": {"main": {"messages": [
-            {"role": "assistant", "tool_calls": [{"function": {"name": "bash"}}]}]}}}))
+        (session / "traj.json").write_text(json.dumps({"trajs": {"main": {"messages": messages}}}))
         (session / "trajectory.json").write_text(json.dumps({"trajectories": [{"reward_info": reward}]}))
         np.savez(session / "trajectory.npz", traj0_prompt_ids=[1, 2], traj0_response_ids=[3, 4, 5],
                  traj0_response_mask=[1, 1 if defect == "mask" else 0, 1],

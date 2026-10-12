@@ -6,13 +6,27 @@ commands or task verifiers. Upstream verl owns training and next-token shifting.
 
 `convert_mini_swe_messages` accepts complete mini-swe trajectories with one
 fenced bash command per assistant turn, a PR description, complete return-code
-and output observations, and the exact terminal submission sentinel. It removes
+and output observations, and the exact terminal submission sentinel. Complete
+output bodies are preserved verbatim, including empty output and trailing
+newlines; no newline before the closing wrapper is required. It removes
 the source agent's fenced-action instructions, projects commands into structured
 `bash` calls, rebases an explicitly supplied working-directory prefix, and uses
 the supplied runtime observation formatter. The submission sentinel plus
 staging/diff command becomes the source's final assistant thought, with no tool
 call, matching the deployed agent's idle termination. Truncated observations,
 ambiguous actions, other tools, and incomplete links fail closed.
+
+`allow_observation_excerpts=False` keeps the complete-stdout default. An
+explicit dataset contract may opt in to the
+[official mini-swe observation excerpts](https://github.com/SWE-agent/mini-swe-agent/blob/04d809ceab9df28f9adaed044884180159172930/src/minisweagent/config/mini_textbased.yaml):
+the exact warning, closed 5,000-character head and tail, and a nonnegative
+integer omission count are required. The complete delivered warning and excerpt
+body remain verbatim in observation context, with return code projected through
+the existing runtime metadata formatter. Missing stdout is never reconstructed;
+assistant actions, parser checks, EOS supervision and context rejection are
+unchanged. Opt-in datasets must record excerpt counts and omission metadata per
+source row and in their manifest. This data contract does not change RL episode
+completion or truncation rules.
 
 `encode_assistant_targets` renders through the actual `MessageCodec` message and
 tool projection and the unmodified native chat template. It verifies that every
@@ -56,6 +70,25 @@ from 2,297 to 16,070 under a **16,384-token** cap. Every selected assistant turn
 passes native prefix and Hermes parser roundtrip checks. Validation task IDs
 are disjoint from training; repositories are shared, so this split does not
 measure generalization to new repositories.
+
+The expanded **32K delivered-excerpt** preparation contains 510 trajectories
+from 97 repositories: 461 train and 49 validation. Every previous validation
+assignment is retained. Its 5,349,111 input tokens include 815,686 assistant
+targets, 4,587 bash calls and 5,097 supervised EOS tokens; maximum length is
+32,295. All turns pass both native Hermes parser roundtrips. The 426 source
+observation excerpts preserve their explicit omission warnings and counts;
+3,624,221 stdout characters were omitted by the source agent, not fabricated
+or removed during this preparation. Source model finish reasons were not
+published and are recorded as unknown. The source success label still has not
+been independently re-executed.
+
+The immutable dataset is
+`/mnt/oss/datasets/limite-agentic-bootstrap-delivered-excerpts-32k-20261013/`;
+manifest SHA-256 is
+`b3ca1d51a45791c385dfb84a83c52f38b355842b4204ba4f9eebfc9b980ca67e`.
+Its reviewed repository mapping uses pinned official SWE-smith RepoProfiles
+and retains the MiMo exclusions below. The original 149-row and strict 211-row
+preparations remain unchanged.
 
 All 11 distinct MiMo validation tasks from the original eight-task pilot and
 the current three-task pilot are excluded by ID and exact problem hash.

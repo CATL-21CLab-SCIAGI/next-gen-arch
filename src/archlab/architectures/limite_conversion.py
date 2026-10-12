@@ -80,7 +80,7 @@ def _joint_reduce(module, q, k, v, mask, *, scaling, dropout=0.0, **kwargs):
         else:
             output = tilelang_attention(
                 q, k, v, scaling=scaling, short=short, short_window=short_window,
-                long_window=long_window, dynamic_length=True,
+                long_window=long_window, dynamic_length=True, shared_gradient_dtype=torch.float64,
             )
     else:
         # Existing simplicial kernels apply D**-0.5; retain Limite's own scale.
@@ -253,6 +253,7 @@ def conversion_metadata(model):
         "layers": list(range(len(backbone.layers))),
         "short_axis": "K1=1+linear_delta_K1;V1=1+linear_delta_V1;no_norm;no_rope",
         "initialization": "zero_short_deltas;inherited_native_attention_parameters",
+        "tilelang_shared_gradient_dtype": "float64" if config.backend == "tilelang" else None,
         "cached_decode_qualified": False,
         "cached_decode_contract": "unpadded_DynamicCache;full_prefill_then_single_token;no_gradients",
         "native_geometry": {

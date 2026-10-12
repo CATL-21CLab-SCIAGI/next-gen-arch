@@ -341,8 +341,10 @@ def check_curriculum(experiment, config):
     if not path.is_absolute():
         path = spec.parent / path
     harness = yaml.safe_load(path.read_text())
+    observation_limit = harness["agent"].get("max_observation_length")
     if (harness["agent"]["type"] != "bashonly-agent"
             or harness["agent"]["step_limit"] != pilot.step_limit
+            or type(observation_limit) is not int or observation_limit <= 0
             or harness["model"]["protocol"] != "chat"
             or harness["model"]["model_kwargs"].get("max_tokens") != pilot.max_turn_tokens
             or not config.actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode):
@@ -350,6 +352,7 @@ def check_curriculum(experiment, config):
     return dict(spec=str(spec), spec_sha256=sha256_file(spec), harness=str(path.resolve()),
                 harness_sha256=sha256_file(path), thresholds=asdict(pilot),
                 native_context=experiment.native_context,
+                tool_observation_max_characters=observation_limit,
                 truncation="preserve reason and evidence; stock mask excludes unfinished policy loss")
 
 

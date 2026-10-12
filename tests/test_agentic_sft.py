@@ -39,6 +39,67 @@ def convert(messages, formatter=lambda output: output["output"]):
     )
 
 
+def public_excerpt(elided_chars=123):
+    warning = (
+        "The output of your last command was too long.\n"
+        "Please try a different command that produces less output.\n"
+        "If you're looking at a file you can try use head, tail or sed to view a smaller number of lines selectively.\n"
+        "If you're using grep or find and it produced too much output, you can use a more selective search pattern.\n"
+        "If you really need to see something from the full command's output, you can redirect output to a file and then search in that file."
+    )
+    head = "OBSERVATION_SENTINEL /home/nonroot/testbed".ljust(5000, "h")
+    return (f"<returncode>1</returncode>\n<warning>\n{warning}\n</warning>"
+            f"<output_head>\n{head}\n</output_head>\n<elided_chars>\n{elided_chars} characters elided\n"
+            f"</elided_chars>\n<output_tail>\n{'t' * 5000}\n</output_tail>")
+
+
+def convert_excerpt(messages, formatter=lambda output: output["output"]):
+    return convert_mini_swe_messages(
+        messages, system="Runtime system.", instance_template="Fix the following issue:\n\n{{task}}",
+        format_observation=formatter, source_cwd="/home/nonroot/testbed", runtime_cwd="/testbed",
+        allow_observation_excerpts=True,
+    )
+
+
+@pytest.mark.parametrize("elided_chars", [0, 123])
+def test_public_excerpt_requires_opt_in_and_preserves_delivered_body(elided_chars):
+    messages = public_messages()
+    messages[3]["content"] = public_excerpt(elided_chars)
+    with pytest.raises(ValueError, match="truncated"):
+        convert(messages)
+    observations = []
+
+    def formatter(observation):
+        observations.append(observation)
+        return observation["output"]
+
+    converted = convert_excerpt(messages, formatter)
+    body = public_excerpt(elided_chars).split("\n", 1)[1].replace("/home/nonroot/testbed", "/testbed")
+    assert observations == [{"output": body, "metadata": {"returncode": 1}}]
+    assert converted[3]["content"] == body
+    assert len(converted) == 5
+    assert f"{elided_chars} characters elided" in converted[3]["content"]
+    assert converted[2] == convert(public_messages())[2]
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda text: text.removesuffix("</output_tail>"),
+    lambda text: text.replace("</output_head>", ""),
+    lambda text: text.replace("123 characters elided", "-1 characters elided"),
+    lambda text: text.replace("123 characters elided", "0123 characters elided"),
+    lambda text: text.replace("123 characters elided", "unknown characters elided"),
+    lambda text: text.replace("123 characters elided", "١٢٣ characters elided"),
+    lambda text: text.replace("command was too long", "command may have been too long"),
+    lambda text: text.replace("h\n</output_head>", "\n</output_head>"),
+    lambda text: text.replace("t\n</output_tail>", "\n</output_tail>"),
+])
+def test_public_excerpt_rejects_unclosed_or_nonofficial_structure(mutation):
+    messages = public_messages()
+    messages[3]["content"] = mutation(public_excerpt())
+    with pytest.raises(ValueError, match="truncated"):
+        convert_excerpt(messages)
+
+
 def test_public_conversion_retains_commands_and_uses_runtime_formatter():
     observations = []
 
@@ -53,25 +114,42 @@ def test_public_conversion_retains_commands_and_uses_runtime_formatter():
     assert call["function"]["name"] == "bash"
     assert json.loads(call["function"]["arguments"]) == {"command": "ls /testbed"}
     assert messages[3]["tool_call_id"] == call["id"]
-    assert observations == [{"output": "OBSERVATION_SENTINEL /testbed", "metadata": {"returncode": 0}}]
+    assert observations == [{"output": "OBSERVATION_SENTINEL /testbed\n", "metadata": {"returncode": 0}}]
     assert messages[3]["content"].endswith("Tool metadata: {'returncode': 0}")
     assert messages[-1] == {"role": "assistant", "content": "THOUGHT: Finished."}
     assert "Source" not in json.dumps(messages)
     assert "COMPLETE_TASK" not in json.dumps(messages)
 
 
+@pytest.mark.parametrize("output", ["", "edited", "edited\n", "\n", "edited\n\n"])
+def test_public_conversion_preserves_complete_output_body_verbatim(output):
+    messages = public_messages()
+    messages[3]["content"] = f"<returncode>0</returncode>\n<output>\n{output}</output>"
+    observations = []
+
+    def formatter(observation):
+        observations.append(observation)
+        return observation["output"]
+
+    converted = convert(messages, formatter)
+    assert observations == [{"output": output, "metadata": {"returncode": 0}}]
+    assert converted[3]["content"] == output
+
+
 @pytest.mark.parametrize("mutation,match", [
     (lambda messages: messages[3].update(content="<returncode>0</returncode>\n<output_head>clipped</output_head>"), "truncated"),
+    (lambda messages: messages[3].update(content="<returncode>0</returncode>\n<output>\nincomplete"), "truncated"),
     (lambda messages: messages[2].update(content="```bash\npwd\n```\n```bash\nls\n```"), "exactly one"),
     (lambda messages: messages.pop(3), "no complete observation"),
     (lambda messages: messages[4].update(content="THOUGHT: Done.\n```bash\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT && rm -rf x\n```"), "Unsupported submission"),
     (lambda messages: messages[1].update(content="Missing original problem."), "PR description"),
 ])
-def test_public_conversion_rejects_ambiguous_or_incomplete_records(mutation, match):
+@pytest.mark.parametrize("converter", [convert, convert_excerpt])
+def test_public_conversion_rejects_ambiguous_or_incomplete_records(mutation, match, converter):
     messages = public_messages()
     mutation(messages)
     with pytest.raises(ValueError, match=match):
-        convert(messages)
+        converter(messages)
 
 
 def test_structured_conversion_rejects_other_tools_and_broken_links():
@@ -85,8 +163,8 @@ def test_structured_conversion_rejects_other_tools_and_broken_links():
         normalize_bash_messages(messages, system="Runtime")
 
 
-@pytest.fixture
-def native(monkeypatch):
+@pytest.fixture(params=[False, True], ids=["complete-stdout", "delivered-excerpt"])
+def native(monkeypatch, request):
     model = os.environ.get("ARCHLAB_NATIVE_TOKENIZER")
     if not model:
         pytest.skip("needs qualified native tokenizer and upstream runtime")
@@ -107,10 +185,14 @@ def native(monkeypatch):
     codec = MessageCodec(tokenizer, tool_parser_name="hermes", rollout_backend="verl",
                          generation_eos_token_id=151645)
     tools = ToolRegistry.from_config(config.tools).get_function_definitions()
+    source_messages = public_messages()
+    if request.param:
+        source_messages[3]["content"] = public_excerpt()
     messages = convert_mini_swe_messages(
-        public_messages(), system=config.system_template.replace("{{cwd}}", "/testbed"),
+        source_messages, system=config.system_template.replace("{{cwd}}", "/testbed"),
         instance_template=config.instance_template, format_observation=agent._format_observation,
         source_cwd="/home/nonroot/testbed", runtime_cwd="/testbed",
+        allow_observation_excerpts=request.param,
     )
     return tokenizer, codec, tools, messages
 

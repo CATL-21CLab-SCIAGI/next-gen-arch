@@ -4,6 +4,8 @@ use_dataset_env: true
 agent:
   type: bashonly-agent
   step_limit: 500
+  # Bound tool stdout with the upstream visible head/tail warning, in characters.
+  max_observation_length: 12000
 environment:
   environment_class: archlab.training.sandbox.E2BEnvironment
   timeout: 300

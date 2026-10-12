@@ -212,8 +212,11 @@ def _validate_conversion_science(experiment: Experiment, config: DictConfig) -> 
     } & set(rollout.engine_kwargs.vllm)
     if conflicting:
         raise ValueError("replacement engine kwargs override the serving contract: " + ", ".join(sorted(conflicting)))
-    if actor.optim.use_checkpoint_opt_param_scheduler:
-        raise ValueError("replacement RL requires a fresh optimizer and parameter scheduler")
+    if not actor.optim.use_checkpoint_opt_param_scheduler:
+        raise ValueError("replacement checkpoints must restore the optimizer parameter scheduler")
+    overrides = actor.optim.override_optimizer_config or {}
+    if overrides.get("adam_beta1") != .9 or overrides.get("adam_beta2") != .95:
+        raise ValueError("replacement Adam requires explicit Megatron beta overrides (0.9, 0.95)")
     pilot = experiment.pilot
     if (pilot is None or not 0 < pilot.max_turn_tokens <= 8192 or pilot.step_limit != 500
             or pilot.minimum_prompt_groups < 2

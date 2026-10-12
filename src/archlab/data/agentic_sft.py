@@ -11,6 +11,22 @@ import json
 import re
 from collections.abc import Callable
 
+_MINI_SWE_OUTPUT_WARNING = (
+    "The output of your last command was too long.\n"
+    "Please try a different command that produces less output.\n"
+    "If you're looking at a file you can try use head, tail or sed to view a smaller number of lines selectively.\n"
+    "If you're using grep or find and it produced too much output, you can use a more selective search pattern.\n"
+    "If you really need to see something from the full command's output, you can redirect output to a file and then search in that file."
+)
+_MINI_SWE_OUTPUT_EXCERPT = re.compile(
+    r"<returncode>(?P<returncode>-?[0-9]+)</returncode>\n"
+    r"(?P<body><warning>\n(?P<warning>.*?)\n</warning><output_head>\n"
+    r"(?P<head>.*)\n</output_head>\n<elided_chars>\n"
+    r"(?P<elided_chars>0|[1-9][0-9]*) characters elided\n</elided_chars>\n"
+    r"<output_tail>\n(?P<tail>.*)\n</output_tail>)\s*",
+    re.DOTALL,
+)
+
 
 def text_content(content: str | list[dict] | None) -> str:
     """Accept text-only public chat records without discarding other modalities."""
@@ -26,14 +42,16 @@ def text_content(content: str | list[dict] | None) -> str:
 def convert_mini_swe_messages(
     messages: list[dict], *, system: str, instance_template: str,
     format_observation: Callable[[dict], str], source_cwd: str, runtime_cwd: str,
+    allow_observation_excerpts: bool = False,
 ) -> list[dict]:
     """Project strict mini-swe bash records onto the deployed agent's protocol.
 
-    Only complete, untruncated observations and the documented submission
-    sentinel are accepted. The source's fenced-action instructions are removed;
-    commands become structured bash calls and observations use the runtime's
-    formatter. Submission becomes an idle assistant response. Paths are
-    rebased explicitly, never inferred or executed.
+    Complete stdout is required by default. The explicit excerpt contract also
+    accepts the official, fully closed warning/head/omission-count/tail body,
+    preserving that delivered body verbatim rather than inventing missing stdout.
+    Commands become structured bash calls and observations use the runtime's
+    formatter. The documented submission sentinel becomes an idle assistant
+    response. Paths are rebased explicitly, never inferred or executed.
     """
     source = [message for message in messages if message["role"] != "system"]
     if len(source) < 3 or source[0]["role"] != "user":
@@ -50,7 +68,8 @@ def convert_mini_swe_messages(
     result = [{"role": "user", "content": instance_template.replace("{{task}}", rebase(problem))}]
     pending = None
     for index, message in enumerate(source[1:], 1):
-        content = rebase(text_content(message.get("content")))
+        original_content = text_content(message.get("content"))
+        content = rebase(original_content)
         if message["role"] == "assistant":
             if pending is not None:
                 raise ValueError("mini-swe action has no complete observation")
@@ -76,13 +95,18 @@ def convert_mini_swe_messages(
             }]})
         elif message["role"] == "user" and pending is not None:
             observation = re.fullmatch(
-                r"<returncode>(-?\d+)</returncode>\n<output>\n(.*)\n</output>\s*",
+                r"<returncode>(-?\d+)</returncode>\n<output>\n(.*)</output>\s*",
                 content, re.DOTALL,
             )
-            if observation is None:
-                raise ValueError("Incomplete, truncated or nonstandard mini-swe observation")
-            output = format_observation({"output": observation.group(2),
-                                         "metadata": {"returncode": int(observation.group(1))}})
+            if observation is not None:
+                body, returncode = observation.group(2), int(observation.group(1))
+            else:
+                excerpt = _MINI_SWE_OUTPUT_EXCERPT.fullmatch(original_content) if allow_observation_excerpts else None
+                if (excerpt is None or excerpt["warning"] != _MINI_SWE_OUTPUT_WARNING
+                        or len(excerpt["head"]) != 5000 or len(excerpt["tail"]) != 5000):
+                    raise ValueError("Incomplete, truncated or nonstandard mini-swe observation")
+                body, returncode = rebase(excerpt["body"]), int(excerpt["returncode"])
+            output = format_observation({"output": body, "metadata": {"returncode": returncode}})
             result.append({"role": "tool", "tool_call_id": pending, "content": output})
             pending = None
         else:

@@ -146,6 +146,19 @@ def test_exact_state_detects_one_bit_corruption(corruption, tmp_path, monkeypatc
         _assert_restored_state(model, chained, state, "corrupted")
 
 
+def test_exact_state_empty_group_counter_is_inert_but_populated_counter_is_checked():
+    model = torch.nn.Linear(2, 1, bias=False)
+    master = torch.nn.Parameter(model.weight.detach().clone())
+    optimizer = torch.optim.AdamW([master], lr=.001)
+    optimizer.add_param_group({"params": []})
+    chained = SimpleNamespace(chained_optimizers=[SimpleNamespace(optimizer=optimizer)])
+    before = _state_fingerprint(model, chained)
+    optimizer.param_groups[1]["step"] = 1
+    assert _state_fingerprint(model, chained) == before
+    optimizer.param_groups[0]["step"] = 1
+    assert _state_fingerprint(model, chained) != before
+
+
 def test_rng_fingerprint_detects_changed_random_state():
     state = {"torch": torch.tensor([1, 2], dtype=torch.uint8),
              "numpy": np.array([3, 4], dtype=np.uint32), "python": (3, (1, 2), None)}

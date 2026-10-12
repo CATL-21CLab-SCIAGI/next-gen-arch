@@ -3,7 +3,9 @@
 Derived from TileLang v0.1.8 FlashAttention/GQA scheduling examples at
 41b25527cd672434f88eeea7e056d8d7c0d4faa4 (Copyright Tile-AI, MIT;
 see docs/NOTICE.md). The short-axis extension normalizes all key pairs jointly.
-BF16 tensor products use FP32 softmax, outputs and shared-gradient atomics.
+BF16 tensor products use FP32 softmax and outputs. Shared-gradient atomics
+default to FP32; true Limite conversion explicitly selects FP64 accumulation
+before returning BF16 gradients to avoid amplified BF16 rounding ties.
 This fresh-run precision contract deliberately differs from the historical
 Triton FP32/TF32x3 path; checkpoint backends may not be silently changed.
 """
@@ -127,7 +129,8 @@ def _forward_kernel(B, N, HQ, HK, D, S, W1, W2, scale, BQ=4, BN=64, stages=1, de
 
 
 @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
-def _backward_kernel(B, N, HQ, HK, D, S, W1, W2, scale, BQ=4, BN=32, stages=1):
+def _backward_kernel(B, N, HQ, HK, D, S, W1, W2, scale, BQ=4, BN=32, stages=1,
+                     shared_gradient_dtype="float32"):
     N = T.dynamic("sequence_length") if N is None else N
     W2 = N if W2 == 0 else W2
     M = BQ * S
@@ -143,10 +146,10 @@ def _backward_kernel(B, N, HQ, HK, D, S, W1, W2, scale, BQ=4, BN=32, stages=1):
         LSE: T.Tensor([B, N, HQ], T.float32),
         DO: T.Tensor([B, N, HQ, D], T.float32),
         DQ: T.Tensor([B, N, HQ, D], T.float32),
-        DK1: T.Tensor([B, N, HK, D], T.float32),
-        DK2: T.Tensor([B, N, HK, D], T.float32),
-        DV1: T.Tensor([B, N, HK, D], T.float32),
-        DV2: T.Tensor([B, N, HK, D], T.float32),
+        DK1: T.Tensor([B, N, HK, D], shared_gradient_dtype),
+        DK2: T.Tensor([B, N, HK, D], shared_gradient_dtype),
+        DV1: T.Tensor([B, N, HK, D], shared_gradient_dtype),
+        DV2: T.Tensor([B, N, HK, D], shared_gradient_dtype),
     ):
         with T.Kernel(T.ceildiv(N, BQ), HQ, B, threads=128) as (bx, h, b):
             a = T.alloc_shared([M, D], T.bfloat16)
@@ -261,7 +264,8 @@ def _backward_kernel(B, N, HQ, HK, D, S, W1, W2, scale, BQ=4, BN=32, stages=1):
 
 class _JointAttention(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, q, k1, k2, v1, v2, s, w1, w2, scale, dynamic_length):
+    def forward(ctx, q, k1, k2, v1, v2, s, w1, w2, scale, dynamic_length,
+                shared_gradient_dtype):
         xs = [x.contiguous() for x in (q, k1, k2, v1, v2)]
         b, n, h, d = q.shape
         hk = k1.shape[2]
@@ -270,28 +274,30 @@ class _JointAttention(torch.autograd.Function):
         out, lse = _forward_kernel(*cfg, BN=128 if s == 16 else 64)(*xs, _unused_lengths(q.device))
         ctx.save_for_backward(*xs, out, lse)
         ctx.cfg = cfg
+        ctx.shared_gradient_dtype = shared_gradient_dtype
         return out
 
     @staticmethod
     def backward(ctx, gradient_output):
         q, k1, k2, v1, v2, out, lse = ctx.saved_tensors
         dq = torch.empty_like(q, dtype=torch.float32)
+        dtype = ctx.shared_gradient_dtype
         if ctx.cfg[5] == 1:
             # The ordinary-attention specialization never reads/writes the short
             # branch; aliases avoid redundant zeroing and allocation.
-            dk = torch.zeros_like(k2, dtype=torch.float32)
-            dv = torch.zeros_like(v2, dtype=torch.float32)
+            dk = torch.zeros_like(k2, dtype=dtype)
+            dv = torch.zeros_like(v2, dtype=dtype)
             gs = [dk, dk, dv, dv]
         else:
-            gs = [torch.zeros_like(x, dtype=torch.float32) for x in (k1, k2, v1, v2)]
-        _backward_kernel(*ctx.cfg)(
+            gs = [torch.zeros_like(x, dtype=dtype) for x in (k1, k2, v1, v2)]
+        _backward_kernel(*ctx.cfg, shared_gradient_dtype=str(dtype).removeprefix("torch."))(
             q, k1, k2, v1, v2, out, lse, gradient_output.float().contiguous(), dq, *gs
         )
         if ctx.cfg[5] == 1:
             grads = [dq.to(q.dtype), None, gs[1].to(k2.dtype), None, gs[3].to(v2.dtype)]
         else:
             grads = [g.to(x.dtype) for g, x in zip([dq, *gs], [q, k1, k2, v1, v2], strict=True)]
-        return *grads, None, None, None, None, None
+        return *grads, None, None, None, None, None, None
 
 
 def _validate(q, k, v, short):
@@ -333,9 +339,13 @@ def normal_attention_forward(q, k, v, *, scaling, long_window, dynamic_length=Fa
 
 def tilelang_attention(
     q, k, v, *, scaling, long_window, short=None, short_window=1, normal_kernel="shared",
-    dynamic_length=False,
+    dynamic_length=False, shared_gradient_dtype=torch.float32,
 ):
-    """Ordinary GQA or joint 2-simplicial softmax; no implicit fallback."""
+    """Ordinary GQA or joint 2-simplicial softmax; no implicit fallback.
+
+    ``shared_gradient_dtype`` changes only the four K/V accumulation buffers.
+    Projections, tensor products and returned input gradients remain BF16.
+    """
     import math
 
     _validate(q, k, v, short)
@@ -344,10 +354,14 @@ def tilelang_attention(
     if k.shape[1] != q.shape[1] or (short and short[0].shape[1] != q.shape[1]):
         raise ValueError("training attention requires matching sequence lengths")
     if torch.are_deterministic_algorithms_enabled():
-        raise RuntimeError("TileLang attention backward uses FP32 atomics")
+        raise RuntimeError("TileLang attention backward uses shared-gradient atomics")
     if normal_kernel not in ("shared", "gqa"):
         raise ValueError("normal_kernel must be shared or gqa")
+    if shared_gradient_dtype not in (torch.float32, torch.float64):
+        raise ValueError("shared gradient accumulation requires FP32 or FP64")
     if short is None and normal_kernel == "gqa":
+        if shared_gradient_dtype != torch.float32:
+            raise ValueError("wide shared gradient accumulation requires the shared kernel")
         from functools import partial
 
         from archlab.architectures.tilelang_gqa import gqa_attention
@@ -361,7 +375,7 @@ def tilelang_attention(
     window = 0 if dynamic_length and long_window >= q.shape[1] else long_window
     return _JointAttention.apply(
         q, k1, k, v1, v, 16 if short else 1, min(short_window, long_window), window, scaling,
-        dynamic_length,
+        dynamic_length, shared_gradient_dtype,
     )
 
 

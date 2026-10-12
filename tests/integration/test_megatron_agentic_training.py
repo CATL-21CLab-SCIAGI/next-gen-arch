@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import inspect
 import json
 import os
 from functools import partial
@@ -58,7 +59,10 @@ def _state_fingerprint(model, optimizer):
                 # This grouping label is not an optimizer hyperparameter; MCore
                 # reload reconstructs it, while all numerical group fields matter.
                 config={key: value for key, value in group.items()
-                        if key not in {"params", "_storage_dtype_partition"}},
+                        if key not in {"params", "_storage_dtype_partition"}
+                        # FusedAdam skips empty local groups before reading step.
+                        # MCore broadcasts the populated rank's group metadata.
+                        and not (key == "step" and not group["params"])},
                 parameters=[dict(master=parameter, state=component.optimizer.state[parameter])
                             for parameter in group["params"]],
             ))
@@ -89,6 +93,25 @@ def _assert_restored_state(model, optimizer, expected, label):
     target = Path(os.environ["ARCHLAB_MEGATRON_WORK"]) / f"{label}-state-differences-{dist.get_rank()}.json"
     target.write_text(json.dumps(differences, indent=2))
     assert not differences, differences[:20]
+
+
+def _optimizer_group_audit(optimizer):
+    """Record actual local shard ownership and the installed optimizer backend."""
+    from archlab.artifacts import sha256_file
+
+    groups = []
+    for component_index, component in enumerate(optimizer.chained_optimizers):
+        backend = type(component.optimizer)
+        source = inspect.getsourcefile(backend)
+        for group_index, group in enumerate(component.optimizer.param_groups):
+            groups.append(dict(component=component_index, group=group_index,
+                local_parameters=len(group["params"]),
+                local_elements=sum(parameter.numel() for parameter in group["params"]),
+                step=group.get("step"), betas=list(group["betas"]),
+                backend=backend.__module__ + "." + backend.__qualname__,
+                backend_source=source,
+                backend_source_sha256=sha256_file(source) if source else None))
+    return groups
 
 
 # Fixed before GPU validation: this tests engineering numerical equivalence,
@@ -474,6 +497,12 @@ def test_package_engine_optimizer_scheduler_checkpoint_restart():
         learner = MegatronEngineWithLMHead(*arguments)
         learner.initialize()
         assert mcore_random.CheckpointFunction.backward is original_checkpoint_backward
+        if deployment is not None:
+            overrides = deployment.actor_rollout_ref.actor.optim.override_optimizer_config
+            expected_betas = (overrides.adam_beta1, overrides.adam_beta2)
+            for component in learner.optimizer.chained_optimizers:
+                assert all(tuple(group["betas"]) == expected_betas
+                           for group in component.optimizer.param_groups)
         return learner
 
     engine = build()
@@ -510,6 +539,7 @@ def test_package_engine_optimizer_scheduler_checkpoint_restart():
         saved_fingerprint = _state_fingerprint(engine.module[0].module, engine.optimizer)
         baseline = _snapshot(engine.module[0].module)
     saved_scheduler = deepcopy(engine.lr_scheduler.state_dict())
+    saved_groups = _optimizer_group_audit(engine.optimizer)
     second = step(ids.roll(1))
     with engine.train_mode():
         expected = _snapshot(engine.module[0].module)
@@ -520,6 +550,8 @@ def test_package_engine_optimizer_scheduler_checkpoint_restart():
     # Reset only this in-place control to the fresh-engine baseline before load.
     engine.lr_scheduler.num_steps = 0
     engine.load_checkpoint(str(checkpoint), del_local_after_load=False)
+    (root / f"control-optimizer-groups-{rank}.json").write_text(json.dumps(dict(
+        saved=saved_groups, restored=_optimizer_group_audit(engine.optimizer)), indent=2))
     with engine.train_mode():
         _assert_restored_state(engine.module[0].module, engine.optimizer, saved_fingerprint, "control")
     assert engine.lr_scheduler.state_dict() == saved_scheduler
@@ -532,6 +564,8 @@ def test_package_engine_optimizer_scheduler_checkpoint_restart():
     gc.collect()
     engine = build()
     engine.load_checkpoint(str(checkpoint), del_local_after_load=False)
+    (root / f"fresh-optimizer-groups-{rank}.json").write_text(json.dumps(dict(
+        saved=saved_groups, restored=_optimizer_group_audit(engine.optimizer)), indent=2))
     with engine.train_mode():
         _assert_restored_state(engine.module[0].module, engine.optimizer, saved_fingerprint, "fresh")
     assert engine.lr_scheduler.state_dict() == saved_scheduler
@@ -562,6 +596,9 @@ def test_package_engine_optimizer_scheduler_checkpoint_restart():
                   next_update_comparison=update,
                   exact_rng=True,
                   numerical_contract="native-equivalence-v2",
+                  optimizer_betas=sorted({tuple(group["betas"])
+                      for component in engine.optimizer.chained_optimizers
+                      for group in component.optimizer.param_groups}),
                   unchanged_engine_repeat=control_update,
                   runtime_checkpoint_function_unchanged=True,
                   scope="stock verl learner; Ray rollout/tool/native-context gates separate")
