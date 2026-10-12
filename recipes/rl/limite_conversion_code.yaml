@@ -46,10 +46,13 @@ settings:
   actor_rollout_ref.model.use_fused_kernels: false
   actor_rollout_ref.model.enable_gradient_checkpointing: true
   actor_rollout_ref.actor.optim.lr: 1.0e-5
-  actor_rollout_ref.actor.optim.betas: [0.9, 0.95]
+  actor_rollout_ref.actor.optim.override_optimizer_config:
+    adam_beta1: 0.9
+    adam_beta2: 0.95
   actor_rollout_ref.actor.optim.weight_decay: 0.0
   actor_rollout_ref.actor.optim.clip_grad: 1.0
-  actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler: false
+  # Fresh initialization is trainer.resume_mode; future resume restores scheduler state.
+  actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler: true
   actor_rollout_ref.actor.megatron.tensor_model_parallel_size: 1
   actor_rollout_ref.actor.megatron.pipeline_model_parallel_size: 1
   actor_rollout_ref.actor.megatron.context_parallel_size: 1

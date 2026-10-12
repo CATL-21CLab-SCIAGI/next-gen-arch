@@ -122,11 +122,38 @@ def test_replacement_recipe_uses_actual_package_sft_and_explicit_eager_curriculu
     assert rollout.n == 4 and config.trainer.v1.sampler.max_off_policy_threshold == 1
     assert config.algorithm.rollout_correction.rollout_is_threshold == 2
     assert config.trainer.resume_mode == "disable"
-    assert not config.actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler
+    assert config.actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler
+    assert dict(config.actor_rollout_ref.actor.optim.override_optimizer_config) == {
+        "adam_beta1": .9, "adam_beta2": .95}
     assert rollout.custom.agent_framework.mask_unfinished_episode
     result = check_curriculum(experiment, config)
     assert result["thresholds"]["max_turn_tokens"] == 8192
     assert result["thresholds"]["maximum_truncated_trajectories"] == 0
+    assert result["tool_observation_max_characters"] == 12000
+
+
+@pytest.mark.parametrize("observation_limit", [None, 0])
+def test_replacement_curriculum_requires_explicit_positive_tool_observation_budget(
+    conversion_deployment, tmp_path, observation_limit,
+):
+    import yaml
+
+    from archlab.training.config import compose_verl
+    from archlab.training.qualification import check_curriculum
+
+    experiment = read_experiment(Path("recipes/rl/limite_conversion_code.yaml"))
+    config = compose_verl(experiment, Path("third_party/verl"))
+    harness = yaml.safe_load(Path("recipes/rl/harness/conversion_code_bash.yaml").read_text())
+    if observation_limit is None:
+        harness["agent"].pop("max_observation_length")
+    else:
+        harness["agent"]["max_observation_length"] = observation_limit
+    (tmp_path / "harness.yaml").write_text(yaml.safe_dump(harness))
+    spec = tmp_path / "spec.yaml"
+    spec.write_text(yaml.safe_dump({"harnesses": [{"config": "harness.yaml"}]}))
+    config.ray_kwargs.ray_init.runtime_env.env_vars.MIXED_HARNESS_SPEC = str(spec)
+    with pytest.raises(ValueError, match="curriculum"):
+        check_curriculum(experiment, config)
 
 
 @pytest.mark.parametrize("override", [
@@ -138,7 +165,8 @@ def test_replacement_recipe_uses_actual_package_sft_and_explicit_eager_curriculu
     "settings.actor_rollout_ref.rollout.max_num_batched_tokens=16384",
     "settings.actor_rollout_ref.actor.megatron.tensor_model_parallel_size=2",
     "settings.actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2",
-    "settings.actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler=true",
+    "settings.actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler=false",
+    "settings.actor_rollout_ref.actor.optim.override_optimizer_config.adam_beta2=0.999",
     "settings.actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode=false",
     "settings.actor_rollout_ref.rollout.engine_kwargs.vllm.enforce_eager=false",
     "pilot.maximum_truncated_trajectories=1", "pilot.minimum_reward_contrast_groups=0",

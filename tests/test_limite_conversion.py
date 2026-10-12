@@ -3,7 +3,9 @@
 import copy
 import json
 import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -53,6 +55,30 @@ def cpu_threads():
     torch.set_num_threads(1)
     yield
     torch.set_num_threads(previous)
+
+
+def test_conversion_selects_wide_shared_gradient_accumulation(monkeypatch):
+    from archlab.architectures.limite_conversion import _joint_reduce
+
+    calls = []
+
+    def kernel(q, k, v, **kwargs):
+        calls.append(kwargs)
+        return q.float()
+
+    monkeypatch.setitem(sys.modules, "archlab.architectures.tilelang_attention", SimpleNamespace(
+        tilelang_attention=kernel, tilelang_decode=kernel,
+    ))
+    module = SimpleNamespace(
+        _archlab_conversion_config=LimiteConversionConfig(backend="tilelang"),
+        _archlab_conversion_short=(torch.ones(1, 3, 2, 128),) * 2,
+        _archlab_conversion_decode=False, is_global=True,
+    )
+    q, k, v = [torch.ones(1, heads, 3, 128) for heads in (16, 2, 2)]
+    output, _ = _joint_reduce(module, q, k, v, None, scaling=.1)
+    assert output.shape == (1, 3, 16, 128)
+    assert calls[0]["shared_gradient_dtype"] == torch.float64
+    assert calls[0]["dynamic_length"] is True
 
 
 @pytest.mark.parametrize("short,long", [(1, 1), (5, 5), (16, 19)])

@@ -46,6 +46,9 @@ def test_bootstrap_composes_pinned_upstream_schema(deployment):
     assert config.model.external_lib == "archlab.training.megatron"
     assert config.engine._target_ == "verl.workers.config.McoreEngineConfig"
     assert config.optim._target_ == "verl.workers.config.McoreOptimizerConfig"
+    assert dict(config.optim.override_optimizer_config) == {
+        "adam_beta1": .9, "adam_beta2": .95}
+    assert config.optim.use_checkpoint_opt_param_scheduler
     assert config.data.custom_cls.name == "PreparedAgenticSFTDataset"
     assert config.data.pad_mode == "no_padding" and not config.engine.use_remove_padding
     assert config.data.micro_batch_size_per_gpu == 1 and config.data.train_batch_size == 8

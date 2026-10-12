@@ -117,6 +117,46 @@ def test_runtime_sequence_forward_and_all_gradients(variant, normal_kernel, shor
     test_forward_and_all_gradients(variant, normal_kernel, short, long, n, positions, dynamic_length=True)
 
 
+@pytest.mark.parametrize("n,window", [(10, 10), (37, 17), (1026, 1024), (2048, 2048)])
+def test_conversion_wide_shared_gradients_preserve_forward_reference_and_repeats(n, window):
+    from archlab.architectures.tilelang_attention import tilelang_attention
+
+    torch.manual_seed(20261013)
+    inputs = [torch.randn(1, n, heads, 128, device="cuda", dtype=torch.bfloat16)
+              for heads in (16, 2, 2, 2, 2)]
+    for index in (1, 3):
+        inputs[index] = 1 + .03 * inputs[index]
+    inputs = [value.requires_grad_() for value in inputs]
+    short_window = min(16, window)
+    positions = sorted({0, min(15, n - 1), min(16, n - 1), min(1024, n - 1), n - 1})
+    oracle = reference_simplicial(inputs[0].float() * (.1 * 128 ** .5),
+                                 *(value.float() for value in inputs[1:]),
+                                 short_window, window, query_positions=positions)
+    dy = torch.randn_like(oracle)
+    expected = torch.autograd.grad(oracle, inputs, dy)
+
+    def forward(dtype):
+        return tilelang_attention(inputs[0], inputs[2], inputs[4], scaling=.1,
+                                  long_window=window, short=(inputs[1], inputs[3]),
+                                  short_window=short_window, dynamic_length=True,
+                                  shared_gradient_dtype=dtype)
+
+    baseline_forward = forward(torch.float32).detach()
+    previous = None
+    for _ in range(3):
+        actual = forward(torch.float64)
+        torch.testing.assert_close(actual, baseline_forward, rtol=0, atol=0)
+        assert relative(actual[:, positions], oracle) < .005
+        gradients = torch.autograd.grad(actual[:, positions], inputs, dy)
+        for got, want in zip(gradients, expected, strict=True):
+            assert got.dtype == torch.bfloat16 and torch.isfinite(got).all()
+            assert relative(got, want) < .01
+        if previous is not None:
+            for got, want in zip(gradients, previous, strict=True):
+                torch.testing.assert_close(got, want, rtol=0, atol=0)
+        previous = gradients
+
+
 @pytest.mark.parametrize("variant", ["normal", "simplicial"])
 @pytest.mark.parametrize("n", [1, 17, 1025, 1026, 8192])
 def test_decode_joint_softmax(variant, n):

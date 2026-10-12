@@ -59,6 +59,14 @@ produce text/tool demonstrations that are retokenized for Limite; exact
 vocabulary equality is not required for text distillation. This is a bounded
 search, not proof that no compatible large teacher exists.
 
+The current bootstrap distills successful teacher text/tool trajectories,
+not teacher logits. On-policy logit distillation is not enabled: the upstream
+agent-framework rollout adapter rejects a teacher client, and token/history
+alignment still needs qualification. A separate MiMo service would also need
+the [supported serving stack](https://recipes.vllm.ai/XiaomiMiMo/MiMo-V2.6-Flash-RL):
+its packed MXFP4 checkpoint requires vLLM 0.31.0 or later, whereas the qualified
+Limite runtime uses 0.20.2. That training runtime is kept unchanged.
+
 ## Observed bootstrap behavior
 
 The initial five-pass run completed 80 updates and 4,664,565 logged input tokens;
@@ -89,6 +97,23 @@ These six first-turn checks establish protocol recovery, not executable reward
 or sustained RL learning. All five full-state checkpoints are preserved; actual
 serving, verifier and nonzero-update qualification remain required.
 
+A bounded real episode on training task `000311` completed two EOS-terminated
+turns at temperature 1.0, but emitted malformed tool transcripts: zero actual
+bash executions, no source patch, and executable reward zero. Parser error
+feedback is not a real tool cycle; the admission gate requires executed bash
+commands and their matching observations, rather than malformed-call placeholders
+or argument errors returned before execution.
+This diagnostic used 16K context, 1,024 tokens
+per turn and 12 steps, and does not qualify the full production contract.
+
+At temperature 0.6, the same bounded task produced five real bash executions
+and observations across seven turns. It inspected the repository but made no
+source edit; an attempted edit script failed with a syntax error. A broad search
+also exhausted the diagnostic's 16K context, and the final turn was correctly
+marked unfinished. Verifier reward remained zero. This is evidence of usable
+tool execution, not successful repair, and motivates more diverse complete
+teacher trajectories before a long RL pilot.
+
 An additional native-head audit found a genuinely broad vocabulary distribution
 at protocol boundaries: over 85,000 tokens within two logits of the maximum in
 one training example, versus one such token for ordinary content. Manual head
@@ -103,6 +128,26 @@ Staged SFT must declare `parent_stage=package_sft`; it verifies the actual train
 export, original publisher lineage and full replacement geometry. The default
 `original_base` stage retains the zero-initialized conversion checks. Both start
 fresh optimizers and record the exact supervision manifest.
+
+The historical bootstrap actually used Adam betas `(0.9, 0.999)`: the pinned
+Megatron configuration translation ignored the generic `optim.betas` setting.
+Its weights and receipts remain unchanged. New SFT/RL stages explicitly select
+the intended `(0.9, 0.95)` through upstream `override_optimizer_config` fields;
+admission checks the constructed optimizer's actual groups. A fresh RL start is
+selected with `trainer.resume_mode=disable`. Scheduler restoration is enabled
+separately so a later checkpoint resume retains the saved learning-rate step.
+
+The broader staged curriculum contains 510 publisher-resolved successful
+histories from 97 repositories: 461 training and 49 validation, retaining all
+previous validation assignments. It supplies 5,349,111 input tokens and 815,686
+assistant targets within 32K, without clipping assistant turns. Its 426 source
+tool-output excerpts retain the publisher's explicit warning, head, omission
+count and tail; omitted stdout is never invented or represented as complete.
+These are complete delivered observations, distinct from unfinished model
+responses. Source success labels have not been independently re-executed.
+The proposed continuation from update 160 is one pass at LR 0.00005 with a fresh
+optimizer, 57 stock DP8 updates and five full-state saves at 12/24/36/48/57.
+Actual repair rewards determine whether it is ready for RL.
 
 ## Admission and RL health
 
@@ -119,6 +164,15 @@ finite nonzero updates, useful reward groups, and checkpoint/resume evidence.
 All-zero reward and gradient after context-length outputs is a failed pilot,
 not healthy training. Asynchrony must remain bounded by explicit policy lag and
 importance correction; it does not remove capability or verifier failures.
+The eight training and three validation code tasks form an availability pilot,
+not a benchmark of architectural intelligence. Passing it establishes an
+executable learning loop; an advantage requires broader held-out evaluation
+under the matched comparison contract.
+The conversion harness explicitly uses upstream tool-output excerpting at
+12,000 characters, with its visible warning, while retaining the full 131,072
+token context and native generated-response termination checks. This prevents
+one broad shell search from unnecessarily filling the context. Harness hashes
+and executable sandbox baselines are renewed together when that setting changes.
 
 The first converted GPU probe had finite gradients in all 48 short projections.
 The cached/full-prefix test did **not** pass its predeclared precision bounds:
@@ -126,6 +180,42 @@ relative-logit L2 reached 0.0713 versus 0.0678 in the unchanged FA2 base control
 raw captured TileLang reduction differences were at most 0.000102. This points
 to native BF16 evaluation sensitivity but does not qualify cached serving.
 Failures and acceptance bounds remain in ignored run receipts.
+
+The trained update-160 checkpoint separately passed full 131,072-token serving
+and backward memory checks with finite gradients. Its DP8 gradient comparison
+failed the fixed 1% global / 2% layer bounds, including repeated native controls,
+despite exact forward outputs and weights. Captured backward replays trace tiny
+FP32 shared-gradient atomic differences across BF16 rounding boundaries, which
+amplify through the layers. Accumulating the four shared K/V gradients in FP64
+removed these differences: all 647 parameter gradients matched exactly across
+six actual trained-model backward repeats, with unchanged forward outputs.
+Seven focused B300 kernel checks and 34 CPU architecture/export checks passed.
+The true replacement selects this precision explicitly; existing inserted
+adapters retain their previous precision contract.
+
+Only shared-gradient accumulation changes precision; tensor products and
+returned gradients retain BF16, with FP32 softmax. Isolated native model
+forward/backward time increased from 0.286 to 0.405 seconds at 2K tokens, and
+from 0.605 to 0.952 seconds at 4K. These are diagnostic costs, not end-to-end
+learner slowdowns. The stock DP8 learner baseline is 2.677 seconds per update
+including optimizer/offload, or about 6,119 model tokens/second, excluding
+generation and tools. The FP64 candidate measured 2.727 seconds per update,
+1.85% slower, passing the unchanged 20% throughput-regression bound on all
+eight ranks. The separate DP8 native-gradient comparison also passed its
+unchanged bounds: all 647 parameter gradients matched exactly on every rank,
+including repeated unchanged controls. This measurement used the historical
+optimizer configuration. A fresh matched comparison with the corrected Adam
+betas and scheduler settings measured 2.740 seconds for FP64 versus 2.869 for
+FP32, again passing the unchanged throughput bound on all eight ranks. Five
+samples per path establish the regression budget, not a reliable speedup.
+The corrected stock checkpoint test also passed on all eight ranks: model and
+master weights, moments, RNG and scheduler restored, and the subsequent update
+met the unchanged numerical bounds. Constructed optimizer groups used Adam
+betas `(0.9, 0.95)`. Empty local optimizer groups can acquire a broadcast step
+counter on load; only that nonnumerical empty-group metadata is excluded from
+the fingerprint. Populated-group counters and all tensor state remain checked.
+Real-policy reward gates remain separate requirements. Production remains
+gated; full-context stability alone does not waive them.
 
 A separate control-calibrated admission version is declared before execution.
 On the same sampled response tokens, compare paged serving and native cached
