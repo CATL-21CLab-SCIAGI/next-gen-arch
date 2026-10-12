@@ -25,9 +25,13 @@
       {
         "path": "scripts/patches/verl/0007-observability-extensions.patch",
         "sha256": "903646bd07518c734dd25f63b364c620e7bb9c8adfe5dea9599ce863822695dc"
+      },
+      {
+        "path": "scripts/patches/verl/0008-preserve-truncated-agent-status.patch",
+        "sha256": "dc8afdc6c38d247947cb61742b252308822531436cccca5663e043e8a036bf42"
       }
     ],
-    "working_diff_sha256": "8337bb85ec426d41d5f45cc91fb73419e2b2052a309bf470172bded1565016ec",
+    "working_diff_sha256": "871c59f032584f896007218326566a94e56744bb8ec9d778a21637257704b02d",
     "url": "https://github.com/XiaomiMiMo/verl.git",
     "path": "third_party/verl",
     "runtime": "Primary agentic RL engine and monitoring; native Limite learner and serving integration remain under GPU qualification. Agent execution requires an authorized sandbox.",

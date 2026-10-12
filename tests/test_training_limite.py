@@ -220,7 +220,7 @@ def test_normal_serving_has_distinct_cache_slots_and_preserves_prefill_decode_an
     from torch import nn
     from torch.nn import functional as F
 
-    from archlab.training.serving import NormalLimiteForCausalLM, bind_normal_attention
+    from archlab.training.serving import VLLMLimiteForCausalLM, bind_normal_attention
 
     native_copy = deepcopy(native)
     expected = policy(native).eval()
@@ -258,7 +258,7 @@ def test_normal_serving_has_distinct_cache_slots_and_preserves_prefill_decode_an
 
     attached = bind_normal_attention(actual, factory)
     assert len(attached) == len(slots) == 8
-    serving = NormalLimiteForCausalLM.__new__(NormalLimiteForCausalLM)
+    serving = VLLMLimiteForCausalLM.__new__(VLLMLimiteForCausalLM)
     nn.Module.__init__(serving)
     serving.policy = actual
     assert serving.model is actual.model
@@ -290,3 +290,31 @@ def test_shared_training_mask_matches_native_dispatch(native, length):
             torch.testing.assert_close(actual[kind], expected[kind], rtol=0, atol=0)
             # All rows share one physical mask, independent of batch size.
             assert actual[kind].untyped_storage().nbytes() == length * length
+
+
+def test_replacement_export_preserves_native_geometry_and_trains_short_axis(tmp_path, native):
+    from archlab.architectures.limite_conversion import (
+        LimiteConversionConfig,
+        replace_limite_attention,
+    )
+
+    expected = replace_limite_attention(native, LimiteConversionConfig(backend="reference"))
+    root = tmp_path / "replacement"
+    receipt = limite.export_model(expected, SNAPSHOT, root)
+    assert receipt["conversion"]["intervention"] == "replace_attention"
+    actual = AutoModelForCausalLM.from_pretrained(root).train()
+    assert actual.config.adapter == {}
+    assert not hasattr(actual.policy.model, "adapters")
+    assert len(actual.policy.model.layers) == native.config.num_hidden_layers
+    actual.gradient_checkpointing_enable({"use_reentrant": False})
+    ids = torch.tensor([[1, 4, 8, 5, 2]])
+    result = actual(input_ids=ids, attention_mask=torch.ones_like(ids), use_cache=False, labels=ids)
+    assert torch.isfinite(result.loss)
+    result.loss.backward()
+    gradients = [layer.self_attn.short_kv_delta.grad for layer in actual.policy.model.layers]
+    assert all(value is not None and torch.isfinite(value).all() for value in gradients)
+    assert sum(float(value.float().square().sum()) for value in gradients) > 0
+    with pytest.raises(ValueError, match="padding"):
+        actual(input_ids=ids, attention_mask=torch.tensor([[1, 1, 1, 1, 0]]), use_cache=False)
+    with pytest.raises(ValueError, match="contiguous"):
+        actual(input_ids=ids, position_ids=torch.tensor([[0, 1, 0, 1, 2]]), use_cache=False)

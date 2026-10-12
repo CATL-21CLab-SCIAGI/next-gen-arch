@@ -118,3 +118,82 @@ def test_serving_oracle_retains_keys_past_local_window():
     assert actor.cache.get_seq_length() == 1101
     assert actor.cache.archlab_native_preludes.get_seq_length() == 1101
     assert actor.window == 1024
+
+
+def _conversion_case():
+    case = _case()
+    case["conversion_cache"] = dict(logits_relative_l2=.0713, cached_argmax_agreement=1.)
+    case["original_base_control_cache_vs_replay"] = _metric(.04, .12, maximum=.4778)
+    checks = [dict(kind=kind, layer=layer, relative_l2=.0003)
+              for kind in ("prefill_last_query_vs_decode", "paged_decode_vs_contiguous_history")
+              for layer in range(48)]
+    evidence = dict(conversion_raw_reduction=[dict(
+        owners=list(range(96)), live_slots=[dict(exact_values_preserved=True)] * 96,
+        live_slot_byte_ranges_disjoint=True, raw_checks=checks)])
+    return case, evidence
+
+
+def test_conversion_release_contract_is_explicitly_control_calibrated():
+    case, evidence = _conversion_case()
+    # The historical full-vocabulary .02 check remains a failed diagnostic.
+    assert case["conversion_cache"]["logits_relative_l2"] > .02
+    _oracle._assert_response_contract([case], evidence)
+
+
+@pytest.mark.parametrize("failure", ["control", "argmax", "raw", "missing_layer", "cache_alias", "cache_value"])
+def test_conversion_control_and_raw_cache_failures_are_not_admitted(failure):
+    case, evidence = _conversion_case()
+    audit = evidence["conversion_raw_reduction"][0]
+    if failure == "control":
+        case["original_base_control_cache_vs_replay"] = _metric(0., 0.)
+    elif failure == "argmax":
+        case["conversion_cache"]["cached_argmax_agreement"] = .99
+    elif failure == "raw":
+        audit["raw_checks"][0]["relative_l2"] = .00101
+    elif failure == "missing_layer":
+        audit["raw_checks"].pop()
+    elif failure == "cache_alias":
+        audit["live_slot_byte_ranges_disjoint"] = False
+    else:
+        audit["live_slots"][0]["exact_values_preserved"] = False
+    with pytest.raises(AssertionError):
+        _oracle._assert_response_contract([case], evidence)
+
+
+def test_conversion_oracle_keeps_tilelang_and_absolute_cached_positions():
+    attention = SimpleNamespace(conversion_config=SimpleNamespace(backend="tilelang"), forward=object())
+    marker = attention.forward
+
+    class Actor:
+        model = SimpleNamespace(conversion_config=True, layers=[SimpleNamespace(self_attn=attention)])
+
+        def __init__(self):
+            self.positions = []
+
+        def __call__(self, input_ids, *, use_cache, position_ids, attention_mask,
+                     logits_to_keep, past_key_values=None):
+            assert use_cache and logits_to_keep == 1
+            assert attention_mask == dict(full_attention=None, sliding_attention=None)
+            self.positions.append(position_ids.tolist())
+            if past_key_values is not None:
+                assert past_key_values is self
+            return SimpleNamespace(logits=torch.zeros(1, 1, 3), past_key_values=self)
+
+    actor = Actor()
+    with _oracle._native_serving_precision(actor, dict(backend="FLASH_ATTN", flash_attn_version=2)):
+        values = _oracle._cached_response_logprobs(actor, torch.zeros(1, 1102, dtype=torch.long),
+                                                 1100, [1, 2], full_history=True)
+    assert len(values) == 2 and attention.forward is marker
+    assert actor.positions == [[list(range(1100))], [[1100]]]
+
+
+def test_native_conversion_layer_gradients_have_separate_blocks():
+    spec = spec_from_file_location("megatron_admission", Path(__file__).parent /
+                                  "integration/test_megatron_agentic_training.py")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for index in range(48):
+        assert module._block(f"policy.model.layers.{index}.self_attn.short_kv_delta") == f"layers.{index}"
+    assert module._block("policy.model.base.layers.2.self_attn.o_proj.weight") == "base.layers.2"
+    assert module._block("policy.model.adapters.2.native.o_proj.weight") == "adapters.2"
+    assert module._block("policy.lm_head.weight") == "embedding_and_head"

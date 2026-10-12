@@ -95,3 +95,59 @@ def test_resolved_upstream_overrides_cannot_change_the_scientific_contract(monke
     experiment = read_experiment(Path("recipes/rl/limite_code.yaml"), [override])
     with pytest.raises(ValueError, match="strategy|GRPO|precision|patches|contracts|FlashAttention-2|decode graphs"):
         compose_verl(experiment, upstream)
+
+
+@pytest.fixture
+def conversion_deployment(monkeypatch):
+    for name in ("PARENT_CHECKPOINT", "CODE_DATA", "POLICY", "OUTPUT"):
+        monkeypatch.setenv("ARCHLAB_" + name, "/fixture/" + name.lower())
+    monkeypatch.setenv("ARCHLAB_HARNESS_SPEC", str(Path("recipes/rl/harness/conversion_single_bash.yaml").resolve()))
+    for name in ("E2B_DOMAIN", "ARCHLAB_E2B_KEY_FILE", "ARCHLAB_E2B_TEMPLATE_MAP"):
+        monkeypatch.setenv(name, "/fixture/" + name.lower())
+
+
+def test_replacement_recipe_uses_actual_package_sft_and_explicit_eager_curriculum(conversion_deployment):
+    from archlab.training.config import compose_verl
+    from archlab.training.qualification import check_curriculum
+
+    experiment = read_experiment(Path("recipes/rl/limite_conversion_code.yaml"))
+    config = compose_verl(experiment, Path("third_party/verl"))
+    rollout = config.actor_rollout_ref.rollout
+    assert experiment.intervention == "replace_attention" and experiment.variant == "simplicial"
+    assert experiment.parent_stage == "package_sft" and experiment.parent_tokens is None
+    assert rollout.enforce_eager and rollout.max_num_seqs == 1
+    assert not rollout.enable_chunked_prefill and not rollout.enable_prefix_caching
+    assert rollout.max_model_len == rollout.max_num_batched_tokens == 131072
+    assert config.data.train_batch_size == config.actor_rollout_ref.actor.ppo_mini_batch_size == 2
+    assert rollout.n == 4 and config.trainer.v1.sampler.max_off_policy_threshold == 1
+    assert config.algorithm.rollout_correction.rollout_is_threshold == 2
+    assert config.trainer.resume_mode == "disable"
+    assert not config.actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler
+    assert rollout.custom.agent_framework.mask_unfinished_episode
+    result = check_curriculum(experiment, config)
+    assert result["thresholds"]["max_turn_tokens"] == 8192
+    assert result["thresholds"]["maximum_truncated_trajectories"] == 0
+
+
+@pytest.mark.parametrize("override", [
+    "parent_tokens=2000158720", "parent_stage=adapter_sft", "intervention=insert_attention",
+    "settings.actor_rollout_ref.rollout.enforce_eager=false",
+    "settings.actor_rollout_ref.rollout.enable_chunked_prefill=true",
+    "settings.actor_rollout_ref.rollout.enable_prefix_caching=true",
+    "settings.actor_rollout_ref.rollout.max_num_seqs=2",
+    "settings.actor_rollout_ref.rollout.max_num_batched_tokens=16384",
+    "settings.actor_rollout_ref.actor.megatron.tensor_model_parallel_size=2",
+    "settings.actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2",
+    "settings.actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler=true",
+    "settings.actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode=false",
+    "settings.actor_rollout_ref.rollout.engine_kwargs.vllm.enforce_eager=false",
+    "pilot.maximum_truncated_trajectories=1", "pilot.minimum_reward_contrast_groups=0",
+])
+def test_replacement_overrides_cannot_bypass_cache_lineage_or_health_contract(conversion_deployment, override):
+    from omegaconf.errors import OmegaConfBaseException
+
+    from archlab.training.config import compose_verl
+
+    with pytest.raises((ValueError, OmegaConfBaseException)):
+        compose_verl(read_experiment(Path("recipes/rl/limite_conversion_code.yaml"), [override]),
+                     Path("third_party/verl"))

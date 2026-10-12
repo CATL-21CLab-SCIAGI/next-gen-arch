@@ -91,6 +91,8 @@ class RolloutContract:
         rollout = config.actor_rollout_ref.rollout
         self.context = int(rollout.max_model_len)
         self.rng_scope = f"{rollout.name}:engine-seed={rollout.seed}:backend-managed"
+        self.mask_unfinished = bool(rollout.get("custom", {}).get(
+            "agent_framework", {}).get("mask_unfinished_episode", False))
 
     def __call__(self, *, trajectory, sample_fields, group_id, response_id, session_id):
         metadata = validate_trajectory(
@@ -98,4 +100,8 @@ class RolloutContract:
             group_id=group_id, response_id=response_id, session_id=session_id, context=self.context,
             eos_ids=self.eos_ids, rng_identity=f"{self.rng_scope}:{response_id}",
         )
+        if self.mask_unfinished and trajectory.reward_info.get("finished") is not (
+            metadata.termination_reason == "completed"
+        ):
+            raise ValueError("agent termination must set finished before stock unfinished-episode masking")
         return asdict(metadata)

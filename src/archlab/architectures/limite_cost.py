@@ -35,6 +35,46 @@ def causal_pairs(length: int, span: int | None = None) -> int:
     return width * (width + 1) // 2 + (length - width) * width
 
 
+def causal_triples(length: int, short_span: int, long_span: int) -> int:
+    """Count valid independent causal key pairs for every query in closed form."""
+    causal_pairs(length, short_span)
+    causal_pairs(length, long_span)
+    a, b = sorted((min(length, short_span), min(length, long_span)))
+    return (a * (a + 1) * (2 * a + 1) // 6
+            + a * (b * (b + 1) - a * (a + 1)) // 2
+            + (length - b) * a * b)
+
+
+def converted_flops(config, sequence_length: int) -> BaselineFlops:
+    """Useful training matmul FLOPs for one replaced attention per native block.
+
+    This counts joint-softmax QK/PV matmuls and the new short projections.
+    Elementwise short-axis products, softmax, recomputation, padding and optimizer
+    work are excluded consistently with the ordinary-attention ledger.
+    """
+    length = sequence_length
+    baseline = baseline_flops(config, length, "full")
+    width, layers = config.hidden_size, config.num_hidden_layers
+    heads, kv_heads, dim = config.num_attention_heads, config.num_key_value_heads, config.head_dim
+    original_attention = (
+        layers * width * dim * (2 * heads + 2 * kv_heads)
+        + layers * heads * config.attn_gate_channels
+        + len(set(config.ve_layers)) * kv_heads * config.ve_gate_channels
+    )
+    short_projection = layers * width * dim * 2 * kv_heads
+    short_span = config.conversion["short_window"]
+    local_span = (config.sliding_window if hasattr(config, "_serialized_sliding_window")
+                  else config.sliding_window + 1)
+    globals_ = len(set(config.global_layers))
+    triples = (globals_ * causal_triples(length, short_span, length)
+               + (layers - globals_) * causal_triples(length, min(short_span, local_span), local_span))
+    return BaselineFlops(
+        baseline.linear_per_token - 6 * original_attention + 6 * short_projection,
+        12 * heads * dim * triples / length,
+        length,
+    )
+
+
 def baseline_flops(config, sequence_length: int, trainable_mode: str = "full") -> BaselineFlops:
     """Analytical ledger for one native attention prelude per native block.
 

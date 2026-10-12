@@ -185,9 +185,23 @@ def check_data(experiment, config, output=None):
                 tokenization=audit)
 
 
-def check_sft_parent(experiment):
+def check_sft_parent(experiment, *, package_receipt=None):
     """Verify the actual SFT endpoint, rather than trust a 'fresh' run label."""
     parent = Path(experiment.parent_checkpoint).resolve()
+    if experiment.parent_stage == "package_sft":
+        if package_receipt is None or experiment.parent_tokens is not None:
+            raise ValueError("package SFT requires a verified export and receipt-derived token budget")
+        training = package_receipt.get("training", {})
+        source = package_receipt.get("source_checkpoint", {})
+        if (training.get("format") != "archlab-limite-agentic-sft-v1"
+                or training.get("objective") != "assistant_ce"
+                or training.get("initialization") != "inherited_trained_weights"
+                or training.get("original_publisher", {}).get("repo") != "paradigma-inc/limite-1b-base"
+                or source.get("path") != str(parent)
+                or source.get("receipt_sha256") != sha256_file(parent / "ckpt_contents.json")
+                or package_receipt.get("optimizer_migrated") is not False):
+            raise ValueError("fresh replacement RL requires the declared original-base package SFT endpoint")
+        return dict(path=str(parent), receipt_sha256=source["receipt_sha256"])
     metadata = json.loads((parent / "COMPLETE.json").read_text())
     files = metadata.get("files", {})
     if experiment.parent_stage == "adapter_sft":
@@ -213,27 +227,55 @@ def check_model(experiment, config):
 
     if experiment.family != "limite" or experiment.variant not in {"normal", "simplicial"}:
         raise ValueError("this pretrained migration has no qualified model bridge for the selected family/variant")
-    lineage = check_sft_parent(experiment)
     root = Path(config.actor_rollout_ref.model.path).resolve()
-    receipt = verify_export(root)
+    if experiment.parent_stage == "package_sft":
+        from archlab.training.sft_export import verify_package_sft_export
+
+        receipt = verify_package_sft_export(root)
+        lineage = check_sft_parent(experiment, package_receipt=receipt)
+    else:
+        receipt = verify_export(root)
+        lineage = check_sft_parent(experiment)
     model = json.loads((root / "config.json").read_text())
     if model.get("trainable_mode") != "full":
         raise ValueError("the new RL phase must unfreeze all model weights")
     if receipt.get("source_checkpoint") != lineage:
         raise ValueError("export does not descend from the declared complete parent checkpoint")
-    if model.get("model_type") != "archlab_limite" or model["adapter"]["variant"] != experiment.variant:
+    if model.get("model_type") != "archlab_limite":
         raise ValueError("export architecture differs from the experiment")
-    if model["adapter"].get("attention_backend") != experiment.attention:
-        raise ValueError("export attention backend differs from the experiment")
-    if experiment.attention == "native" and model.get("backbone_attention") != "flash_attention_2":
-        raise ValueError("native normal RL requires FlashAttention-2 for backbone and preludes")
+    if experiment.intervention == "replace_attention":
+        conversion = receipt.get("conversion", {})
+        if (experiment.variant != "simplicial" or experiment.attention != "tilelang"
+                or model.get("adapter") or model.get("conversion") != {"short_window": 16, "backend": "tilelang"}
+                or conversion.get("format") != "archlab-limite-conversion-v1"
+                or conversion.get("intervention") != experiment.intervention
+                or conversion.get("mechanism") != "joint-softmax-2-simplicial"
+                or conversion.get("config") != model["conversion"]
+                or conversion.get("layers") != list(range(model["publisher_config"]["num_hidden_layers"]))):
+            raise ValueError("export must replace every native attention with the declared W16 joint softmax")
+        generation = json.loads((root / "generation_config.json").read_text())
+        if (model.get("eos_token_id") != 151645 or generation.get("eos_token_id") != 151645
+                or generation.get("pad_token_id") != 151643):
+            raise ValueError("replacement RL must preserve native EOS151645 and PAD151643")
+    else:
+        if model.get("conversion") or model.get("adapter", {}).get("variant") != experiment.variant:
+            raise ValueError("export architecture differs from the experiment")
+        if model["adapter"].get("attention_backend") != experiment.attention:
+            raise ValueError("export attention backend differs from the experiment")
+        if experiment.attention == "native" and model.get("backbone_attention") != "flash_attention_2":
+            raise ValueError("native normal RL requires FlashAttention-2 for backbone and preludes")
     if model["publisher_config"]["max_position_embeddings"] != experiment.native_context:
         raise ValueError("exported publisher context differs from the experiment")
     if receipt.get("optimizer_migrated") is not False:
         raise ValueError("this export must explicitly declare a fresh verl optimizer phase")
-    return dict(path=str(root), export_sha256=sha256_file(root / "EXPORT.json"), parent=lineage,
-                parent_stage=experiment.parent_stage, parent_tokens=experiment.parent_tokens,
-                optimizer="fresh RL from SFT; source optimizer remains in the immutable parent")
+    result = dict(path=str(root), export_sha256=sha256_file(root / "EXPORT.json"), parent=lineage,
+                  intervention=experiment.intervention, parent_stage=experiment.parent_stage,
+                  optimizer="fresh RL from SFT; source optimizer remains in the immutable parent")
+    if experiment.parent_stage == "package_sft":
+        result["training"] = receipt["training"]
+    else:
+        result["parent_tokens"] = experiment.parent_tokens
+    return result
 
 
 def check_execution(experiment, config):
@@ -241,7 +283,7 @@ def check_execution(experiment, config):
         raise ValueError("the native Limite learner requires the Megatron bridge")
     if experiment.attention == "te":
         raise ValueError("the Limite TE attention path has not passed native forward/backward parity")
-    if experiment.variant != "normal":
+    if experiment.variant != "normal" and experiment.intervention != "replace_attention":
         raise ValueError("simplicial serving needs its short-axis cache and weight-loading integration")
     if config.actor_rollout_ref.model.external_lib != "archlab.training.megatron":
         raise ValueError("the native Megatron registration module is required")
@@ -259,7 +301,13 @@ def check_execution(experiment, config):
     if rollout.name != "vllm":
         raise ValueError("the selected serving engine has no qualified Limite implementation")
     if rollout.tensor_model_parallel_size != 1 or rollout.enable_prefix_caching:
-        raise ValueError("normal serving currently requires TP=1 and prefix caching disabled")
+        raise ValueError("native serving currently requires TP=1 and prefix caching disabled")
+    if experiment.intervention == "replace_attention" and (
+        experiment.variant != "simplicial" or not rollout.enforce_eager
+        or rollout.enable_chunked_prefill or rollout.max_num_seqs != 1
+        or rollout.pipeline_model_parallel_size != 1
+    ):
+        raise ValueError("replacement serving requires its eager single-request cache geometry")
     from vllm.config import ModelConfig
     from vllm.model_executor.models import ModelRegistry
     from vllm.plugins import load_general_plugins
@@ -274,7 +322,35 @@ def check_execution(experiment, config):
         raise ValueError("serving selected a generic model implementation")
     return dict(learner=f"{type(provider).__module__}.{type(provider).__qualname__}",
                 serving=name, implementation=f"{model_class.__module__}.{model_class.__qualname__}",
+                intervention=experiment.intervention,
                 scope="registration only; generation/replay parity is a separate required GPU test")
+
+
+def check_curriculum(experiment, config):
+    """Bind the declared turn cap to the actual upstream agent harness bytes."""
+    import yaml
+
+    pilot = experiment.pilot
+    if pilot is None:
+        raise ValueError("replacement RL requires an explicit bootstrap curriculum")
+    spec = Path(config.ray_kwargs.ray_init.runtime_env.env_vars["MIXED_HARNESS_SPEC"]).resolve()
+    entries = yaml.safe_load(spec.read_text())["harnesses"]
+    if len(entries) != 1:
+        raise ValueError("replacement bootstrap requires one explicit bash-only harness")
+    path = Path(entries[0]["config"])
+    if not path.is_absolute():
+        path = spec.parent / path
+    harness = yaml.safe_load(path.read_text())
+    if (harness["agent"]["type"] != "bashonly-agent"
+            or harness["agent"]["step_limit"] != pilot.step_limit
+            or harness["model"]["protocol"] != "chat"
+            or harness["model"]["model_kwargs"].get("max_tokens") != pilot.max_turn_tokens
+            or not config.actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode):
+        raise ValueError("actual agent harness differs from the declared turn/truncation curriculum")
+    return dict(spec=str(spec), spec_sha256=sha256_file(spec), harness=str(path.resolve()),
+                harness_sha256=sha256_file(path), thresholds=asdict(pilot),
+                native_context=experiment.native_context,
+                truncation="preserve reason and evidence; stock mask excludes unfinished policy loss")
 
 
 def run_pytest(nodes, output, *, deployment=None, timeout=1800, world_size=1,
@@ -342,7 +418,7 @@ def run_pytest(nodes, output, *, deployment=None, timeout=1800, world_size=1,
                 reports={str(path): sha256_file(path) for path in reports})
 
 
-def check_learning_signal(output):
+def check_learning_signal(output, pilot=None):
     """A completed tool loop alone cannot establish a useful GRPO update."""
     receipts = list((Path(output) / "artifacts").rglob("pipeline-evidence.json"))
     if len(receipts) != 1:
@@ -354,6 +430,28 @@ def check_learning_signal(output):
         raise ValueError("real policy update did not record a finite gradient norm")
     result = dict(receipt=str(receipts[0]), receipt_sha256=sha256_file(receipts[0]),
                   reward_contrast_groups=contrast, grad_norm=grad_norm)
+    if pilot is not None:
+        observed = {key: evidence.get(key, 0) for key in (
+            "completed_verifiers", "tool_calls", "masked_observation_tokens", "truncated_trajectories",
+        )}
+        observed["prompt_groups"] = len({uid.rsplit("_", 2)[0]
+                                         for uid in evidence.get("consumed_rollout_uids", [])})
+        observed["reward_contrast_groups"] = contrast
+        limits = dict(completed_verifiers=pilot.minimum_completed_verifiers,
+                      prompt_groups=pilot.minimum_prompt_groups, tool_calls=pilot.minimum_tool_calls,
+                      masked_observation_tokens=pilot.minimum_observation_tokens,
+                      reward_contrast_groups=pilot.minimum_reward_contrast_groups)
+        failed = [key for key, minimum in limits.items()
+                  if type(observed[key]) is not int or observed[key] < minimum]
+        if (type(observed["truncated_trajectories"]) is not int
+                or observed["truncated_trajectories"] > pilot.maximum_truncated_trajectories):
+            failed.append("truncated_trajectories")
+        if grad_norm <= 0:
+            failed.append("positive_gradient")
+        result.update(observed=observed, thresholds=asdict(pilot))
+        if failed:
+            result.update(status="failed", reason="bootstrap pilot health thresholds not met: " + ", ".join(failed))
+        return result
     if contrast <= 0 or grad_norm <= 0:
         result.update(status="pending", reason="execution passed but this pilot has no nonzero GRPO learning signal")
     return result
@@ -386,7 +484,11 @@ def qualify(experiment, config, upstream, output):
               _check("model_export", lambda: check_model(experiment, config)),
               _check("execution_bridge", lambda: check_execution(experiment, config)),
               _check("native_model_fixture", lambda: run_pytest(
-                  ["tests/test_training_limite.py"], output / "native_fixture"))]
+                  ["tests/test_training_limite.py", *([
+                      "tests/test_limite_conversion.py", "tests/test_training_serving_conversion.py",
+                  ] if experiment.intervention == "replace_attention" else [])], output / "native_fixture"))]
+    if experiment.intervention == "replace_attention":
+        checks.append(_check("bootstrap_curriculum", lambda: check_curriculum(experiment, config)))
     # These tests must use this exact resolved config/export and execute on the
     # requested GPU world. Existing tiny fixtures cannot replace production-scale
     # policy parity, distributed restart, or a real completed test verifier.
@@ -422,7 +524,8 @@ def qualify(experiment, config, upstream, output):
         else:
             checks.append(dict(name=test, status="pending", reason="deployment readiness checks failed"))
     if any(row["name"] == "real_policy_grpo_update" and row["status"] == "passed" for row in checks):
-        checks.append(_check("agentic_learning_signal", lambda: check_learning_signal(output / "real_policy_grpo_update")))
+        checks.append(_check("agentic_learning_signal", lambda: check_learning_signal(
+            output / "real_policy_grpo_update", experiment.pilot)))
     else:
         checks.append(dict(name="agentic_learning_signal", status="pending", reason="real policy update has not passed"))
     checks.append(_check("source_unchanged", lambda: check_source_unchanged(sources)))

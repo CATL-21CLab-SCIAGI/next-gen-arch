@@ -105,8 +105,15 @@ UPDATE_NORM_RATIO = (.98, 1.02)
 def _block(name):
     import re
 
-    match = re.search(r"(?:base\.layers|adapters)\.\d+", name)
+    match = re.search(r"(?:base\.layers|layers|adapters)\.\d+", name)
     return match.group(0) if match else "embedding_and_head"
+
+
+def _backbone_inputs(wrapper, ids):
+    if not wrapper.config.conversion:
+        return {}
+    mask, positions = wrapper.conversion_inputs(ids, None, None)
+    return dict(attention_mask=mask, position_ids=positions)
 
 
 def _pair_metrics(pairs):
@@ -311,6 +318,9 @@ def test_native_forward_backward():
         native, original, lambda reference: token_loss(reference(ids, use_cache=False).logits, ids).backward(),
         atomic=bool(source), root=root, name="native", native_factory=native_factory,
     )
+    if native.policy.config.conversion:
+        assert {f"layers.{index}" for index in range(native.policy.config.num_hidden_layers)} <= set(
+            native_report["bridge"]["vectors"]), native_report
     # Exercise the actual verl BSHD dispatch and its unchanged vocabulary-parallel
     # scoring function, including entropy and backward, before optimizer admission.
     from verl.models.mcore import get_mcore_engine_forward_fn
@@ -339,6 +349,7 @@ def test_native_forward_backward():
     # checkpointed tied BF16 head can change addition order; its mathematical
     # gradient oracle is tested separately from the engine boundary.
     reference_hidden = original.policy.model(input_ids=ids, use_cache=False,
+                                             **_backbone_inputs(original, ids),
                                              return_dict=True).last_hidden_state
     reference_scores = chunked_logits_processor(
         original.policy._softcapped_logits, reference_hidden, processor,
@@ -350,7 +361,8 @@ def test_native_forward_backward():
     (-scores["log_probs"].values().mean() - .01 * scores["entropy"].values().mean()).backward()
     (-reference_scores["log_probs"].mean() - .01 * reference_scores["entropy"].mean()).backward()
     def native_head_backward(reference):
-        hidden = reference.policy.model(input_ids=ids, use_cache=False, return_dict=True).last_hidden_state
+        hidden = reference.policy.model(input_ids=ids, use_cache=False, return_dict=True,
+                                        **_backbone_inputs(reference, ids)).last_hidden_state
         result = chunked_logits_processor(reference.policy._softcapped_logits, hidden, processor,
                                          {"label": ids.roll(-1, dims=1), "temperature": temperatures.clone()})
         (-result["log_probs"].mean() - .01 * result["entropy"].mean()).backward()
@@ -362,7 +374,8 @@ def test_native_forward_backward():
     # A real HF export is also required by the rollout weight refresh.
     exported = dict(bridge.export_hf_weights(models))
     for name, parameter in native.policy.named_parameters():
-        exported_name = "policy.lm_head.weight" if name == "policy.model.base.embed_tokens.weight" else name
+        exported_name = ("policy.lm_head.weight" if name in {
+            "policy.model.base.embed_tokens.weight", "policy.model.embed_tokens.weight"} else name)
         torch.testing.assert_close(exported[exported_name].to(parameter.device), parameter, rtol=0, atol=0)
         replica = parameter.detach().clone()
         dist.broadcast(replica, src=0)

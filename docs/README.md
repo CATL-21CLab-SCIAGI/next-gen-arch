@@ -32,6 +32,7 @@ The checked-in pages are authoritative and readable without GitHub Wiki. Wiki av
 | Upstream optimization ideas and dispositions | [Optimization audit](OPTIMIZATION_AUDIT.md) |
 | Scientific contracts | [Experiment contracts](EXPERIMENT_CONTRACTS.md) |
 | Pretrained architecture conversion and the next reasoning experiment | [Research review and proposal](ARCHITECTURE_MIGRATION_RESEARCH.md) |
+| Original-base attention replacement with agentic recovery | [Limite conversion contract](LIMITE_AGENTIC_CONVERSION.md), [prepared demonstrations](agentic-sft-data.md) |
 | Compact source evidence | [Recorded results](recorded-results/README.md) |
 
 Dated reports describe their recorded experiment. They are not live runbooks. Local `results/` paths identify team-storage artifacts; they are not GitHub downloads.

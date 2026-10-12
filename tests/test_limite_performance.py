@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from archlab.architectures.limite_cost import baseline_flops, causal_pairs
+from archlab.architectures.limite_cost import (
+    baseline_flops,
+    causal_pairs,
+    causal_triples,
+    converted_flops,
+)
 
 
 def native_config():
@@ -38,6 +43,26 @@ def test_pairs_match_explicit_causal_mask(length, span):
         for key in range(length)
     )
     assert causal_pairs(length, span) == actual
+
+
+@pytest.mark.parametrize("length,short,long", [(1, 16, 32), (9, 3, 5), (19, 16, 19), (41, 16, 5)])
+def test_triples_match_explicit_joint_mask(length, short, long):
+    assert causal_triples(length, short, long) == sum(
+        min(i + 1, short) * min(i + 1, long) for i in range(length)
+    )
+
+
+def test_conversion_ledger_counts_one_stack_and_short_projection():
+    config = native_config()
+    config.conversion = {"short_window": 1}
+    original = baseline_flops(config, 2048)
+    converted = converted_flops(config, 2048)
+    assert converted.attention_per_token == original.attention_per_token / 2
+    assert converted.linear_per_token < original.linear_per_token
+    config.conversion["short_window"] = 16
+    higher = converted_flops(config, 2048)
+    assert higher.linear_per_token == converted.linear_per_token
+    assert converted.attention_per_token < higher.attention_per_token < 16 * converted.attention_per_token
 
 
 def test_native_operation_ledger_includes_tied_head_but_not_lookup_capacity():

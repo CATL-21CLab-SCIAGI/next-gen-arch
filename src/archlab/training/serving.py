@@ -1,8 +1,9 @@
-"""Narrow vLLM boundary: native normal Limite with a separate cache per prelude.
+"""Narrow vLLM boundary for explicit Limite attention experiments.
 
 The package owns paging, scheduling and attention kernels. Publisher projections,
 RMSNorm, RoPE, gates, value embeddings, MUDD and sigmoid logits stay unchanged.
-Tensor/pipeline parallelism and the simplicial short-axis cache are not admitted.
+Tensor/pipeline parallelism is unsupported. Replacement serving uses the
+separately validated short/long package-cache boundary.
 """
 from __future__ import annotations
 
@@ -74,7 +75,7 @@ def bind_normal_attention(policy, attention_factory, *, prefix=""):
     return tuple(attentions)
 
 
-class NormalLimiteForCausalLM(nn.Module):
+class VLLMLimiteForCausalLM(nn.Module):
     """Public vLLM model extension, restricted to one GPU per replica."""
 
     def __init__(self, *, vllm_config, prefix=""):
@@ -88,18 +89,34 @@ class NormalLimiteForCausalLM(nn.Module):
             raise ValueError("Limite low-bit serving has not passed numerical qualification")
         config = vllm_config.model_config.hf_config
         wrapper = LimiteForCausalLM(config)
+        # vLLM constructs on its CUDA default device. The publisher deliberately
+        # creates rotary frequencies on CPU; its _apply rebuilds them on moves.
+        wrapper.to(device=next(wrapper.parameters()).device)
         self.policy = wrapper.policy
         self.config = config
 
-        def factory(attention, *, prefix):
+        def factory(attention, *, prefix, window_span=...):
             return Attention(
                 num_heads=attention.num_heads, head_size=attention.head_dim,
                 scale=attention.scaling, num_kv_heads=attention.num_kv_heads,
                 cache_config=vllm_config.cache_config,
-                per_layer_sliding_window=attention.window_span, prefix=prefix,
+                per_layer_sliding_window=(attention.window_span if window_span is ... else window_span),
+                prefix=prefix,
             )
 
-        self._attention_count = len(bind_normal_attention(self.policy, factory, prefix=prefix))
+        if config.conversion:
+            from archlab.training.serving_conversion import (
+                bind_conversion_attention,
+                stock_attention_factory,
+                validate_conversion_serving,
+            )
+
+            validate_conversion_serving(vllm_config)
+            self._attention_count = len(bind_conversion_attention(
+                self.policy, stock_attention_factory(vllm_config), prefix=prefix,
+            ))
+        else:
+            self._attention_count = len(bind_normal_attention(self.policy, factory, prefix=prefix))
 
     @property
     def model(self):
@@ -118,7 +135,10 @@ class NormalLimiteForCausalLM(nn.Module):
             raise ValueError("native Limite requires token IDs for its value embeddings")
         if input_ids.ndim != 1 or positions.ndim != 1:
             raise ValueError("vLLM must supply flat token IDs and positions")
+        converted = getattr(self.policy.model, "conversion_config", None)
+        masks = dict(full_attention=None, sliding_attention=None) if converted else None
         output = self.policy.model(input_ids=input_ids[None], position_ids=positions[None],
+                                   attention_mask=masks,
                                    use_cache=False, return_dict=True)
         return output.last_hidden_state.squeeze(0)
 
@@ -148,7 +168,7 @@ def register():
     from vllm import ModelRegistry
 
     if "ArchlabLimiteForCausalLM" not in ModelRegistry.get_supported_archs():
-        ModelRegistry.register_model("ArchlabLimiteForCausalLM", "archlab.training.serving:NormalLimiteForCausalLM")
+        ModelRegistry.register_model("ArchlabLimiteForCausalLM", "archlab.training.serving:VLLMLimiteForCausalLM")
 
 
 class QualificationWorker:

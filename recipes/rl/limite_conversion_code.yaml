@@ -1,0 +1,127 @@
+# New experiment: original-base attention replacement, then package agentic SFT.
+# The finalized trained export verifies its actual sample/token budget and lineage.
+# This candidate requires separate GPU admission before any production launch.
+name: limite-original-base-2simplicial-agentic-sft-code-rl-v1
+family: limite
+variant: simplicial
+intervention: replace_attention
+engine: megatron
+attention: tilelang
+execution: colocate_async
+throughput:
+  baseline: ${oc.env:ARCHLAB_THROUGHPUT_BASELINE,null}
+native_context: 131072
+parent_checkpoint: ${oc.env:ARCHLAB_PARENT_CHECKPOINT}
+parent_stage: package_sft
+parent_tokens: null
+pilot:
+  max_turn_tokens: 8192
+  step_limit: 500
+  minimum_prompt_groups: 2
+  minimum_completed_verifiers: 8
+  minimum_tool_calls: 1
+  minimum_observation_tokens: 1
+  minimum_reward_contrast_groups: 1
+  maximum_truncated_trajectories: 0
+data_manifest: ${oc.env:ARCHLAB_CODE_DATA}/manifest.json
+settings:
+  ray_kwargs.ray_init:
+    address: local
+    num_cpus: 32
+    runtime_env:
+      worker_process_setup_hook: archlab.architectures.fa4_attention.fa4_runtime_contract
+      env_vars:
+        VERL_MFU_DEVICE_NAME: B300
+        TRANSFER_QUEUE_ENABLE: "1"
+        UNI_AGENT_RUNNER_TASK_NUM_CPUS: "0.25"
+        MIXED_HARNESS_SPEC: ${oc.env:ARCHLAB_HARNESS_SPEC}
+        MIXED_HARNESS_MODE: step-hash
+        E2B_DOMAIN: ${oc.env:E2B_DOMAIN}
+        ARCHLAB_E2B_KEY_FILE: ${oc.env:ARCHLAB_E2B_KEY_FILE}
+        ARCHLAB_E2B_TEMPLATE_MAP: ${oc.env:ARCHLAB_E2B_TEMPLATE_MAP}
+  actor_rollout_ref.model.path: ${oc.env:ARCHLAB_POLICY}
+  actor_rollout_ref.model.external_lib: archlab.training.megatron
+  actor_rollout_ref.model.trust_remote_code: false
+  actor_rollout_ref.model.use_remove_padding: false
+  actor_rollout_ref.model.use_fused_kernels: false
+  actor_rollout_ref.model.enable_gradient_checkpointing: true
+  actor_rollout_ref.actor.optim.lr: 1.0e-5
+  actor_rollout_ref.actor.optim.betas: [0.9, 0.95]
+  actor_rollout_ref.actor.optim.weight_decay: 0.0
+  actor_rollout_ref.actor.optim.clip_grad: 1.0
+  actor_rollout_ref.actor.optim.use_checkpoint_opt_param_scheduler: false
+  actor_rollout_ref.actor.megatron.tensor_model_parallel_size: 1
+  actor_rollout_ref.actor.megatron.pipeline_model_parallel_size: 1
+  actor_rollout_ref.actor.megatron.context_parallel_size: 1
+  actor_rollout_ref.actor.megatron.expert_model_parallel_size: 1
+  actor_rollout_ref.actor.megatron.sequence_parallel: false
+  actor_rollout_ref.actor.megatron.use_distributed_optimizer: true
+  actor_rollout_ref.actor.megatron.use_remove_padding: false
+  actor_rollout_ref.actor.megatron.pad_bshd_to_minibatch_max: false
+  actor_rollout_ref.actor.megatron.patch_recomputation_backward: false
+  actor_rollout_ref.actor.megatron.override_ddp_config:
+    grad_reduce_in_fp32: true
+    overlap_grad_reduce: false
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.actor.use_dynamic_bsz: false
+  actor_rollout_ref.actor.ppo_mini_batch_size: 2
+  actor_rollout_ref.actor.ppo_max_token_len_per_gpu: 131072
+  actor_rollout_ref.actor.loss_agg_mode: token-mean
+  actor_rollout_ref.rollout.name: vllm
+  actor_rollout_ref.rollout.enforce_eager: true
+  actor_rollout_ref.rollout.enable_prefix_caching: false
+  actor_rollout_ref.rollout.enable_chunked_prefill: false
+  actor_rollout_ref.rollout.checkpoint_engine.backend: naive
+  actor_rollout_ref.rollout.engine_kwargs:
+    vllm:
+      attention_config:
+        backend: FLASH_ATTN
+        flash_attn_version: 2
+  actor_rollout_ref.rollout.multi_turn.format: hermes
+  actor_rollout_ref.rollout.n: 4
+  actor_rollout_ref.rollout.tensor_model_parallel_size: 1
+  actor_rollout_ref.rollout.pipeline_model_parallel_size: 1
+  actor_rollout_ref.rollout.data_parallel_size: 1
+  actor_rollout_ref.rollout.max_model_len: 131072
+  actor_rollout_ref.rollout.max_num_batched_tokens: 131072
+  actor_rollout_ref.rollout.prompt_length: 16384
+  actor_rollout_ref.rollout.response_length: 114688
+  actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu: 131072
+  actor_rollout_ref.rollout.log_prob_use_dynamic_bsz: false
+  actor_rollout_ref.rollout.top_p: 1.0
+  actor_rollout_ref.rollout.top_k: -1
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.7
+  actor_rollout_ref.rollout.max_num_seqs: 1
+  actor_rollout_ref.rollout.agent.num_workers: 1
+  actor_rollout_ref.rollout.custom.agent_framework.gateway_count: 1
+  actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode: true
+  actor_rollout_ref.rollout.custom.agent_framework.trajectory_validator: archlab.training.rollout.RolloutContract
+  actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mimoagent.max_concurrent_sessions: 8
+  algorithm.norm_adv_by_std_in_grpo: true
+  algorithm.rollout_correction.bypass_mode: false
+  algorithm.rollout_correction.rollout_is: token
+  algorithm.rollout_correction.rollout_is_threshold: 2.0
+  algorithm.rollout_correction.rollout_is_batch_normalize: false
+  algorithm.rollout_correction.rollout_rs: null
+  algorithm.filter_groups.enable: false
+  data.train_files: ["${oc.env:ARCHLAB_CODE_DATA}/train.parquet"]
+  data.val_files: ["${oc.env:ARCHLAB_CODE_DATA}/validation.parquet"]
+  data.max_prompt_length: 16384
+  data.max_response_length: 114688
+  data.train_batch_size: 2
+  data.val_batch_size: 3
+  data.dataloader_num_workers: 2
+  transfer_queue.backend.SimpleStorage.num_data_storage_units: 2
+  data.seed: 42
+  trainer.nnodes: 1
+  trainer.n_gpus_per_node: 8
+  trainer.total_training_steps: 20
+  trainer.total_epochs: 20
+  trainer.save_freq: 1
+  trainer.test_freq: 5
+  trainer.project_name: Limite — RL
+  trainer.default_local_dir: ${oc.env:ARCHLAB_OUTPUT}/checkpoints
+  trainer.logger: [console, mlflow]
+  trainer.metrics_extension: archlab.training.metrics.step_metrics
+  trainer.resume_mode: disable
+  trainer.v1.sampler.max_off_policy_threshold: 1

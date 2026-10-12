@@ -121,3 +121,56 @@ def test_single_harness_routes_every_sample_to_same_profile(runner, monkeypatch,
     spec.write_text("harnesses: []\n")
     with pytest.raises(ValueError, match="at least one"):
         runner._mixed_harness_specs()
+
+
+@pytest.mark.parametrize("status,finished", [("Idle", True), ("LimitsExceeded", False)])
+def test_verifier_completion_preserves_agent_termination_for_stock_mask(runner, monkeypatch, status, finished):
+    import ast
+    import sys
+    from types import SimpleNamespace
+
+    import torch
+
+    environment = SimpleNamespace(
+        env=object(), setup_environment=lambda: None,
+        calculate_reward=lambda: (0.0, "failed test", {"verifier_returncode": 1, "resolved": False}),
+        cleanup=lambda: None,
+    )
+
+    class Agent:
+        IDLE_STATUS = "Idle"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, task):
+            return status, "recorded partial answer"
+
+    monkeypatch.setitem(sys.modules, "mimoagent.agents.factory", SimpleNamespace(get_agent_class=lambda _: Agent))
+    monkeypatch.setitem(sys.modules, "mimoagent.environments.utils",
+                        SimpleNamespace(make_dataset_env=lambda *a, **kw: environment))
+    monkeypatch.setattr(runner, "_build_model", lambda *a, **kw: object())
+    monkeypatch.setattr(runner, "_prepare_swebench_import_path", lambda: None)
+    reward = runner._run_sync(raw_prompt="repair", instance=TASK,
+                              session=SimpleNamespace(base_url="http://unused.invalid"),
+                              config={}, agent_overrides={}, environment_overrides={})
+    assert reward["finished"] is finished and reward["verifier_finished"] is True
+    assert reward["termination_kind"] == ("completed" if finished else "truncated")
+    # Execute the actual stock writer method, without importing Ray services.
+    path = Path("third_party/verl/third_party/uni_agent/uni_agent/framework/framework.py")
+    method = next(node for node in ast.walk(ast.parse(path.read_text()))
+                  if isinstance(node, ast.FunctionDef) and node.name == "_trajectory_to_tq_field_and_tag")
+    namespace = dict(torch=torch, compute_multi_modal_inputs=lambda *a: None,
+                     compute_position_id_with_mask=lambda mask: torch.arange(mask.shape[-1])[None],
+                     _tool_call_error_mask=lambda trajectory: (torch.zeros(2), "none", 0),
+                     _repetition_mask=lambda trajectory: (torch.zeros(2), "none", 0))
+    exec(compile("from __future__ import annotations\n" + ast.unparse(method), str(path), "exec"), namespace)
+    trajectory = SimpleNamespace(prompt_ids=[1], response_ids=[2, 3], response_mask=[1, 1],
+                                 response_logprobs=[-.1, -.2], reward_info=reward, reward_score=0.,
+                                 multi_modal_data=None, routed_experts=None, extra_fields={}, num_turns=1)
+    writer = SimpleNamespace(_processor=None, _mask_unfinished_episode=True, _ship_turn_index=False)
+    field, _ = namespace[method.name](writer, trajectory=trajectory, sample_fields={},
+                                     session_index=0, global_steps=1, uid="recorded")
+    assert field["response_mask"].tolist() == ([1, 1] if finished else [0, 0])
+    assert field["loss_mask"].tolist() == field["response_mask"].tolist()
+    assert trajectory.response_mask == [1, 1]  # Original evidence remains intact.
