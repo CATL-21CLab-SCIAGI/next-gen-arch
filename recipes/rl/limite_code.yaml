@@ -25,6 +25,8 @@ settings:
       env_vars:
         VERL_MFU_DEVICE_NAME: B300
         TRANSFER_QUEUE_ENABLE: "1"
+        # Agents wait on remote tools/GPUs; reserve fractional local CPU tokens.
+        UNI_AGENT_RUNNER_TASK_NUM_CPUS: "0.25"
         MIXED_HARNESS_SPEC: ${oc.env:ARCHLAB_HARNESS_SPEC}
         MIXED_HARNESS_MODE: step-hash
         E2B_DOMAIN: ${oc.env:E2B_DOMAIN}
