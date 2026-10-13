@@ -277,6 +277,18 @@ ordinary attention retains 64. Twenty focused B300 kernel checks also pass.
 This changes cached inference only, preserving training and checkpoint bytes.
 Actual full serving and RL admission remain separate requirements.
 
+A later 128-token sampled response exposed a local-window alignment issue even
+with matching 128-key tiles. Prefill starts each tile sequence at the first
+query in a four-query group; decode previously started at the current query's
+window. Native and paged caches now retain three extra older keys and decode
+masks them, preserving the effective 1,025-key local window and 16-key short
+window. Query position comes from the existing cache sequence length. On the
+exact failed response, all 672 captured layer/query comparisons match the
+learner's BF16 attention output after alignment, and the native response p95
+log-probability difference falls from 0.06359 to 0.01541 under the unchanged
+0.05907 bound. Training forward/backward and checkpoint weights are unchanged;
+this diagnostic does not substitute for full serving or RL admission.
+
 After 2-simplicial RL is stable with repeatable held-out reward signal, the other
 DLC node may run a triadic replacement under a new matched contract. Match the
 original parent, bootstrap data/order, trainable scope, rollout harness, reward,

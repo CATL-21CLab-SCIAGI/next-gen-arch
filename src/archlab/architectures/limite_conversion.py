@@ -76,7 +76,10 @@ def _joint_reduce(module, q, k, v, mask, *, scaling, dropout=0.0, **kwargs):
         from archlab.architectures.tilelang_attention import tilelang_attention, tilelang_decode
 
         if decode:
-            output = tilelang_decode(q, k, v, scaling=scaling, short=short)
+            alignment = ({} if module.is_global else dict(
+                query_position=module._archlab_conversion_position, long_window=long_window,
+            ))
+            output = tilelang_decode(q, k, v, scaling=scaling, short=short, **alignment)
         else:
             output = tilelang_attention(
                 q, k, v, scaling=scaling, short=short, short_window=short_window,
@@ -152,6 +155,7 @@ class LimiteSimplicialAttention(nn.Module):
         self.native._archlab_conversion_config = config
         self.native._archlab_conversion_short = None
         self.native._archlab_conversion_decode = False
+        self.native._archlab_conversion_position = None
         weight = native.qkv_proj.weight
         self.short_kv_delta = nn.Parameter(weight.new_zeros(2 * native.kv_size, weight.shape[1]))
         self._joint_forward = _native_joint_forward(type(native).forward)
@@ -180,6 +184,19 @@ class LimiteSimplicialAttention(nn.Module):
             short_cache = past_key_values.archlab_conversion_short
             if cached_length and self.native.layer_idx not in short_cache:
                 raise ValueError("conversion cache lacks its short-axis history")
+            if self.conversion_config.backend == "tilelang" and not self.native.is_global:
+                # Package storage includes the masked keys preceding the BQ4
+                # query group. The reducer still attends to window_span keys.
+                from transformers.cache_utils import DynamicSlidingWindowLayer
+
+                index = self.native.layer_idx
+                if index < len(past_key_values.layers) and past_key_values.layers[index].is_sliding:
+                    layer = past_key_values.layers[index]
+                    capacity = self.native.window_span + 3
+                    if layer.sliding_window != capacity:
+                        if cached_length:
+                            raise ValueError("conversion cache lacks its masked query-group history")
+                        past_key_values.layers[index] = DynamicSlidingWindowLayer(sliding_window=capacity)
         delta = F.linear(hidden_states, self.short_kv_delta.to(hidden_states.dtype))
         shape = (*hidden_states.shape[:2], self.native.num_kv_heads, self.native.head_dim)
         short = tuple(
@@ -194,6 +211,7 @@ class LimiteSimplicialAttention(nn.Module):
             short = tuple(value[:, -window:] for value in short)
         self.native._archlab_conversion_short = short
         self.native._archlab_conversion_decode = bool(cached_length)
+        self.native._archlab_conversion_position = cached_length if cached_length else None
         try:
             result = self._joint_forward(
                 self.native, hidden_states, value_embeds, cosine, sine, attention_mask,
@@ -207,6 +225,7 @@ class LimiteSimplicialAttention(nn.Module):
         finally:
             self.native._archlab_conversion_short = None
             self.native._archlab_conversion_decode = False
+            self.native._archlab_conversion_position = None
 
 
 def replace_limite_attention(model, config: LimiteConversionConfig):

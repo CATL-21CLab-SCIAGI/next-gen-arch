@@ -143,10 +143,11 @@ def _prefill(q, k, v, short, *, scaling, long_window, short_window):
                               dynamic_length=True)
 
 
-def _decode(q, k, v, short, *, scaling):
+def _decode(q, k, v, short, *, scaling, query_position=None, long_window=None):
     from archlab.architectures.tilelang_attention import tilelang_decode
 
-    return tilelang_decode(q, k, v, scaling=scaling, short=short)
+    return tilelang_decode(q, k, v, scaling=scaling, short=short,
+                          query_position=query_position, long_window=long_window)
 
 
 def _paged_joint_attention(native, query, key, value, attention_mask, *, scaling,
@@ -184,9 +185,12 @@ def _paged_joint_attention(native, query, key, value, attention_mask, *, scaling
         output = _prefill(q, k, v, short, scaling=scaling,
                           long_window=long_window, short_window=short_window)
     else:
-        k, v = _cache_window(long_context[2], long_context[0], length, long_window)
+        history_window = long_window if native.is_global else long_window + 3
+        k, v = _cache_window(long_context[2], long_context[0], length, history_window)
         short = _cache_window(short_context[2], short_context[0], length, short_window)
-        output = _decode(q, k, v, short, scaling=scaling)
+        output = _decode(q, k, v, short, scaling=scaling,
+                         query_position=None if native.is_global else length - 1,
+                         long_window=None if native.is_global else long_window)
     return output.to(value.dtype), None
 
 
@@ -210,7 +214,8 @@ def bind_conversion_attention(policy, attention_factory, *, prefix=""):
                 or replacement.conversion_config.backend != "tilelang"):
             raise ValueError("vLLM conversion binding requires W16 TileLang native replacements")
         native = replacement.native
-        for axis, window in (("long", native.window_span), ("short", 16)):
+        long_capacity = None if native.is_global else native.window_span + 3
+        for axis, window in (("long", long_capacity), ("short", 16)):
             attention = attention_factory(
                 native, window=window, prefix=f"{prefix}layers.{index}.conversion.{axis}_attention",
             )
