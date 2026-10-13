@@ -81,6 +81,55 @@ def test_conversion_selects_wide_shared_gradient_accumulation(monkeypatch):
     assert calls[0]["dynamic_length"] is True
 
 
+def test_tilelang_native_cache_retains_three_masked_keys_and_absolute_position():
+    transformers = pytest.importorskip("transformers")
+
+    class Native(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(_attn_implementation="sdpa")
+            self.qkv_proj = torch.nn.Linear(8, 384, bias=False)
+            self.attention_dropout = 0.
+            self.kv_size, self.num_kv_heads, self.head_dim = 128, 1, 128
+            self.layer_idx, self.window_span, self.is_global = 0, 5, False
+
+        def forward(self, *args):
+            raise AssertionError("the test binds its cache-only publisher seam")
+
+    attention = LimiteSimplicialAttention(Native(), LimiteConversionConfig(backend="tilelang"))
+    positions = []
+
+    def cached_forward(native, hidden, values, cosine, sine, mask, cache, use_cache, output_attentions):
+        positions.append(native._archlab_conversion_position)
+        projected = torch.zeros(1, 1, hidden.shape[1], 128)
+        cache.update(projected, projected, 0)
+        return hidden, None
+
+    attention._joint_forward = cached_forward
+    config = transformers.PretrainedConfig(num_hidden_layers=1, sliding_window=5,
+                                           layer_types=["sliding_attention"])
+    cache = transformers.DynamicCache(config=config)
+    other = transformers.DynamicCache(config=config)
+    original_other = other.layers[0]
+    with torch.no_grad():
+        attention(torch.zeros(1, 7, 8), None, None, None, None, cache, True, False)
+        for _ in range(4):
+            attention(torch.zeros(1, 1, 8), None, None, None, None, cache, True, False)
+    assert positions == [None, 7, 8, 9, 10]
+    assert cache.layers[0].sliding_window == 8
+    assert cache.layers[0].keys.shape[-2] == 7
+    assert cache.get_seq_length() == 11
+    assert other.layers[0] is original_other and other.layers[0].sliding_window == 5
+    assert other.get_seq_length() == 0
+    assert attention.native.window_span == 5
+    assert attention.native._archlab_conversion_position is None
+    assert cache.archlab_conversion_short[0][0].shape[1] == 5
+    cache.layers[0].sliding_window = 5
+    with torch.no_grad(), pytest.raises(ValueError, match="masked query-group history"):
+        attention(torch.zeros(1, 1, 8), None, None, None, None, cache, True, False)
+    assert cache.get_seq_length() == 11
+
+
 @pytest.mark.parametrize("short,long", [(1, 1), (5, 5), (16, 19)])
 def test_float64_identity_matches_attention_outputs_and_inherited_gradients(short, long):
     generator = torch.Generator().manual_seed(17)

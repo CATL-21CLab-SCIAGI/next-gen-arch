@@ -64,8 +64,9 @@ def _set_metadata(owner, tokens, length, blocks=(3, 1, 4, 2, 7, 5)):
 def native(monkeypatch):
     monkeypatch.setattr(bridge, "_attention_context", lambda owner: owner.context)
     monkeypatch.setattr(bridge, "_prefill", _oracle)
-    monkeypatch.setattr(bridge, "_decode", lambda q, k, v, short, *, scaling: _oracle(
-        q, k, v, short, scaling=scaling, long_window=k.shape[1],
+    monkeypatch.setattr(bridge, "_decode", lambda q, k, v, short, *, scaling,
+                        query_position=None, long_window=None: _oracle(
+        q, k, v, short, scaling=scaling, long_window=long_window or k.shape[1],
         short_window=short[0].shape[1], decode=True))
     return SimpleNamespace(num_heads=4, num_kv_heads=2, head_dim=8, scaling=.17,
                            is_global=False, window_span=32,
@@ -91,7 +92,7 @@ def _run(native, tensors):
     return output
 
 
-@pytest.mark.parametrize("prefill", [1, 15, 16, 17, 31, 32, 33])
+@pytest.mark.parametrize("prefill", [1, 15, 16, 17, 31, 32, 33, 34, 35])
 @pytest.mark.parametrize("global_layer", [False, True])
 @pytest.mark.parametrize("hnd", [False, True])
 def test_prefill_decode_across_short_long_and_page_boundaries(native, prefill, global_layer, hnd):
@@ -138,6 +139,31 @@ def test_disjoint_requests_use_only_their_package_block_tables(native):
     expected = _oracle(*first[:3], tuple(first[3:]), scaling=native.scaling,
                        long_window=32, short_window=16)
     torch.testing.assert_close(output, expected[:, -1:], rtol=0, atol=0)
+
+
+def test_decode_retains_masked_history_but_passes_the_effective_window(native, monkeypatch):
+    history = _projections(38, seed=81)
+    owners = (native.archlab_conversion_long_attention, native.archlab_conversion_short_attention)
+    calls = []
+
+    def decode(q, k, v, short, *, scaling, query_position, long_window):
+        calls.append((query_position, long_window, k.shape[1], short[0].shape[1]))
+        return _oracle(q, k, v, short, scaling=scaling, long_window=long_window,
+                       short_window=16, decode=True)
+
+    monkeypatch.setattr(bridge, "_decode", decode)
+    for owner in owners:
+        _set_metadata(owner, 34, 34)
+    _run(native, [t[:, :34] for t in history])
+    for position in range(34, 38):
+        for owner in owners:
+            _set_metadata(owner, 1, position + 1)
+        output = _run(native, [t[:, position:position + 1] for t in history])
+        expected = _oracle(*[t[:, :position + 1] for t in history[:3]],
+                           tuple(t[:, :position + 1] for t in history[3:]),
+                           scaling=native.scaling, long_window=32, short_window=16)
+        torch.testing.assert_close(output, expected[:, -1:], rtol=0, atol=0)
+    assert calls == [(position, 32, 35, 16) for position in range(34, 38)]
 
 
 def test_dummy_profiling_never_writes_request_caches(native):
@@ -291,7 +317,7 @@ def test_binding_keeps_native_forward_and_installs_two_distinct_cache_owners():
     original = Native.forward
     owners = bridge.bind_conversion_attention(policy, factory, prefix="model.")
     assert len(owners) == 4 and len({id(owner) for owner in owners}) == 4
-    assert [window for _, window, _ in construction] == [32, 16, None, 16]
+    assert [window for _, window, _ in construction] == [35, 16, None, 16]
     assert all(name.startswith("model.layers.") for _, _, name in construction)
     assert Native.forward is original
     for layer in layers:

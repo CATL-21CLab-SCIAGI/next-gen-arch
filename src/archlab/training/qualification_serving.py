@@ -21,14 +21,18 @@ class ConversionQualificationWorker(QualificationWorker):
                 max_abs=float((actual - expected).abs().max()),
             ))
 
-        def checked_decode(q, k, v, short, *, scaling):
-            output = decode(q, k, v, short, scaling=scaling)
+        def checked_decode(q, k, v, short, *, scaling, query_position=None, long_window=None):
+            output = decode(q, k, v, short, scaling=scaling,
+                            query_position=query_position, long_window=long_window)
             native = current["native"]
             history = self._histories[native.layer_idx]
             length = history[0].shape[1]
-            window = length if native.is_global else native.window_span
+            window = length if native.is_global else native.window_span + 3
+            assert query_position == (None if native.is_global else length - 1)
+            assert long_window == (None if native.is_global else native.window_span)
             expected = decode(q, history[0][:, -window:], history[1][:, -window:],
-                              tuple(t[:, -16:] for t in history[2:]), scaling=scaling)
+                              tuple(t[:, -16:] for t in history[2:]), scaling=scaling,
+                              query_position=query_position, long_window=long_window)
             record("paged_decode_vs_contiguous_history", native, output, expected, length)
             return output
 
@@ -58,8 +62,11 @@ class ConversionQualificationWorker(QualificationWorker):
                 window = length if native.is_global else native.window_span
                 prefill = tilelang_attention(q, k, v, scaling=native.scaling, short=short,
                     short_window=16, long_window=window, dynamic_length=True)[:, -1:]
-                decoded = tilelang_decode(q[:, -1:], k[:, -window:], v[:, -window:],
-                    scaling=native.scaling, short=tuple(t[:, -16:] for t in short))
+                history_window = window if native.is_global else window + 3
+                decoded = tilelang_decode(q[:, -1:], k[:, -history_window:], v[:, -history_window:],
+                    scaling=native.scaling, short=tuple(t[:, -16:] for t in short),
+                    query_position=None if native.is_global else length - 1,
+                    long_window=None if native.is_global else window)
                 record("prefill_last_query_vs_decode", native, decoded, prefill, length)
             return output
 
@@ -74,7 +81,7 @@ class ConversionQualificationWorker(QualificationWorker):
             for axis in ("long", "short"):
                 owner = getattr(native, f"archlab_conversion_{axis}_attention")
                 cache = owner.kv_cache
-                window = (None if native.is_global else native.window_span) if axis == "long" else 16
+                window = (None if native.is_global else native.window_span + 3) if axis == "long" else 16
                 assert owner.sliding_window == window
                 assert cache.ndim == 5 and cache.shape[0] == 2
                 assert cache.shape[3:] == (native.num_kv_heads, native.head_dim)

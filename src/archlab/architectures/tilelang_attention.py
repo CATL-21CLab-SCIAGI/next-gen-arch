@@ -23,7 +23,8 @@ def _unused_lengths(device):
 
 
 @tilelang.jit(out_idx=[5, 6], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
-def _forward_kernel(B, N, HQ, HK, D, S, W1, W2, scale, BQ=4, BN=64, stages=1, decode=False, bounded_decode=False):
+def _forward_kernel(B, N, HQ, HK, D, S, W1, W2, scale, BQ=4, BN=64, stages=1, decode=False,
+                    bounded_decode=False, key_lower=0):
     N = T.dynamic("sequence_length") if N is None else N
     W2 = N if W2 == 0 else W2
     M = BQ * S
@@ -96,7 +97,7 @@ def _forward_kernel(B, N, HQ, HK, D, S, W1, W2, scale, BQ=4, BN=64, stages=1, de
                         and (N1 - 1 - r % S >= 0 if decode else i - r % S >= 0)
                         and r % S < W1
                         and (r % S < LENGTHS[1] if bounded_decode else True)
-                        and (key < end if decode else key <= i and key > i - W2),
+                        and (key >= key_lower and key < end if decode else key <= i and key > i - W2),
                         score[r, k] * scale * 1.4426950408889634,
                         -T.infinity(T.float32),
                     )
@@ -379,11 +380,29 @@ def tilelang_attention(
     )
 
 
-def tilelang_decode(q, k, v, *, scaling, short=None, lengths=None):
-    """Cached one-token attention using the same TileLang softmax arithmetic."""
+def tilelang_decode(q, k, v, *, scaling, short=None, lengths=None,
+                    query_position=None, long_window=None):
+    """Cached one-token attention using the same TileLang softmax arithmetic.
+
+    Local simplicial decoding retains up to three masked older keys so its
+    BN128 tiles start at the same BQ4 query group as training/prefill. The
+    effective attention window is unchanged. Positions are caller-owned host
+    integers; this path never reads a device position tensor.
+    """
     _validate(q, k, v, short)
     if q.shape[1] != 1 or torch.is_grad_enabled():
         raise ValueError("cached TileLang decode requires one token without gradients")
+    key_lower = 0
+    if query_position is not None or long_window is not None:
+        if (short is None or lengths is not None or type(query_position) is not int
+                or query_position < 0 or type(long_window) is not int or long_window < 1):
+            raise ValueError("aligned local decode requires a position, window and simplicial history")
+        start = max(0, query_position // 4 * 4 - long_window + 1)
+        required = query_position + 1 - start
+        if k.shape[1] < required:
+            raise ValueError("aligned local decode lacks its masked query-group history")
+        k, v = k[:, -required:], v[:, -required:]
+        key_lower = max(0, query_position - long_window + 1) - start
     k1, v1 = short if short else (k, v)
     b, _, h, d = q.shape
     s = 16 if short else 1
@@ -394,7 +413,7 @@ def tilelang_decode(q, k, v, *, scaling, short=None, lengths=None):
     # Match the prefill key tiles: BF16 online probabilities depend on each
     # tile's running maximum, so changing BN changes the rounded reduction.
     out, _ = _forward_kernel(*cfg, BN=128 if short else 64,
-                            decode=True, bounded_decode=lengths is not None)(
+                            decode=True, bounded_decode=lengths is not None, key_lower=key_lower)(
         *(x.contiguous() for x in (q, k1, k, v1, v)),
         _unused_lengths(q.device) if lengths is None else lengths,
     )

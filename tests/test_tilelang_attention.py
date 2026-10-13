@@ -187,6 +187,40 @@ def test_decode_joint_softmax(variant, n):
     assert relative(actual, oracle) < 0.005
 
 
+def test_local_decode_matches_prefill_across_all_query_phases_and_masks_older_keys():
+    from archlab.architectures.tilelang_attention import tilelang_attention, tilelang_decode
+
+    torch.manual_seed(8317)
+    q, k, v, k1, v1 = [
+        torch.randn(1, 1108, heads, 128, device="cuda", dtype=torch.bfloat16)
+        for heads in (10, 2, 2, 2, 2)
+    ]
+    with torch.no_grad():
+        full = tilelang_attention(q, k, v, scaling=.1, long_window=1025,
+                                  short=(k1, v1), short_window=16, dynamic_length=True)
+        for position in (0, 15, 1023, 1024, 1025, 1026, 1027, 1100, 1101, 1102, 1103):
+            start = max(0, position + 1 - 1028)
+            short_start = max(0, position - 15)
+            actual = tilelang_decode(q[:, position:position + 1], k[:, start:position + 1],
+                v[:, start:position + 1], scaling=.1,
+                short=(k1[:, short_start:position + 1], v1[:, short_start:position + 1]),
+                query_position=position, long_window=1025)
+            torch.testing.assert_close(actual.to(torch.bfloat16),
+                                       full[:, position:position + 1].to(torch.bfloat16), rtol=0, atol=0)
+            effective_start = max(0, position - 1024)
+            if effective_start > start:
+                poisoned_k, poisoned_v = k[:, start:position + 1].clone(), v[:, start:position + 1].clone()
+                poisoned_k[:, :effective_start - start].fill_(100)
+                poisoned_v[:, :effective_start - start].fill_(100)
+                masked = tilelang_decode(q[:, position:position + 1], poisoned_k, poisoned_v,
+                    scaling=.1, short=(k1[:, short_start:position + 1], v1[:, short_start:position + 1]),
+                    query_position=position, long_window=1025)
+                torch.testing.assert_close(masked, actual, rtol=0, atol=0)
+        with pytest.raises(ValueError, match="masked query-group history"):
+            tilelang_decode(q[:, 1101:1102], k[:, 77:1102], v[:, 77:1102], scaling=.1,
+                short=(k1[:, 1086:1102], v1[:, 1086:1102]), query_position=1101, long_window=1025)
+
+
 @pytest.mark.parametrize("window", [1025, 10240])
 def test_gqa_full_rl_context_forward_and_gradients(window):
     from archlab.architectures.tilelang_attention import tilelang_attention
