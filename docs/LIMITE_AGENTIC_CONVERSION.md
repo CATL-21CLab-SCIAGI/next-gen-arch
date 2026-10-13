@@ -59,6 +59,13 @@ produce text/tool demonstrations that are retokenized for Limite; exact
 vocabulary equality is not required for text distillation. This is a bounded
 search, not proof that no compatible large teacher exists.
 
+The local Qwen3.6-35B-A3B teacher is supported by the existing serving runtime
+with its upstream Triton MoE backend. All 26 weight shards and seven runtime /
+license assets match the pinned publisher revision; the local README differs.
+It uses another tokenizer, so this is a text-distillation candidate. Two actual
+training-task controls failed the executable verifier, including one naturally
+completed 18-turn episode. Neither trace is accepted as successful supervision.
+
 The current bootstrap distills successful teacher text/tool trajectories,
 not teacher logits. On-policy logit distillation is not enabled: the upstream
 agent-framework rollout adapter rejects a teacher client, and token/history
@@ -145,9 +152,25 @@ tool-output excerpts retain the publisher's explicit warning, head, omission
 count and tail; omitted stdout is never invented or represented as complete.
 These are complete delivered observations, distinct from unfinished model
 responses. Source success labels have not been independently re-executed.
-The proposed continuation from update 160 is one pass at LR 0.00005 with a fresh
-optimizer, 57 stock DP8 updates and five full-state saves at 12/24/36/48/57.
-Actual repair rewards determine whether it is ready for RL.
+The continuation from update 160 completed one pass at LR 0.00005 with a fresh
+optimizer: 57 finite stock DP8 updates, 4,832,967 logged input tokens and five
+full-state saves at 12/24/36/48/57. Final validation CE was 0.934689 on the new
+49-history split; it is not directly comparable with the earlier 14-history
+validation set. All five trained exports were finalized without changing weight
+bytes or resume state. Training used frozen source v4; the separately receipted
+v5 finalizer handles the upstream writer's omitted tied-embedding alias metadata
+by verifying the complete parent export and state digest, without rewriting it.
+
+At update 57, all six bounded held-out first-turn probes produced native EOS
+and at least one parsed bash call in 47–150 tokens, with no length caps. One
+sample also contained malformed nested tool-call text. An actual training-task
+episode subsequently executed 16 bash commands, all with native EOS and real
+return-code observations, but repeated inspection instead of editing code and
+reached the diagnostic's 16-turn ceiling. A diagnostic-only policy-version
+metadata error occurred after environment cleanup and before the verifier result
+was persisted; that verdict is unavailable and must not be inferred. Neither
+first-turn protocol recovery nor lower CE establishes a successful repair or
+healthy RL. Actual repair rewards determine readiness for RL.
 
 ## Admission and RL health
 
@@ -228,6 +251,14 @@ isolation, cache windows, weight reload and native termination remain separate
 requirements. This evaluates the probabilities actually used by RL, while
 retaining the failed full-vocabulary 0.02/0.1 check explicitly. It is a new
 versioned criterion, not a retroactive pass under the original bounds.
+
+An update-57 serving diagnostic isolated a separate prefill/decode discrepancy:
+simplicial prefill used 128-key tiles while cached decode used 64. BF16 online
+probability rounding depends on that partition. Matching decode to 128 makes
+all six fixed native replay cases pass the unchanged control-calibrated bounds;
+ordinary attention retains 64. Twenty focused B300 kernel checks also pass.
+This changes cached inference only, preserving training and checkpoint bytes.
+Actual full serving and RL admission remain separate requirements.
 
 After 2-simplicial RL is stable with repeatable held-out reward signal, the other
 DLC node may run a triadic replacement under a new matched contract. Match the

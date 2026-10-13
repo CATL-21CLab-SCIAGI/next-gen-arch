@@ -391,7 +391,10 @@ def tilelang_decode(q, k, v, *, scaling, short=None, lengths=None):
     if not 1 <= w1 <= s:
         raise ValueError("cached short axis exceeds 16 keys")
     cfg = (b, 1, h, k.shape[2], d, s, s, 1, scaling, 4 if short else 64)
-    out, _ = _forward_kernel(*cfg, decode=True, bounded_decode=lengths is not None)(
+    # Match the prefill key tiles: BF16 online probabilities depend on each
+    # tile's running maximum, so changing BN changes the rounded reduction.
+    out, _ = _forward_kernel(*cfg, BN=128 if short else 64,
+                            decode=True, bounded_decode=lengths is not None)(
         *(x.contiguous() for x in (q, k1, k, v1, v)),
         _unused_lengths(q.device) if lengths is None else lengths,
     )
