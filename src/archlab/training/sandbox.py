@@ -129,6 +129,8 @@ class E2BEnvironment:
             self.sandbox = Sandbox.create(
                 template=entry["template_id"], timeout=config.sandbox_timeout,
                 domain=config.domain or None, api_key=key, allow_internet_access=False,
+                envs={"PIP_NO_INDEX": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+                      "UV_OFFLINE": "1"},
                 request_timeout=60, metadata={"purpose": "archlab-code-rl"},
             )
         except Exception as error:
