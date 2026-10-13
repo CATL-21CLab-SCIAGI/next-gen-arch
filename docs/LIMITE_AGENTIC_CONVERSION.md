@@ -197,6 +197,13 @@ token context and native generated-response termination checks. This prevents
 one broad shell search from unnecessarily filling the context. Harness hashes
 and executable sandbox baselines are renewed together when that setting changes.
 
+The task sandboxes have no internet access. Their package managers now receive
+explicit offline settings, so an unavailable dependency produces a normal tool
+error instead of waiting for a blocked download and losing the episode. In an
+actual SQLGlot sandbox, installing the absent pytest package returned exit 1
+in 0.35 seconds; the installed native unittest runner still passed 38 tests.
+SDK/network failures remain infrastructure errors, never negative code rewards.
+
 The first converted GPU probe had finite gradients in all 48 short projections.
 The cached/full-prefix test did **not** pass its predeclared precision bounds:
 relative-logit L2 reached 0.0713 versus 0.0678 in the unchanged FA2 base control;

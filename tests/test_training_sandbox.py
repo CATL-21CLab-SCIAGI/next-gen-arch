@@ -46,7 +46,9 @@ def test_explicit_image_mapping_and_parent_only_credentials(monkeypatch, tmp_pat
     assert calls[0]["template"] == "qualified-task-template"
     assert calls[0]["allow_internet_access"] is False
     assert calls[0]["api_key"] == "test-private-key"
-    assert "envs" not in calls[0]
+    assert calls[0]["envs"] == {"PIP_NO_INDEX": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+                                "UV_OFFLINE": "1"}
+    assert "test-private-key" not in calls[0]["envs"].values()
     assert env.get_template_vars() == {"cwd": "/testbed", "image": "image@sha256:one"}
     env.cleanup()
     env.cleanup()
