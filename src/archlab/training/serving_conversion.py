@@ -1,8 +1,9 @@
 """Candidate vLLM cache bridge for native Limite attention replacement.
 
 Two ordinary package Attention layers own each layer's long and short paged
-K/V. Their outputs are discarded; the existing TileLang joint reduction owns
-the conversion arithmetic. This narrow eager path admits one complete new
+K/V. Upstream's cache-update operation writes them without computing unused
+ordinary attention; the existing TileLang joint reduction owns the conversion
+arithmetic. This narrow eager path admits one complete new
 prompt or one decode token, with no request state outside vLLM's caches.
 GPU numerical and request lifecycle qualification remain separate.
 """
@@ -33,6 +34,8 @@ def validate_conversion_serving(vllm_config):
         raise ValueError("conversion serving requires no prefix caching and unquantized K/V")
     if vllm_config.quant_config is not None or vllm_config.speculative_config is not None:
         raise ValueError("conversion serving does not admit quantization or speculative decoding")
+    if getattr(vllm_config, "kv_transfer_config", None) is not None:
+        raise ValueError("conversion serving does not admit external K/V transfer")
     attention = vllm_config.attention_config
     backend = getattr(attention.backend, "name", attention.backend)
     if backend != "FLASH_ATTN" or attention.flash_attn_version != 2:
@@ -61,6 +64,11 @@ def stock_attention_factory(vllm_config):
         if (attention.get_attn_backend().get_name() != "FLASH_ATTN"
                 or attention.impl.vllm_flash_attn_version != 2):
             raise ValueError("conversion cache owner must actually use FlashAttention-2")
+        if (attention.calculate_kv_scales or attention.query_quant is not None
+                or attention.kv_sharing_target_layer_name is not None
+                or attention.get_attn_backend().forward_includes_kv_cache_update
+                or not callable(getattr(attention.impl, "do_kv_cache_update", None))):
+            raise ValueError("conversion requires independent unquantized cache-update owners")
         return attention
 
     return factory
@@ -150,6 +158,15 @@ def _decode(q, k, v, short, *, scaling, query_position=None, long_window=None):
                           query_position=query_position, long_window=long_window)
 
 
+def _update_cache(owner, key, value):
+    from vllm.model_executor.layers.attention.attention import unified_kv_cache_update
+
+    # Use the same upstream update as Attention.forward, including its per-layer
+    # slot mapping and K/V scales. Eager execution keeps the write ordered before
+    # our reads; compiled execution would also need its returned dependency.
+    unified_kv_cache_update(key.flatten(0, 1), value.flatten(0, 1), owner.layer_name)
+
+
 def _paged_joint_attention(native, query, key, value, attention_mask, *, scaling,
                            dropout=0.0, **kwargs):
     if (query.ndim != 4 or query.shape[0] != 1 or query.shape[2] < 1 or attention_mask is not None
@@ -176,11 +193,8 @@ def _paged_joint_attention(native, query, key, value, attention_mask, *, scaling
     long_window = (length or q.shape[1]) if native.is_global else native.window_span
     short_window = min(native._archlab_conversion_config.short_window, long_window)
     if length is not None:
-        # Public Attention.forward owns cache writes and request slot mapping.
-        # Its normal-attention result is deliberately discarded at this stage.
-        flat_q = q.flatten(0, 1)
-        long_owner(flat_q, k.flatten(0, 1), v.flatten(0, 1))
-        short_owner(flat_q, short[0].flatten(0, 1), short[1].flatten(0, 1))
+        _update_cache(long_owner, k, v)
+        _update_cache(short_owner, *short)
     if length is None or length == q.shape[1]:
         output = _prefill(q, k, v, short, scaling=scaling,
                           long_window=long_window, short_window=short_window)

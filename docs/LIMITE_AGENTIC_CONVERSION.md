@@ -62,9 +62,14 @@ search, not proof that no compatible large teacher exists.
 The local Qwen3.6-35B-A3B teacher is supported by the existing serving runtime
 with its upstream Triton MoE backend. All 26 weight shards and seven runtime /
 license assets match the pinned publisher revision; the local README differs.
-It uses another tokenizer, so this is a text-distillation candidate. Two actual
-training-task controls failed the executable verifier, including one naturally
-completed 18-turn episode. Neither trace is accepted as successful supervision.
+It uses another tokenizer, so supervision is retokenized text rather than
+index-aligned logit KL. After failed controls were retained and rejected, three
+complete native-agent trajectories passed the actual executable verifiers on
+training tasks `002856`, `000795` and `000530`. They used the same bash harness,
+temperature 0.6 and native termination as the student diagnostics, without
+reference-patch injection. A capped trajectory was rejected even though its
+verifier passed. These are teacher successes; student success is measured
+separately, and replaying these training tasks measures recall.
 
 The current bootstrap distills successful teacher text/tool trajectories,
 not teacher logits. On-policy logit distillation is not enabled: the upstream
@@ -182,6 +187,32 @@ seed 0, separately from trainer/model seed 42, and exposed 168 rows covering all
 stock loader): CE was 0.9370 at update 14 and 0.9769 at 21. This is a behavior
 recovery curriculum, not evidence of successful repairs or intelligence gains.
 
+The next bootstrap starts from the broader update-57 checkpoint and adds the
+three independently verified teacher histories to those 60 reviewed histories,
+with four exposures to each new history per epoch. The 72-row dataset has 63
+unique histories; the existing 49 validation histories remain byte-identical.
+Three epochs completed 27 finite updates and 3,265,437 logged input tokens at
+LR 0.00005 with fresh Adam `(0.9, 0.95)`. Full model, optimizer, scheduler, RNG
+and data-loader states are preserved at updates 9, 18 and 27. Validation CE
+rose from 0.9574 at update 9 to 1.0007 and 1.1067, while final training CE was
+0.3235. This is evidence of increasing fit to the training set, not a reason
+to select the last checkpoint. Update 9 was selected for live repair checks
+before observing their outcomes. Teacher-task recall and held-out task repair
+must be reported separately; no agentic RL or architectural advantage follows
+from these SFT metrics alone.
+
+Update 9 subsequently failed both bounded live checks: demonstrated training
+task `000795` and held-out task `000930`. They executed one and twelve real bash
+commands respectively, but neither repaired the product source. Each emitted
+an 8,192-token unfinished turn with fabricated or repeated tool transcripts;
+the full context limit was not reached. Both executable rewards were zero.
+Update 27's follow-up on `000795` produced 64 native-EOS turns, 63 real bash
+executions and no parser errors, but repeated a three-command inspection loop
+without editing source. It reached the diagnostic's 64-step ceiling and again
+received reward zero. More supervision improved tool boundaries but did not
+establish repair capability. Raising limits alone is not supported by these
+traces, and neither checkpoint is admitted to agentic RL.
+
 ## Admission and RL health
 
 `archlab.training.bootstrap` composes the pinned upstream SFT engine; verl owns
@@ -288,6 +319,17 @@ learner's BF16 attention output after alignment, and the native response p95
 log-probability difference falls from 0.06359 to 0.01541 under the unchanged
 0.05907 bound. Training forward/backward and checkpoint weights are unchanged;
 this diagnostic does not substitute for full serving or RL admission.
+
+The cache bridge now calls upstream vLLM's cache-update operation directly,
+removing 96 discarded ordinary-attention calls per decoded token. On the
+actual verified-teacher update-27 checkpoint, the unchanged GPU serving parity
+check passes across independent requests and weight reload. A sequential B300
+A/B with identical settings and five measured repetitions improves isolated
+generation from 13.89 to 15.89 tokens/s (14.4%); all 21 paired requests produce
+identical tokens and processed log probabilities. This measures three short
+prefixes and 128 generated tokens per request in a 32K-capacity eager engine,
+not long-context throughput, end-to-end RL speed or MFU. Per-layer host
+synchronization and chronological cache copies remain separate bottlenecks.
 
 After 2-simplicial RL is stable with repeatable held-out reward signal, the other
 DLC node may run a triadic replacement under a new matched contract. Match the

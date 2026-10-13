@@ -39,6 +39,9 @@ class _CacheOwner(nn.Module):
         self.calls = 0
 
     def forward(self, q, k, v):
+        pytest.fail("cache owners must not compute ordinary attention")
+
+    def update(self, k, v):
         self.calls += 1
         _, _, cache, slots = self.context
         for index, slot in enumerate(slots.tolist()):
@@ -46,7 +49,6 @@ class _CacheOwner(nn.Module):
                 block, offset = divmod(slot, cache.shape[2])
                 cache[0, block, offset] = k[index]
                 cache[1, block, offset] = v[index]
-        return torch.full_like(q, float("nan"))  # Must never become the joint output.
 
 
 def _set_metadata(owner, tokens, length, blocks=(3, 1, 4, 2, 7, 5)):
@@ -68,11 +70,21 @@ def native(monkeypatch):
                         query_position=None, long_window=None: _oracle(
         q, k, v, short, scaling=scaling, long_window=long_window or k.shape[1],
         short_window=short[0].shape[1], decode=True))
-    return SimpleNamespace(num_heads=4, num_kv_heads=2, head_dim=8, scaling=.17,
-                           is_global=False, window_span=32,
-                           _archlab_conversion_config=SimpleNamespace(short_window=16),
-                           archlab_conversion_long_attention=_CacheOwner("long"),
-                           archlab_conversion_short_attention=_CacheOwner("short"))
+    native = SimpleNamespace(num_heads=4, num_kv_heads=2, head_dim=8, scaling=.17,
+                             is_global=False, window_span=32,
+                             _archlab_conversion_config=SimpleNamespace(short_window=16),
+                             archlab_conversion_long_attention=_CacheOwner("long"),
+                             archlab_conversion_short_attention=_CacheOwner("short"))
+    module = ModuleType("vllm.model_executor.layers.attention.attention")
+
+    def update(k, v, layer_name):
+        assert k.ndim == v.ndim == 3
+        owner = getattr(native, f"archlab_conversion_{layer_name}_attention")
+        owner.update(k, v)
+
+    module.unified_kv_cache_update = update
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    return native
 
 
 def _projections(length, seed=1):
@@ -244,18 +256,31 @@ def test_serving_settings_fail_closed(section, key, value):
         bridge.validate_conversion_serving(config)
 
 
+def test_external_kv_transfer_is_rejected_before_cache_owner_construction():
+    config = _config()
+    config.kv_transfer_config = SimpleNamespace(kv_connector="external")
+    with pytest.raises(ValueError, match="external K/V transfer"):
+        bridge.validate_conversion_serving(config)
+
+
 def test_factory_preserves_global_window_and_checks_actual_fa_version(monkeypatch):
     constructed = []
 
     class Attention:
         version = 2
+        calculate_kv_scales = False
+        query_quant = None
+        kv_sharing_target_layer_name = None
+        forward_includes_kv_cache_update = False
 
         def __init__(self, **kwargs):
             constructed.append(kwargs)
-            self.impl = SimpleNamespace(vllm_flash_attn_version=self.version)
+            self.impl = SimpleNamespace(vllm_flash_attn_version=self.version,
+                                        do_kv_cache_update=lambda *args: None)
 
         def get_attn_backend(self):
-            return SimpleNamespace(get_name=lambda: "FLASH_ATTN")
+            return SimpleNamespace(get_name=lambda: "FLASH_ATTN",
+                forward_includes_kv_cache_update=self.forward_includes_kv_cache_update)
 
     module = ModuleType("vllm.model_executor.layers.attention")
     module.Attention = Attention
@@ -272,6 +297,16 @@ def test_factory_preserves_global_window_and_checks_actual_fa_version(monkeypatc
     Attention.version = 3
     with pytest.raises(ValueError, match="actually use FlashAttention-2"):
         factory(native, window=None, prefix="unsupported")
+    Attention.version = 2
+    for attribute, unsupported in (
+        ("calculate_kv_scales", True), ("query_quant", object()),
+        ("kv_sharing_target_layer_name", "other"), ("forward_includes_kv_cache_update", True),
+    ):
+        previous = getattr(Attention, attribute)
+        setattr(Attention, attribute, unsupported)
+        with pytest.raises(ValueError, match="independent unquantized cache-update owners"):
+            factory(native, window=None, prefix="unsupported")
+        setattr(Attention, attribute, previous)
 
 
 def test_profiling_context_does_not_require_slot_mapping(monkeypatch):
