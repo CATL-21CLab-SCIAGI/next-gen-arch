@@ -1,8 +1,11 @@
 """E2B is an execution boundary; failures never masquerade as failed tests."""
 
 import json
+import shlex
+import subprocess
 import sys
 import traceback
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -87,6 +90,117 @@ def test_verifier_transfer_preserves_bytes(tmp_path):
     env.copy_to(str(source), "/tmp/verifier.patch")
     assert writes[0][0] == ("/tmp/verifier.patch", b"exact\x00bytes\r\n")
     assert writes[0][1]["user"] == "root"
+
+
+def test_directory_transfer_preserves_paths_empty_directories_and_bytes(tmp_path):
+    source = tmp_path / "editor strings"
+    nested = source / "nested 雪\nname"
+    nested.mkdir(parents=True)
+    (source / "empty").mkdir()
+    payload = b"exact\x00bytes\r\n" + "café\n雪".encode()
+    (nested / "old\nstring").write_bytes(payload)
+    calls = []
+    env = E2BEnvironment(image="image", user="researcher")
+    env.sandbox = SimpleNamespace(files=SimpleNamespace(
+        make_dir=lambda *a, **kw: calls.append(("mkdir", a, kw)),
+        write=lambda *a, **kw: calls.append(("write", a, kw))))
+    env.copy_to(str(source), "/tmp/native editor 雪\nstrings", timeout=37)
+    assert ("mkdir", ("/tmp/native editor 雪\nstrings/empty",),
+            {"user": "researcher", "request_timeout": 37}) in calls
+    assert calls[-1] == ("write", ("/tmp/native editor 雪\nstrings/nested 雪\nname/old\nstring", payload),
+                         {"user": "researcher", "request_timeout": 37})
+    assert all(call[2] == {"user": "researcher", "request_timeout": 37} for call in calls)
+
+
+def test_directory_transfer_rejects_links_before_any_upload(tmp_path):
+    source = tmp_path / "strings"
+    source.mkdir()
+    (source / "old").write_text("old")
+    (source / "link").symlink_to(source / "old")
+    calls = []
+    env = E2BEnvironment(image="image")
+    env.sandbox = SimpleNamespace(files=SimpleNamespace(
+        make_dir=lambda *a, **kw: calls.append(a), write=lambda *a, **kw: calls.append(a)))
+    with pytest.raises(ValueError, match="regular files and directories"):
+        env.copy_to(str(source), "/tmp/native-editor")
+    assert calls == []
+
+
+@pytest.mark.parametrize("failed_operation", ["make_dir", "write"])
+def test_directory_transfer_failure_discards_sdk_secret_context(sdk, tmp_path, failed_operation):
+    def fail(*args, **kwargs):
+        try:
+            raise ValueError("sensitive-directory-value")
+        except ValueError as cause:
+            raise RuntimeError("SDK sensitive-auth-value") from cause
+
+    source = tmp_path / "strings"
+    source.mkdir()
+    (source / "old").write_text("old")
+    methods = {"make_dir": lambda *a, **kw: None, "write": lambda *a, **kw: None}
+    methods[failed_operation] = fail
+    env = E2BEnvironment(image="image")
+    env.sandbox = SimpleNamespace(files=SimpleNamespace(**methods))
+    with pytest.raises(sdk[1], match="file transfer infrastructure failure: RuntimeError") as raised:
+        env.copy_to(str(source), "/tmp/native-editor")
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert "sensitive" not in "".join(traceback.format_exception(raised.value))
+
+
+def test_actual_upstream_read_write_edit_execute_through_sdk_boundary(monkeypatch, tmp_path):
+    upstream = Path(__file__).resolve().parents[1] / "third_party/verl/third_party/mimoagent-osr/src"
+    monkeypatch.syspath_prepend(str(upstream))
+    from mimoagent.tools.edit import EditTool
+    from mimoagent.tools.read import ReadTool
+    from mimoagent.tools.write import WriteTool
+
+    class Exit(Exception):
+        def __init__(self, result):
+            self.stdout, self.stderr, self.exit_code = result.stdout, result.stderr, result.returncode
+
+    monkeypatch.setitem(sys.modules, "e2b.sandbox.commands.command_handle", SimpleNamespace(CommandExitException=Exit))
+    directories, commands = [], []
+
+    def make_dir(path, **kwargs):
+        directories.append(Path(path))
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+    def write(path, data, **kwargs):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(data)
+
+    def run(command, *, cwd, timeout, user):
+        commands.append(command)
+        result = subprocess.run(["bash", "-c", command], cwd=cwd, timeout=timeout,
+                                capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise Exit(result)
+        return SimpleNamespace(stdout=result.stdout, stderr=result.stderr, exit_code=0)
+
+    env = E2BEnvironment(image="image", cwd=str(tmp_path))
+    env.sandbox = SimpleNamespace(files=SimpleNamespace(make_dir=make_dir, write=write),
+                                  commands=SimpleNamespace(run=run))
+    path = tmp_path / "model café\ncase.py"
+    old = "alpha = 'café'\r\n"
+    new = "alpha = '雪'\r\nnew_line = 3\n"
+    initial = old + "beta = 2\n"
+    context = {"env": env}
+    assert WriteTool().execute({"path": str(path), "file_text": initial}, context).success
+    assert path.read_bytes() == initial.encode()
+    assert "café" in ReadTool().execute({"path": str(path)}, context).output
+    verifier = tmp_path / "verify.py"
+    verifier.write_text("import runpy, sys\nassert runpy.run_path(sys.argv[1])['alpha'] == '雪'\n")
+    command = " ".join(shlex.quote(str(value)) for value in (sys.executable, verifier, path))
+    assert env.execute(command)["returncode"] == 1
+    result = EditTool().execute({"path": str(path), "old_str": old, "new_str": new}, context)
+    assert result.success, result.output
+    assert path.read_bytes() == initial.replace(old, new, 1).encode()
+    assert directories and all(not directory.exists() for directory in directories)
+    assert env.execute(command)["returncode"] == 0
+    assert env.execute("printf 'actual failing command\\n'; exit 7") == {
+        "output": "actual failing command\n", "returncode": 7}
+    assert len(commands) >= 5
 
 
 def test_failed_cleanup_can_retry(sdk):

@@ -11,7 +11,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from archlab.artifacts import sha256_file
 
@@ -168,16 +168,36 @@ class E2BEnvironment:
         return self.execute(command, cwd=cwd, timeout=timeout)
 
     def copy_to(self, src_path, dest_path, *, timeout=300, max_retries=10):
+        """Upload a file, or a directory's contents at the exact destination.
+
+        MiMo's editor sends a fresh directory containing its old/new strings.
+        The SDK creates directories and transfers bytes; links and special files
+        inside directory uploads are unsupported rather than followed.
+        """
         if self.sandbox is None:
             raise RuntimeError("sandbox is not started")
         source = Path(src_path)
-        if not source.is_file():
-            raise ValueError("the code-task adapter transfers verifier files only")
-        destination = dest_path + source.name if dest_path.endswith("/") else dest_path
+        if source.is_file():
+            directories = []
+            files = [(source, dest_path + source.name if dest_path.endswith("/") else dest_path)]
+        elif source.is_dir() and not source.is_symlink():
+            entries = sorted(source.rglob("*"))
+            if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in entries):
+                raise ValueError("directory transfer supports regular files and directories only")
+            destination = PurePosixPath(dest_path)
+            directories = [destination, *(destination / path.relative_to(source)
+                            for path in entries if path.is_dir())]
+            files = [(path, str(destination / path.relative_to(source)))
+                     for path in entries if path.is_file()]
+        else:
+            raise ValueError("transfer source must be a file or regular directory")
         failure = None
         try:
-            self.sandbox.files.write(destination, source.read_bytes(),
-                                     user=self.config.user, request_timeout=timeout)
+            for directory in directories:
+                self.sandbox.files.make_dir(str(directory), user=self.config.user, request_timeout=timeout)
+            for path, destination in files:
+                self.sandbox.files.write(destination, path.read_bytes(),
+                                         user=self.config.user, request_timeout=timeout)
         except Exception as error:
             failure = _infrastructure_failure("file transfer", error)
         if failure is not None:

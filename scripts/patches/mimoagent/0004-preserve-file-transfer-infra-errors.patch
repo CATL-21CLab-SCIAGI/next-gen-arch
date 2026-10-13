@@ -1,0 +1,41 @@
+diff --git a/src/mimoagent/tools/edit.py b/src/mimoagent/tools/edit.py
+index ebb79ece90b73e080322a283c4d28ef3d149c3a7..84c8dbc1112b10c7bb2cbe4e10de3548d4ccabf4 100644
+--- a/src/mimoagent/tools/edit.py
++++ b/src/mimoagent/tools/edit.py
+@@ -27,6 +27,7 @@ import tempfile
+ import uuid
+ from typing import Any
+ 
++from mimoagent.environments import TransportError
+ from mimoagent.tools.base import BaseTool, ToolException, ToolOutput
+ 
+ # awk program: read old/new/target as whole records, enforce single
+@@ -224,5 +225,7 @@ echo "MIMO_EDIT:OK"
+                 f.write(new_str)
+             try:
+                 env.copy_to(local_dir, remote_dir)
++            except TransportError:
++                raise
+             except Exception as e:
+                 raise ToolException(f"Failed to transfer edit strings to environment: {e}")
+diff --git a/src/mimoagent/tools/write.py b/src/mimoagent/tools/write.py
+index 0f771d45faafc72d34efd678426c2cb42777b472..8d3b828cb42dde0aac95bcc92b1ebbd2f4f4a992 100644
+--- a/src/mimoagent/tools/write.py
++++ b/src/mimoagent/tools/write.py
+@@ -8,6 +8,7 @@ import os
+ import tempfile
+ from typing import Any
+ 
++from mimoagent.environments import TransportError
+ from mimoagent.tools.base import BaseTool, ToolException, ToolOutput
+ 
+ 
+@@ -72,6 +73,8 @@ Usage:
+             local_path = f.name
+         try:
+             env.copy_to(local_path, path)
++        except TransportError:
++            raise
+         except Exception as e:
+             raise ToolException(f"Failed to write file to environment: {e}")
+         finally:
