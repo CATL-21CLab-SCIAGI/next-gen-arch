@@ -1,7 +1,7 @@
 # New experiment: original-base attention replacement, then package agentic SFT.
 # The finalized trained export verifies its actual sample/token budget and lineage.
 # This candidate requires separate GPU admission before any production launch.
-name: limite-original-base-2simplicial-agentic-sft-code-rl-v1
+name: limite-original-base-2simplicial-agentic-sft-code-rl-v2
 family: limite
 variant: simplicial
 intervention: replace_attention
@@ -91,8 +91,16 @@ settings:
   actor_rollout_ref.rollout.response_length: 114688
   actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu: 131072
   actor_rollout_ref.rollout.log_prob_use_dynamic_bsz: false
+  actor_rollout_ref.rollout.temperature: 0.6
   actor_rollout_ref.rollout.top_p: 1.0
   actor_rollout_ref.rollout.top_k: -1
+  actor_rollout_ref.rollout.logprobs_mode: processed_logprobs
+  actor_rollout_ref.rollout.val_kwargs:
+    n: 1
+    temperature: 0.6
+    top_p: 1.0
+    top_k: -1
+    do_sample: true
   actor_rollout_ref.rollout.gpu_memory_utilization: 0.7
   actor_rollout_ref.rollout.max_num_seqs: 1
   actor_rollout_ref.rollout.agent.num_workers: 1

@@ -341,6 +341,12 @@ def check_curriculum(experiment, config):
     if not path.is_absolute():
         path = spec.parent / path
     harness = yaml.safe_load(path.read_text())
+    rollout = config.actor_rollout_ref.rollout
+    model_kwargs = harness["model"]["model_kwargs"]
+    sampling = {key: rollout[key] for key in ("temperature", "top_p", "top_k")}
+    if (set(model_kwargs) != {"max_tokens", *sampling}
+            or any(model_kwargs[key] != value for key, value in sampling.items())):
+        raise ValueError("actual agent harness sampling differs from the declared learner behavior distribution")
     observation_limit = harness["agent"].get("max_observation_length")
     if (harness["agent"]["type"] != "bashonly-agent"
             or harness["agent"]["step_limit"] != pilot.step_limit
@@ -352,6 +358,7 @@ def check_curriculum(experiment, config):
     return dict(spec=str(spec), spec_sha256=sha256_file(spec), harness=str(path.resolve()),
                 harness_sha256=sha256_file(path), thresholds=asdict(pilot),
                 native_context=experiment.native_context,
+                sampling=sampling, logprobs_mode=rollout.logprobs_mode,
                 tool_observation_max_characters=observation_limit,
                 truncation="preserve reason and evidence; stock mask excludes unfinished policy loss")
 
@@ -396,7 +403,9 @@ def run_pytest(nodes, output, *, deployment=None, timeout=1800, world_size=1,
                    ARCHLAB_RUN_AGENTIC_STARTUP="1", ARCHLAB_RUN_AGENTIC_PIPELINE="1",
                    ARCHLAB_LIMITE_EXPORT=str(config.actor_rollout_ref.model.path),
                    ARCHLAB_MEGATRON_WORK=str(output / "learner"),
-                   ARCHLAB_PARITY_GENERATED_TOKENS="128", ARCHLAB_PARITY_TEMPERATURE="1")
+                   ARCHLAB_PARITY_GENERATED_TOKENS="128",
+                   ARCHLAB_PARITY_TEMPERATURE=str(OmegaConf.select(
+                       config, "actor_rollout_ref.rollout.temperature", default=1.)))
     sources = source_manifest()
     atomic_write_json(output / "source.json", sources)
     with (output / "pytest.log").open("w") as log:

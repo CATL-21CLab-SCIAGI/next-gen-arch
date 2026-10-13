@@ -16,5 +16,7 @@ model:
   model_name: policy
   protocol: chat
   model_kwargs:
-    temperature: 1.0
+    temperature: 0.6
+    top_p: 1.0
+    top_k: -1
     max_tokens: 8192

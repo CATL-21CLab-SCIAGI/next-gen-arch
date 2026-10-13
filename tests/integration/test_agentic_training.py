@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
 
 import pytest
 import torch
@@ -79,6 +80,52 @@ def _logratio_stats(values):
                 k3_kl_estimate=float((values.exp() - values - 1).mean()))
 
 
+def _assert_logratio_contract(metric, baseline, evidence):
+    assert metric["absolute"]["mean"] <= 1.25 * baseline["absolute"]["mean"] + .01, evidence
+    assert metric["p95_absolute"] <= 1.25 * baseline["p95_absolute"] + .01, evidence
+    assert metric["absolute"]["maximum"] <= .5, evidence
+    assert metric["k3_kl_estimate"] <= .005, evidence
+
+
+def _processed_sampling(rollout):
+    temperature = float(rollout.temperature)
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("processed response qualification requires positive finite temperature")
+    if rollout.top_p != 1. or rollout.top_k != -1 or rollout.logprobs_mode != "processed_logprobs":
+        raise ValueError("processed response qualification requires full-support processed logprobs")
+    return dict(temperature=temperature, top_p=1., top_k=-1)
+
+
+def _selected_response_logprobs(logits, prompt_length, response, temperature):
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("response reference requires positive finite temperature")
+    if not response or prompt_length <= 0 or prompt_length - 1 + len(response) > logits.shape[0]:
+        raise ValueError("response reference tokens do not align with native logits")
+    # These are the publisher's transformed logits, before the sampler's
+    # temperature. Keep the learner's full vocabulary, including padded rows.
+    values = (logits[prompt_length - 1:prompt_length - 1 + len(response)].float()
+              / temperature).log_softmax(-1)
+    labels = torch.tensor(response, dtype=torch.long, device=values.device)
+    return values.gather(-1, labels[:, None]).squeeze(-1).tolist()
+
+
+def _assert_processed_response_contract(details, evidence):
+    assert details and {item["phase"] for item in details} == {0, 1}, evidence
+    for item in details:
+        if "original_base_control_cache_vs_replay" in item:
+            baseline = item["original_base_control_cache_vs_replay"]
+            comparisons = [(item[name], baseline) for name in (
+                "response_logratio", "native_cache_vs_replay_same_tokens",
+                "vllm_vs_serving_precision_cache")]
+        else:
+            comparisons = [
+                (item["response_logratio"], item["serving_precision_cache_vs_learner_replay"]),
+                (item["vllm_vs_serving_precision_cache"], item["serving_precision_cache_vs_replay"]),
+            ]
+        for metric, baseline in comparisons:
+            _assert_logratio_contract(metric, baseline, evidence)
+
+
 def _assert_response_contract(details, evidence):
     for item in details:
         # Compare against the independent publisher FA2 cache on the same
@@ -95,10 +142,7 @@ def _assert_response_contract(details, evidence):
                 "vllm_vs_serving_precision_cache"))
             assert item["conversion_cache"]["cached_argmax_agreement"] == 1., evidence
         for metric, baseline in comparisons:
-            assert metric["absolute"]["mean"] <= 1.25 * baseline["absolute"]["mean"] + .01, evidence
-            assert metric["p95_absolute"] <= 1.25 * baseline["p95_absolute"] + .01, evidence
-            assert metric["absolute"]["maximum"] <= .5, evidence
-            assert metric["k3_kl_estimate"] <= .005, evidence
+            _assert_logratio_contract(metric, baseline, evidence)
     if any("conversion_cache" in item for item in details):
         audits = evidence["conversion_raw_reduction"]
         assert audits and all(audit["live_slot_byte_ranges_disjoint"] for audit in audits), evidence
@@ -149,7 +193,7 @@ def _native_serving_precision(actor, attention_config):
 
 
 def _cached_response_logprobs(actor, full, prompt_length, response, *, full_history=False,
-                             replay_logits=None, diagnostics=None):
+                             replay_logits=None, diagnostics=None, temperature=1.):
     kwargs = {}
     converted = bool(getattr(getattr(actor, "model", None), "conversion_config", None))
     if full_history and not converted:
@@ -170,7 +214,7 @@ def _cached_response_logprobs(actor, full, prompt_length, response, *, full_hist
     for index, token in enumerate(response):
         raw = cached.logits[0, -1].float()
         argmax.append(int(raw.argmax()))
-        values.append(float(raw.log_softmax(-1)[token]))
+        values.append(float((raw / temperature).log_softmax(-1)[token]))
         if replay_logits is not None:
             expected = replay_logits[prompt_length - 1 + index]
             squared_error += float((raw - expected).double().square().sum())
@@ -187,6 +231,59 @@ def _cached_response_logprobs(actor, full, prompt_length, response, *, full_hist
     return values
 
 
+def _processed_response_report(actor, original_control, output, ids, *, phase, temperature,
+                               attention_config):
+    response = list(output.outputs[0].token_ids)
+    full = torch.tensor([ids + response], device=next(actor.parameters()).device)
+    converted = bool(getattr(actor.model, "conversion_config", None))
+    kwargs = (dict(position_ids=torch.arange(full.shape[1] - 1, device=full.device)[None],
+                   attention_mask=dict(full_attention=None, sliding_attention=None)) if converted else {})
+    with torch.inference_mode():
+        raw = actor(input_ids=full[:, :-1], use_cache=False, **kwargs).logits[0].float()
+        replay = _selected_response_logprobs(raw, len(ids), response, temperature)
+        # vLLM prompt_logprobs remain raw even with processed response mode.
+        prompt_lp = raw[:len(ids) - 1].log_softmax(-1)
+        prompt_errors = [abs(float(prompt_lp[i - 1, ids[i]]) - item[ids[i]].logprob)
+                         for i, item in enumerate(output.prompt_logprobs) if i]
+        del prompt_lp, raw
+        cached = _cached_response_logprobs(actor, full, len(ids), response, temperature=temperature)
+        with _native_serving_precision(actor, attention_config):
+            precision_raw = actor(input_ids=full[:, :-1], use_cache=False, **kwargs).logits[0].float()
+            precision_replay = _selected_response_logprobs(precision_raw, len(ids), response, temperature)
+            del precision_raw
+            precision_cache = _cached_response_logprobs(
+                actor, full, len(ids), response, full_history=True, temperature=temperature)
+        control_metric = None
+        if converted:
+            control_raw = original_control(input_ids=full[:, :-1], use_cache=False).logits[0].float()
+            control_replay = _selected_response_logprobs(control_raw, len(ids), response, temperature)
+            del control_raw
+            control_cache = _cached_response_logprobs(
+                original_control, full, len(ids), response, temperature=temperature)
+            control_metric = _logratio_stats([a - b for a, b in zip(control_replay, control_cache, strict=True)])
+    behavior = [item[token].logprob for token, item in
+                zip(response, output.outputs[0].logprobs, strict=True)]
+    report = dict(phase=phase, prompt_tokens=len(ids), response_tokens=len(response),
+                  temperature=temperature, top_p=1., top_k=-1, logprobs_mode="processed_logprobs",
+                  prompt_logprobs_mode="raw_logprobs", raw_prompt_error=_error_stats(prompt_errors))
+    for name, left, right in (
+        ("response_logratio", replay, behavior),
+        ("native_cache_vs_replay_same_tokens", replay, cached),
+        ("serving_precision_cache_vs_learner_replay", replay, precision_cache),
+        ("serving_precision_cache_vs_replay", precision_replay, precision_cache),
+        ("vllm_vs_serving_precision_cache", behavior, precision_cache),
+    ):
+        report[name] = _logratio_stats([a - b for a, b in zip(left, right, strict=True)])
+    if control_metric is not None:
+        report["original_base_control_cache_vs_replay"] = control_metric
+    report["tokens"] = [dict(index=i, token_id=token, native_replay_logprob=replay[i],
+                             native_cache_logprob=cached[i], vllm_processed_logprob=behavior[i],
+                             serving_precision_replay_logprob=precision_replay[i],
+                             serving_precision_cache_logprob=precision_cache[i])
+                        for i, token in enumerate(response)]
+    return report
+
+
 def _check_worker_parity(source, root, prompts, context, tmp_path, description, deployment=None):
     from vllm import LLM, SamplingParams
 
@@ -195,6 +292,16 @@ def _check_worker_parity(source, root, prompts, context, tmp_path, description, 
     register()
     converted = bool(getattr(source.model, "conversion_config", None))
     layer_count = len(source.model.layers) if converted else len(source.model.adapters)
+    temperature = float(os.getenv("ARCHLAB_PARITY_TEMPERATURE", "0"))
+    generated_tokens = int(os.getenv("ARCHLAB_PARITY_GENERATED_TOKENS", "4"))
+    if deployment is not None:
+        processed_sampling = _processed_sampling(deployment.actor_rollout_ref.rollout)
+        temperature = processed_sampling["temperature"]
+        generated_tokens = 128
+    else:
+        processed_sampling = _processed_sampling(SimpleNamespace(
+            temperature=temperature if temperature > 0 else 1., top_p=1., top_k=-1,
+            logprobs_mode="processed_logprobs"))
     attention_config = json.loads(os.getenv(
         "ARCHLAB_VLLM_ATTENTION_CONFIG", '{"backend":"FLASH_ATTN","flash_attn_version":2}'))
     max_num_seqs = int(os.getenv("ARCHLAB_PARITY_MAX_NUM_SEQS", "1" if converted else "4"))
@@ -224,6 +331,7 @@ def _check_worker_parity(source, root, prompts, context, tmp_path, description, 
               **execution, **cache_execution, gpu_memory_utilization=memory_utilization, max_num_seqs=max_num_seqs,
               max_num_batched_tokens=prefill_budget,
               enable_prefix_caching=False, seed=42, tensor_parallel_size=1,
+              logprobs_mode="processed_logprobs",
               worker_extension_cls=("archlab.training.qualification_serving.ConversionQualificationWorker"
                                     if converted else "archlab.training.serving.QualificationWorker"),
               attention_config=attention_config)
@@ -245,14 +353,15 @@ def _check_worker_parity(source, root, prompts, context, tmp_path, description, 
         config = json.loads((root / "config.json").read_text())
         original_control = load_model(config["publisher_snapshot"], attn_implementation="flash_attention_2")
         original_control = original_control.to(device="cuda").eval()
-    temperature = float(os.getenv("ARCHLAB_PARITY_TEMPERATURE", "0"))
-    generated_tokens = int(os.getenv("ARCHLAB_PARITY_GENERATED_TOKENS", "4"))
-    if deployment is not None:
-        temperature = float(deployment.actor_rollout_ref.rollout.temperature)
-        generated_tokens = 128
-    params = SamplingParams(temperature=temperature, max_tokens=generated_tokens, ignore_eos=True, logprobs=1,
+    # The native processed greedy branch returns raw, untempered logprobs.
+    # Keep historical cache/numerical checks separate from sampled behavior LP.
+    params = SamplingParams(temperature=0., top_p=1., top_k=-1,
+                            max_tokens=generated_tokens, ignore_eos=True, logprobs=1,
                             prompt_logprobs=1, detokenize=False)
-    errors, details = [], []
+    processed_params = SamplingParams(**processed_sampling, max_tokens=generated_tokens,
+                                     ignore_eos=True, logprobs=1, prompt_logprobs=1, detokenize=False,
+                                     repetition_penalty=1., presence_penalty=0., frequency_penalty=0., min_p=0.)
+    errors, details, processed_details = [], [], []
     for phase in range(2):
         outputs = llm.generate([dict(prompt_token_ids=ids) for ids in prompts], params, use_tqdm=False)
         for ids, output in zip(prompts, outputs, strict=True):
@@ -392,6 +501,12 @@ def _check_worker_parity(source, root, prompts, context, tmp_path, description, 
                         original_base_cache_logprob=control_cache[i]) if converted else {}),
             ) for i, (token, item) in enumerate(zip(response, output.outputs[0].logprobs, strict=True))]
             details.append(report)
+        sampled_outputs = llm.generate([dict(prompt_token_ids=ids) for ids in prompts],
+                                       processed_params, use_tqdm=False)
+        for ids, output in zip(prompts, sampled_outputs, strict=True):
+            processed_details.append(_processed_response_report(
+                actor, original_control, output, ids, phase=phase,
+                temperature=processed_sampling["temperature"], attention_config=attention_config))
         if phase == 0:
             from safetensors.torch import load_model, save_file
 
@@ -453,6 +568,9 @@ def _check_worker_parity(source, root, prompts, context, tmp_path, description, 
                     max_logprob_error=max(errors), compared_logprobs=len(errors),
                     phases=2, prompts_per_phase=len(prompts), cache_layers=2 * layer_count,
                     context=context, source=description, details=details,
+                    raw_control_temperature=0., raw_control_logprobs_mode="processed_greedy_raw_logprobs",
+                    processed_response_sampling={**processed_sampling, "logprobs_mode": "processed_logprobs"},
+                    processed_response_details=processed_details,
                     response_limits=dict(contract=("original_base_control_calibrated_v3" if converted else
                                                    "same_token_serving_precision_relative_v2"),
                                          baseline_multiplier=1.25, baseline_slack=.01,
@@ -486,6 +604,7 @@ def _check_worker_parity(source, root, prompts, context, tmp_path, description, 
     # RL optimizes only assistant-response tokens; prompt differences remain
     # visible diagnostic evidence but are excluded from the training loss.
     _assert_response_contract(details, evidence)
+    _assert_processed_response_contract(processed_details, evidence)
 
 
 def test_vllm_tiny_worker_parity(tmp_path):

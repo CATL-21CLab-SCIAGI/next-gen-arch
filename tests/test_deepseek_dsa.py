@@ -190,7 +190,10 @@ def test_sparse_attention_matches_explicit_selected_reference_and_is_causal():
 def test_indexer_kl_is_detached_from_backbone_but_trains_indexer():
     torch.manual_seed(5)
     config = tiny_config(sequence_len=5, dsa_top_k=2)
-    attn = DSACausalSelfAttention(config, layer_idx=0)
+    # The indexer's transposed projection is initialized by the owning model.
+    model = DeepSeekDSA(config)
+    model.init_weights()
+    attn = model.transformer.h[0].attn
     attn.train()
     x = torch.randn(1, 5, 128, requires_grad=True)
     cos = torch.ones(1, 5, 1, 64)

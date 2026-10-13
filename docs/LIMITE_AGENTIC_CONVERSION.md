@@ -172,6 +172,16 @@ was persisted; that verdict is unavailable and must not be inferred. Neither
 first-turn protocol recovery nor lower CE establishes a successful repair or
 healthy RL. Actual repair rewards determine readiness for RL.
 
+A focused recovery continuation reuses 60 reviewed repair-and-retest histories
+from that training split, without adding unique demonstrations or any of the
+11 pilot tasks or their repositories. Three passes completed 21 finite updates
+and 2,603,435 input tokens at LR 0.00002 with fresh Adam `(0.9, 0.95)`; complete
+states were saved at 7/14/21. Stock distributed sampling used its actual default
+seed 0, separately from trainer/model seed 42, and exposed 168 rows covering all
+60 unique histories. Validation kept the same 49 histories (48 evaluated by the
+stock loader): CE was 0.9370 at update 14 and 0.9769 at 21. This is a behavior
+recovery curriculum, not evidence of successful repairs or intelligence gains.
+
 ## Admission and RL health
 
 `archlab.training.bootstrap` composes the pinned upstream SFT engine; verl owns

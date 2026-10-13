@@ -256,6 +256,8 @@ def test_grouped_token_padding_preserves_real_rows_and_gradients():
 def test_chunked_grouped_linear_preserves_expert_order_and_gradients():
     torch.manual_seed(11)
     reference = NativeGroupedLinear(5, 3, 4)
+    # Standalone grouped linears allocate empty storage; the model initializes it.
+    torch.nn.init.normal_(reference.weight, std=.02)
     chunked = ChunkedGroupedLinear(
         5,
         3,
