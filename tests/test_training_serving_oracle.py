@@ -1,4 +1,5 @@
 """CPU negative controls for the independent serving-precision admission oracle."""
+import math
 from copy import deepcopy
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -11,6 +12,84 @@ _spec = spec_from_file_location(
     "agentic_serving_oracle", Path(__file__).parent / "integration/test_agentic_training.py")
 _oracle = module_from_spec(_spec)
 _spec.loader.exec_module(_oracle)
+
+
+def _sampling(**overrides):
+    values = dict(temperature=.6, top_p=1., top_k=-1, logprobs_mode="processed_logprobs")
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_processed_response_contract_uses_actual_deployment_temperature():
+    assert _oracle._processed_sampling(_sampling()) == dict(temperature=.6, top_p=1., top_k=-1)
+    assert _oracle._processed_sampling(_sampling(temperature=.7))["temperature"] == .7
+
+
+@pytest.mark.parametrize("override", [
+    dict(temperature=0), dict(temperature=-.6), dict(temperature=float("nan")),
+    dict(temperature=float("inf")), dict(top_p=.95), dict(top_k=20),
+    dict(logprobs_mode="raw_logprobs"),
+])
+def test_processed_response_contract_rejects_unsupported_sampling(override):
+    with pytest.raises(ValueError):
+        _oracle._processed_sampling(_sampling(**override))
+
+
+def test_response_reference_selects_next_token_logits_and_scales_once():
+    raw = torch.tensor([[9., 0., 0.], [0., 1., 2.], [2., 0., 1.], [0., 9., 0.]])
+    actual = _oracle._selected_response_logprobs(raw, 2, [2, 1], .6)
+    expected = [2. / .6 - math.log(sum(math.exp(x / .6) for x in [0., 1., 2.])),
+                -math.log(sum(math.exp(x / .6) for x in [2., 0., 1.]))]
+    assert actual == pytest.approx(expected, abs=1e-6)
+    assert actual != pytest.approx(_oracle._selected_response_logprobs(raw, 2, [2, 1], 1.))
+    with pytest.raises(ValueError, match="align"):
+        _oracle._selected_response_logprobs(raw, 4, [2, 1], .6)
+
+
+def _synthetic_processed_report(*, use_raw_behavior=False):
+    class Actor:
+        model = SimpleNamespace(conversion_config=True, layers=[SimpleNamespace(
+            self_attn=SimpleNamespace(conversion_config=SimpleNamespace(backend="tilelang")))])
+
+        def parameters(self):
+            yield torch.zeros(1)
+
+        def __call__(self, input_ids, **kwargs):
+            length = 1 if kwargs.get("logits_to_keep") == 1 else input_ids.shape[1]
+            return SimpleNamespace(logits=torch.tensor([[[0., 1., 2.]]]).repeat(1, length, 1),
+                                   past_key_values=self)
+
+    ids, response = [0, 1], [2, 1]
+    raw_lp = torch.tensor([0., 1., 2.]).log_softmax(-1)
+    behavior = (torch.tensor([0., 1., 2.]) / (1. if use_raw_behavior else .6)).log_softmax(-1)
+    output = SimpleNamespace(
+        prompt_logprobs=[None, {1: SimpleNamespace(logprob=float(raw_lp[1]))}],
+        outputs=[SimpleNamespace(token_ids=response,
+            logprobs=[{token: SimpleNamespace(logprob=float(behavior[token]))} for token in response])])
+    report = _oracle._processed_response_report(
+        Actor(), Actor(), output, ids, phase=0, temperature=.6,
+        attention_config=dict(backend="FLASH_ATTN", flash_attn_version=2))
+    return report
+
+
+def test_processed_decode_keeps_prompt_logprobs_raw_and_passes_both_reload_phases():
+    report = _synthetic_processed_report()
+    assert report["raw_prompt_error"]["maximum"] == 0.
+    assert report["response_logratio"]["absolute"]["maximum"] == 0.
+    assert report["tokens"][0]["native_replay_logprob"] == report["tokens"][0]["native_cache_logprob"]
+    _oracle._assert_processed_response_contract([report, {**report, "phase": 1}], "synthetic")
+
+
+def test_untempered_behavior_cannot_pass_processed_response_admission():
+    report = _synthetic_processed_report(use_raw_behavior=True)
+    assert report["raw_prompt_error"]["maximum"] == 0.
+    with pytest.raises(AssertionError):
+        _oracle._assert_processed_response_contract([report, {**report, "phase": 1}], "synthetic")
+
+
+def test_processed_response_requires_post_reload_evidence():
+    with pytest.raises(AssertionError):
+        _oracle._assert_processed_response_contract([_synthetic_processed_report()], "synthetic")
 
 
 def _metric(mean, p95, maximum=.3, kl=.001):

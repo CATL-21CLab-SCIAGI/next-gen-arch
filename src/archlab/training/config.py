@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -180,6 +181,15 @@ def _validate_conversion_science(experiment: Experiment, config: DictConfig) -> 
     actor = config.actor_rollout_ref.actor
     model = config.actor_rollout_ref.model
     rollout = config.actor_rollout_ref.rollout
+    if (type(rollout.temperature) not in (float, int)
+            or not math.isfinite(rollout.temperature) or rollout.temperature <= 0
+            or not rollout.do_sample or rollout.top_p != 1. or rollout.top_k != -1
+            or rollout.logprobs_mode != "processed_logprobs"):
+        raise ValueError("replacement RL requires positive-temperature full-support processed behavior probabilities")
+    validation = rollout.val_kwargs
+    if (not validation.do_sample or any(validation[key] != rollout[key]
+                                        for key in ("temperature", "top_p", "top_k"))):
+        raise ValueError("replacement validation and training must use the declared harness sampling distribution")
     if (experiment.parent_stage != "package_sft" or experiment.parent_tokens is not None
             or experiment.variant != "simplicial" or experiment.attention != "tilelang"
             or experiment.execution != "colocate_async"):
@@ -208,7 +218,7 @@ def _validate_conversion_science(experiment: Experiment, config: DictConfig) -> 
         "enforce_eager", "max_num_seqs", "enable_prefix_caching", "enable_chunked_prefill",
         "tensor_parallel_size", "pipeline_parallel_size", "decode_context_parallel_size",
         "prefill_context_parallel_size", "quantization", "kv_cache_dtype", "speculative_config",
-        "hf_overrides", "model",
+        "hf_overrides", "model", "logprobs_mode",
     } & set(rollout.engine_kwargs.vllm)
     if conflicting:
         raise ValueError("replacement engine kwargs override the serving contract: " + ", ".join(sorted(conflicting)))

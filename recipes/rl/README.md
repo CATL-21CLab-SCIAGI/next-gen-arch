@@ -26,6 +26,14 @@ truncated trajectories, at least one group with mixed rewards and a finite
 positive gradient. These are minimum execution/learning-signal checks, not a
 claim of sustained improvement. A capped or all-zero pilot fails admission.
 
+The v2 candidate explicitly samples training and validation at temperature 0.6
+with full support (`top_p=1`, `top_k=-1`). Its single harness must use the same
+distribution as the learner, and serving records processed log probabilities.
+Admission separately compares those sampled-response probabilities against
+temperature-scaled native replay; raw prompt/cache parity is insufficient.
+Top-p/k filtering is excluded because the current learner does not recompute
+its truncated-distribution normalizer. Historical v1 receipts remain unchanged.
+
 Other deployment inputs remain `ARCHLAB_CODE_DATA`, `ARCHLAB_HARNESS_SPEC`,
 `ARCHLAB_OUTPUT` and private sandbox/tracking configuration. Resolve without
 launching:

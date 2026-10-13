@@ -126,10 +126,15 @@ def test_replacement_recipe_uses_actual_package_sft_and_explicit_eager_curriculu
     assert dict(config.actor_rollout_ref.actor.optim.override_optimizer_config) == {
         "adam_beta1": .9, "adam_beta2": .95}
     assert rollout.custom.agent_framework.mask_unfinished_episode
+    assert rollout.temperature == rollout.val_kwargs.temperature == .6
+    assert rollout.top_p == rollout.val_kwargs.top_p == 1.
+    assert rollout.top_k == rollout.val_kwargs.top_k == -1
+    assert rollout.logprobs_mode == "processed_logprobs"
     result = check_curriculum(experiment, config)
     assert result["thresholds"]["max_turn_tokens"] == 8192
     assert result["thresholds"]["maximum_truncated_trajectories"] == 0
     assert result["tool_observation_max_characters"] == 12000
+    assert result["sampling"] == {"temperature": .6, "top_p": 1., "top_k": -1}
 
 
 @pytest.mark.parametrize("observation_limit", [None, 0])
@@ -156,6 +161,29 @@ def test_replacement_curriculum_requires_explicit_positive_tool_observation_budg
         check_curriculum(experiment, config)
 
 
+@pytest.mark.parametrize("changed", [
+    {"temperature": 1.}, {"top_p": .95}, {"top_k": 20},
+    {"extra_body": {"temperature": 1.}}, {"presence_penalty": 1.},
+])
+def test_replacement_rejects_harness_overrides_of_learner_distribution(
+    conversion_deployment, tmp_path, changed,
+):
+    import yaml
+
+    from archlab.training.config import compose_verl
+    from archlab.training.qualification import check_curriculum
+
+    experiment = read_experiment(Path("recipes/rl/limite_conversion_code.yaml"))
+    config = compose_verl(experiment, Path("third_party/verl"))
+    harness = yaml.safe_load(Path("recipes/rl/harness/conversion_code_bash.yaml").read_text())
+    harness["model"]["model_kwargs"].update(changed)
+    (tmp_path / "harness.yaml").write_text(yaml.safe_dump(harness))
+    (tmp_path / "spec.yaml").write_text(yaml.safe_dump({"harnesses": [{"config": "harness.yaml"}]}))
+    config.ray_kwargs.ray_init.runtime_env.env_vars.MIXED_HARNESS_SPEC = str(tmp_path / "spec.yaml")
+    with pytest.raises(ValueError, match="sampling"):
+        check_curriculum(experiment, config)
+
+
 @pytest.mark.parametrize("override", [
     "parent_tokens=2000158720", "parent_stage=adapter_sft", "intervention=insert_attention",
     "settings.actor_rollout_ref.rollout.enforce_eager=false",
@@ -170,6 +198,16 @@ def test_replacement_curriculum_requires_explicit_positive_tool_observation_budg
     "settings.actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode=false",
     "settings.actor_rollout_ref.rollout.engine_kwargs.vllm.enforce_eager=false",
     "pilot.maximum_truncated_trajectories=1", "pilot.minimum_reward_contrast_groups=0",
+    "settings.actor_rollout_ref.rollout.temperature=0",
+    "settings.actor_rollout_ref.rollout.temperature=nan",
+    "settings.actor_rollout_ref.rollout.temperature=.nan",
+    "settings.actor_rollout_ref.rollout.top_p=0.95",
+    "settings.actor_rollout_ref.rollout.top_k=20",
+    "settings.actor_rollout_ref.rollout.do_sample=false",
+    "settings.actor_rollout_ref.rollout.logprobs_mode=raw_logprobs",
+    "settings.actor_rollout_ref.rollout.val_kwargs.temperature=1",
+    "settings.actor_rollout_ref.rollout.val_kwargs.do_sample=false",
+    "settings.actor_rollout_ref.rollout.engine_kwargs.vllm.logprobs_mode=raw_logprobs",
 ])
 def test_replacement_overrides_cannot_bypass_cache_lineage_or_health_contract(conversion_deployment, override):
     from omegaconf.errors import OmegaConfBaseException
