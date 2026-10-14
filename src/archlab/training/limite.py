@@ -285,8 +285,12 @@ def load_legacy_checkpoint(snapshot, checkpoint, *, device="cpu", target_attenti
                    for name, value in state.items())):
         raise ValueError("checkpoint tensor inventory, shape or dtype differs from publisher construction")
     target.load_state_dict(state, strict=True)
-    set_normal_attention_kernel(model, receipt.get("normal_kernel", "shared"))
-    set_normal_attention_backward(model, receipt.get("normal_backward", "tilelang"))
+    # GQA/FA4 kernel choices are TileLang execution settings, not weights; a native
+    # retarget (e.g. for serving) uses the native defaults instead of re-applying them.
+    retarget_native = target_adapter["attention_backend"] == "native"
+    set_normal_attention_kernel(model, "shared" if retarget_native else receipt.get("normal_kernel", "shared"))
+    set_normal_attention_backward(
+        model, "tilelang" if retarget_native else receipt.get("normal_backward", "tilelang"))
     set_trainable_mode(model, "full")
     return model, receipt
 

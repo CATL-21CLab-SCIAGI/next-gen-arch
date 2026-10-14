@@ -46,23 +46,99 @@ def _paged_attention(module, query, key, value, attention_mask, *, scaling, **kw
     return output.view(1, tokens, heads, dim), None
 
 
+_GLOBAL_WINDOW = 1 << 30
+
+
+def _token_layout(metadata, tokens):
+    """Per-token sequence index and absolute position from package metadata, without host syncs."""
+    import torch
+
+    starts = metadata.query_start_loc
+    index = torch.arange(tokens, device=starts.device, dtype=starts.dtype)
+    seq = torch.searchsorted(starts[1:].contiguous(), index, right=True)
+    seq = seq.clamp_(max=metadata.seq_lens.numel() - 1)
+    first = starts[seq]
+    position = metadata.seq_lens[seq] - (starts[seq + 1] - first) + (index - first)
+    return seq.to(torch.int32), position.to(torch.int32)
+
+
+def _paged_simplicial_attention(module, query, key, value, attention_mask, *, scaling, **kwargs):
+    """Adapter prelude: long K2/V2 and short K1/V1 in two package caches, joint paged reduction."""
+    from vllm.forward_context import get_forward_context
+    from vllm.model_executor.layers.attention.attention import (
+        get_attention_context,
+        unified_kv_cache_update,
+    )
+
+    from archlab.architectures.simplicial_paged import simplicial_paged_attention
+
+    batch, heads, tokens, dim = query.shape
+    if batch != 1 or scaling != module.scaling or attention_mask is not None:
+        raise ValueError("vLLM Limite expects one packed unmasked token stream and native scaling")
+    q, k, v = (tensor.transpose(1, 2)[0] for tensor in (query, key, value))  # [T, H, D]
+    k1, v1 = (tensor[0] for tensor in module._short_values)
+    long_window = _GLOBAL_WINDOW if module.is_global else module.window_span
+    short_window = min(module._short_window, long_window)
+    # Native reduction contract: FP32 queries pre-scaled so the kernel's D^-1/2 yields `scaling`.
+    q = q.float() * (scaling * dim ** 0.5)
+    if get_forward_context().attn_metadata is None:
+        # Profiling/dummy run: no request cache exists; reduce over the packed tokens directly.
+        from archlab.architectures.simplicial_packed import packed_simplicial_attention
+
+        out = packed_simplicial_attention(q[None], k1[None].float(), k[None].float(), v1[None].float(),
+                                          v[None].float(), short_window,
+                                          tokens if module.is_global else long_window)[0]
+    else:
+        long_owner, short_owner = module.archlab_long_attention, module.archlab_short_attention
+        long_metadata, _, long_cache, _ = get_attention_context(long_owner.layer_name)
+        short_metadata, _, short_cache, _ = get_attention_context(short_owner.layer_name)
+        unified_kv_cache_update(k, v, long_owner.layer_name)
+        unified_kv_cache_update(k1, v1, short_owner.layer_name)
+        seq, position = _token_layout(long_metadata, tokens)
+        out = simplicial_paged_attention(
+            q, short_cache, long_cache, short_metadata.block_table, seq, position,
+            short_window=short_window, long_window=long_window, scale=dim ** -0.5,
+            long_block_table=long_metadata.block_table)
+    return out.to(value.dtype).view(1, tokens, heads, dim), None
+
+
+class _SimplicialInterface:
+    def get_interface(self, name, fallback):
+        return _paged_simplicial_attention
+
+
 def bind_normal_attention(policy, attention_factory, *, prefix=""):
-    """Bind one independent package cache to each of the 2×N native attentions."""
-    if policy.model.adapter_config["variant"] != "normal":
-        raise ValueError("simplicial paging requires its own short-axis cache implementation")
+    """Bind package caches to the 2×N native attentions; simplicial preludes also get a short-axis cache.
+
+    Normal: every prelude and backbone attention uses one package cache and the package reduction.
+    Simplicial: each prelude owns a long cache (native window) and a short cache (K1/V1 window) and
+    uses the batched paged joint reduction; backbone attentions stay normal.
+    """
+    variant = policy.model.adapter_config["variant"]
+    if variant not in ("normal", "simplicial"):
+        raise ValueError("unknown Limite adapter variant: " + str(variant))
     backbone = policy.model
     attentions = []
     for index, (adapter, layer) in enumerate(zip(backbone.adapters, backbone.base.layers, strict=True)):
         for kind, attention in (("prelude", adapter.native), ("backbone", layer.self_attn)):
-            attention.archlab_paged_attention = attention_factory(
-                attention, prefix=f"{prefix}layers.{index}.{kind}.attention")
+            if kind == "prelude" and variant == "simplicial":
+                # Allocation margin only; the kernel enforces the exact windows.
+                long_capacity = None if attention.is_global else attention.window_span + 16
+                attention.archlab_long_attention = attention_factory(
+                    attention, prefix=f"{prefix}layers.{index}.prelude.long_attention",
+                    window_span=long_capacity)
+                attention.archlab_short_attention = attention_factory(
+                    attention, prefix=f"{prefix}layers.{index}.prelude.short_attention",
+                    window_span=attention._short_window + 16)
+                interface, name = _SimplicialInterface(), "archlab_vllm_simplicial"
+            else:
+                attention.archlab_paged_attention = attention_factory(
+                    attention, prefix=f"{prefix}layers.{index}.{kind}.attention")
+                interface, name = _AttentionInterface(), "archlab_vllm_normal"
             # Always bind the publisher's original function, not the old
             # TileLang reduction. No parent library or global registry patch.
             forward = bind_native_forward(
-                type(attention).forward,
-                (("ALL_ATTENTION_FUNCTIONS", _AttentionInterface()),),
-                "archlab_vllm_normal",
-            )
+                type(attention).forward, (("ALL_ATTENTION_FUNCTIONS", interface),), name)
             attention.forward = MethodType(forward, attention)
             attention.config._attn_implementation = "archlab_paged"
             attentions.append(attention)
