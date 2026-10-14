@@ -99,3 +99,24 @@ def test_cuda_graph_replay_matches_eager():
     expected = simplicial_paged_attention(q, short, long, table, seq, pos, **kwargs)
     torch.testing.assert_close(captured, expected, rtol=0, atol=0)
     assert not torch.equal(captured, eager)
+
+
+def test_separate_short_and_long_block_tables():
+    from archlab.architectures.simplicial_paged import simplicial_paged_attention
+
+    dim, heads, kv_heads, lengths = 64, 4, 2, [30, 75]
+    (short, _), short_table, contiguous = _paged_batch(lengths, kv_heads, dim, 16, torch.float32, seed=7)
+    (_, long), long_table, _ = _paged_batch(lengths, kv_heads, dim, 16, torch.float32, seed=7)
+    # Same values, different physical placement for the long axis.
+    perm_seed = torch.Generator(device="cpu").manual_seed(11)
+    order = (torch.randperm(long.shape[1] - 1, generator=perm_seed) + 1)
+    remap = torch.zeros(long.shape[1], dtype=torch.long); remap[1:] = order
+    moved = torch.zeros_like(long); moved[:, remap.cuda()] = long
+    moved_table = remap.cuda()[long_table.long()].to(torch.int32)
+    q = torch.randn(sum(lengths), heads, dim, device="cuda")
+    seq = torch.tensor(sum(([s] * n for s, n in enumerate(lengths)), []), dtype=torch.int32, device="cuda")
+    pos = torch.tensor(sum((list(range(n)) for n in lengths), []), dtype=torch.int32, device="cuda")
+    kwargs = dict(short_window=16, long_window=40, scale=dim ** -0.5)
+    shared = simplicial_paged_attention(q, short, long, short_table, seq, pos, **kwargs)
+    separate = simplicial_paged_attention(q, short, moved, short_table, seq, pos, long_block_table=moved_table, **kwargs)
+    torch.testing.assert_close(separate, shared, rtol=0, atol=0)

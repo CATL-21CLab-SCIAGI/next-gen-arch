@@ -3,7 +3,7 @@
 Each query token carries its own sequence and absolute position, so one launch
 serves prefill, chunked prefill, decode and mixed batches. Short-window (K1/V1)
 and long-window (K2/V2) keys are gathered chronologically through a block
-table; the arithmetic and joint online softmax match ``simplicial_decode``.
+table (one per axis: vLLM may place the two caches in different KV-cache groups); the arithmetic and joint online softmax match ``simplicial_decode``.
 Launch shapes depend only on tensor metadata, so the call is CUDA-graph safe.
 No backward is exposed; training uses ``simplicial_attention``.
 
@@ -17,8 +17,8 @@ import triton.language as tl
 
 
 @triton.jit
-def _paged(Q, SC, LC, TABLE, SEQ, POS, OUT, scale,
-           sq_t, sq_h, sc_a, sc_b, sc_s, sc_h, lc_a, lc_b, lc_s, lc_h, st_s, so_t, so_h,
+def _paged(Q, SC, LC, STABLE, LTABLE, SEQ, POS, OUT, scale,
+           sq_t, sq_h, sc_a, sc_b, sc_s, sc_h, lc_a, lc_b, lc_s, lc_h, sst_s, lst_s, so_t, so_h,
            SW, LW, BS,
            HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, H: tl.constexpr,
            T: tl.constexpr, SWP: tl.constexpr):
@@ -35,7 +35,7 @@ def _paged(Q, SC, LC, TABLE, SEQ, POS, OUT, scale,
     for i in range(SWP):
         j = short_lo + i
         if j <= pos:
-            block = tl.load(TABLE + seq * st_s + j // BS)
+            block = tl.load(STABLE + seq * sst_s + j // BS)
             base = block * sc_b + (j % BS) * sc_s + g * sc_h + d
             k1 = tl.load(SC + base)
             v1 = tl.load(SC + sc_a + base).to(tl.float32)
@@ -43,7 +43,7 @@ def _paged(Q, SC, LC, TABLE, SEQ, POS, OUT, scale,
             for start in range(long_lo, pos + 1, T):
                 k = start + t
                 valid = k <= pos
-                kb = tl.load(TABLE + seq * st_s + k // BS, valid, other=0)
+                kb = tl.load(LTABLE + seq * lst_s + k // BS, valid, other=0)
                 off = kb[:, None] * lc_b + (k[:, None] % BS) * lc_s + g * lc_h + d[None, :]
                 k2 = tl.load(LC + off, valid[:, None], other=0)
                 v2 = tl.load(LC + lc_a + off, valid[:, None], other=0)
@@ -60,13 +60,15 @@ def _paged(Q, SC, LC, TABLE, SEQ, POS, OUT, scale,
 
 
 def simplicial_paged_attention(q, short_cache, long_cache, block_table, token_seq, token_pos, *,
-                               short_window, long_window, scale):
+                               short_window, long_window, scale, long_block_table=None):
     """q [tokens, query_heads, D]; returns FP32 [tokens, query_heads, D].
 
     ``long_window`` bounds the K2/V2 axis (pass a value >= the longest sequence
-    for global layers). Block zero may be the null block; every slot inside a
-    token's windows must be allocated by the caller's block table.
+    for global layers). ``block_table`` indexes the short cache and, unless
+    ``long_block_table`` is given, also the long cache. Block zero may be the
+    null block; every slot inside a token's windows must be allocated.
     """
+    long_block_table = block_table if long_block_table is None else long_block_table
     if q.ndim != 3 or short_cache.ndim != 5 or long_cache.ndim != 5:
         raise ValueError("expected q [T,H,D] and caches [2,blocks,block,Hk,D]")
     tokens, heads, dim = q.shape
@@ -78,11 +80,15 @@ def simplicial_paged_attention(q, short_cache, long_cache, block_table, token_se
     if not 1 <= short_window <= long_window:
         raise ValueError("require 1 <= short_window <= long_window")
     if (q.device.type != "cuda" or q.dtype not in (torch.float32, torch.bfloat16)
-            or any(x.device != q.device for x in (short_cache, long_cache, block_table, token_seq, token_pos))
-            or any(x.dtype not in (torch.int32, torch.int64) for x in (block_table, token_seq, token_pos))
-            or token_seq.shape != (tokens,) or token_pos.shape != (tokens,) or block_table.ndim != 2):
+            or any(x.device != q.device for x in (short_cache, long_cache, block_table, long_block_table,
+                                                   token_seq, token_pos))
+            or any(x.dtype not in (torch.int32, torch.int64)
+                   for x in (block_table, long_block_table, token_seq, token_pos))
+            or token_seq.shape != (tokens,) or token_pos.shape != (tokens,)
+            or block_table.ndim != 2 or long_block_table.ndim != 2):
         raise ValueError("invalid paged simplicial inputs")
-    if q.stride(-1) != 1 or short_cache.stride(-1) != 1 or long_cache.stride(-1) != 1 or block_table.stride(-1) != 1:
+    if (q.stride(-1) != 1 or short_cache.stride(-1) != 1 or long_cache.stride(-1) != 1
+            or block_table.stride(-1) != 1 or long_block_table.stride(-1) != 1):
         raise ValueError("innermost dimensions must be contiguous")
     kv_heads = short_cache.shape[3]
     group = heads // kv_heads
@@ -92,11 +98,11 @@ def simplicial_paged_attention(q, short_cache, long_cache, block_table, token_se
     if tokens == 0:
         return out
     _paged[(tokens, kv_heads)](
-        q, short_cache, long_cache, block_table, token_seq, token_pos, out, float(scale),
+        q, short_cache, long_cache, block_table, long_block_table, token_seq, token_pos, out, float(scale),
         q.stride(0), q.stride(1),
         short_cache.stride(0), short_cache.stride(1), short_cache.stride(2), short_cache.stride(3),
         long_cache.stride(0), long_cache.stride(1), long_cache.stride(2), long_cache.stride(3),
-        block_table.stride(0), out.stride(0), out.stride(1),
+        block_table.stride(0), long_block_table.stride(0), out.stride(0), out.stride(1),
         int(short_window), int(long_window), int(short_cache.shape[2]),
         HK=kv_heads, D=dim, G=group, H=max(16, triton.next_power_of_2(group)), T=32,
         SWP=triton.next_power_of_2(int(short_window)))
