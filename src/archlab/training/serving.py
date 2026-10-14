@@ -85,9 +85,9 @@ def _paged_simplicial_attention(module, query, key, value, attention_mask, *, sc
         # Profiling/dummy run: no request cache exists; reduce over the packed tokens directly.
         from archlab.architectures.simplicial_packed import packed_simplicial_attention
 
+        packed_long = tokens if module.is_global else long_window
         out = packed_simplicial_attention(q[None], k1[None].float(), k[None].float(), v1[None].float(),
-                                          v[None].float(), short_window,
-                                          tokens if module.is_global else long_window)[0]
+                                          v[None].float(), min(short_window, packed_long), packed_long)[0]
     else:
         long_owner, short_owner = module.archlab_long_attention, module.archlab_short_attention
         long_metadata, _, long_cache, _ = get_attention_context(long_owner.layer_name)
