@@ -17,12 +17,13 @@ import triton.language as tl
 
 
 @triton.jit
-def _paged(Q, SC, LC, STABLE, LTABLE, SEQ, POS, OUT, scale,
+def _paged(Q, SC, LC, STABLE, LTABLE, SEQ, POS, ACC, MAX, SUM, scale,
            sq_t, sq_h, sc_a, sc_b, sc_s, sc_h, lc_a, lc_b, lc_s, lc_h, sst_s, lst_s, so_t, so_h,
-           SW, LW, BS,
+           SW, LW, BS, SPLIT,
            HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, H: tl.constexpr,
            T: tl.constexpr, SWP: tl.constexpr):
-    token, g = tl.program_id(0), tl.program_id(1)
+    token, g, split = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    tokens = tl.num_programs(0)
     seq, pos = tl.load(SEQ + token), tl.load(POS + token)
     h, d, t = tl.arange(0, H), tl.arange(0, D), tl.arange(0, T)
     heads = g * G + h
@@ -31,7 +32,9 @@ def _paged(Q, SC, LC, STABLE, LTABLE, SEQ, POS, OUT, scale,
     m = tl.full((H,), -float("inf"), tl.float32)
     z = tl.full((H,), 0, tl.float32)
     short_lo = tl.maximum(pos - SW + 1, 0)
-    long_lo = tl.maximum(pos - LW + 1, 0)
+    # This program owns long positions [split*SPLIT, (split+1)*SPLIT) of the token's long window.
+    long_lo = tl.maximum(tl.maximum(pos - LW + 1, 0), split * SPLIT)
+    long_hi = tl.minimum(pos, (split + 1) * SPLIT - 1)
     for i in range(SWP):
         j = short_lo + i
         if j <= pos:
@@ -40,9 +43,9 @@ def _paged(Q, SC, LC, STABLE, LTABLE, SEQ, POS, OUT, scale,
             k1 = tl.load(SC + base)
             v1 = tl.load(SC + sc_a + base).to(tl.float32)
             a = (q.to(tl.float32) * k1[None, :].to(tl.float32)).to(q.dtype)
-            for start in range(long_lo, pos + 1, T):
+            for start in range(long_lo, long_hi + 1, T):
                 k = start + t
-                valid = k <= pos
+                valid = k <= long_hi
                 kb = tl.load(LTABLE + seq * lst_s + k // BS, valid, other=0)
                 off = kb[:, None] * lc_b + (k[:, None] % BS) * lc_s + g * lc_h + d[None, :]
                 k2 = tl.load(LC + off, valid[:, None], other=0)
@@ -56,11 +59,14 @@ def _paged(Q, SC, LC, STABLE, LTABLE, SEQ, POS, OUT, scale,
                 acc = acc * alpha[:, None] + tl.dot(p.to(q.dtype), v2.to(q.dtype),
                                                     input_precision="tf32x3") * v1[None, :]
                 m = nm
-    tl.store(OUT + token * so_t + heads[:, None] * so_h + d[None, :], acc / z[:, None], h[:, None] < G)
+    row = (split * tokens + token) * so_t + heads * so_h
+    tl.store(ACC + row[:, None] * D + d[None, :], acc, h[:, None] < G)
+    tl.store(MAX + row, m, h < G)
+    tl.store(SUM + row, z, h < G)
 
 
 def simplicial_paged_attention(q, short_cache, long_cache, block_table, token_seq, token_pos, *,
-                               short_window, long_window, scale, long_block_table=None):
+                               short_window, long_window, scale, long_block_table=None, splits=None):
     """q [tokens, query_heads, D]; returns FP32 [tokens, query_heads, D].
 
     ``long_window`` bounds the K2/V2 axis (pass a value >= the longest sequence
@@ -94,16 +100,29 @@ def simplicial_paged_attention(q, short_cache, long_cache, block_table, token_se
     group = heads // kv_heads
     if group > 128:
         raise ValueError("at most 128 query heads per KV group")
-    out = torch.empty((tokens, heads, dim), device=q.device, dtype=torch.float32)
     if tokens == 0:
-        return out
-    _paged[(tokens, kv_heads)](
-        q, short_cache, long_cache, block_table, long_block_table, token_seq, token_pos, out, float(scale),
+        return torch.empty((0, heads, dim), device=q.device, dtype=torch.float32)
+    # Split-K over the long axis: enough programs to fill the GPU for small (decode) batches.
+    # Depends only on host ints fixed per captured graph (token count, block-table width).
+    capacity = long_block_table.shape[1] * long_cache.shape[2]
+    if splits is None:
+        programs = max(1, 4 * torch.cuda.get_device_properties(q.device).multi_processor_count)
+        splits = max(1, min(-(-programs // (tokens * kv_heads)), -(-capacity // 512)))
+    split_len = -(-capacity // splits)
+    partial = torch.empty((splits, tokens, heads, dim), device=q.device, dtype=torch.float32)
+    maxima = torch.full((splits, tokens, heads), -float('inf'), device=q.device, dtype=torch.float32)
+    sums = torch.zeros((splits, tokens, heads), device=q.device, dtype=torch.float32)
+    _paged[(tokens, kv_heads, splits)](
+        q, short_cache, long_cache, block_table, long_block_table, token_seq, token_pos, partial, maxima, sums,
+        float(scale),
         q.stride(0), q.stride(1),
         short_cache.stride(0), short_cache.stride(1), short_cache.stride(2), short_cache.stride(3),
         long_cache.stride(0), long_cache.stride(1), long_cache.stride(2), long_cache.stride(3),
-        block_table.stride(0), long_block_table.stride(0), out.stride(0), out.stride(1),
-        int(short_window), int(long_window), int(short_cache.shape[2]),
+        block_table.stride(0), long_block_table.stride(0), heads, 1,
+        int(short_window), int(long_window), int(short_cache.shape[2]), int(split_len),
         HK=kv_heads, D=dim, G=group, H=max(16, triton.next_power_of_2(group)), T=32,
         SWP=triton.next_power_of_2(int(short_window)))
-    return out
+    # Exact log-sum-exp merge of the split partials (empty splits carry max=-inf, sum=0).
+    top = maxima.amax(0)
+    weight = torch.exp(maxima - top)
+    return (partial * weight[..., None]).sum(0) / (sums * weight).sum(0)[..., None]

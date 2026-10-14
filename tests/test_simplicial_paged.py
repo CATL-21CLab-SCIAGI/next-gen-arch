@@ -68,7 +68,7 @@ def test_token_order_and_batch_composition_do_not_change_results():
     q = torch.randn(120, heads, dim, device="cuda")
     seq = torch.tensor([0] * 50 + [1] * 70, dtype=torch.int32, device="cuda")
     pos = torch.tensor(list(range(50)) + list(range(70)), dtype=torch.int32, device="cuda")
-    kwargs = dict(short_window=16, long_window=33, scale=dim ** -0.5)
+    kwargs = dict(short_window=16, long_window=33, scale=dim ** -0.5, splits=3)  # fixed split count: bitwise comparison
     full = simplicial_paged_attention(q, short, long, table, seq, pos, **kwargs)
     order = torch.randperm(120, device="cuda")
     shuffled = simplicial_paged_attention(q[order], short, long, table, seq[order], pos[order], **kwargs)
@@ -120,3 +120,19 @@ def test_separate_short_and_long_block_tables():
     shared = simplicial_paged_attention(q, short, long, short_table, seq, pos, **kwargs)
     separate = simplicial_paged_attention(q, short, moved, short_table, seq, pos, long_block_table=moved_table, **kwargs)
     torch.testing.assert_close(separate, shared, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype,tol", [(torch.float32, 2e-5), (torch.bfloat16, 2e-2)])
+def test_long_axis_splits_agree(dtype, tol):
+    from archlab.architectures.simplicial_paged import simplicial_paged_attention
+
+    dim, heads, kv_heads, lengths = 64, 8, 2, [300, 37]
+    (short, long), table, _ = _paged_batch(lengths, kv_heads, dim, 16, dtype, seed=13)
+    q = torch.randn(2, heads, dim, device="cuda").to(dtype)
+    seq = torch.tensor([0, 1], dtype=torch.int32, device="cuda")
+    pos = torch.tensor([299, 36], dtype=torch.int32, device="cuda")
+    kwargs = dict(short_window=16, long_window=10_000, scale=dim ** -0.5)
+    one = simplicial_paged_attention(q, short, long, table, seq, pos, splits=1, **kwargs)
+    for splits in (2, 7, 19, None):
+        many = simplicial_paged_attention(q, short, long, table, seq, pos, splits=splits, **kwargs)
+        torch.testing.assert_close(many, one, rtol=tol, atol=tol)
