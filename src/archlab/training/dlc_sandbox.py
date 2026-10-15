@@ -45,6 +45,7 @@ from pathlib import Path, PurePosixPath
 ANCHOR = ("import os, sys, time\nos.chroot(sys.argv[1]); os.chdir('/')\nwhile True:\n"
           "    try:\n        os.waitpid(-1, 0)\n    except ChildProcessError:\n        time.sleep(1)\n")
 OFFLINE_ENV = {"PIP_NO_INDEX": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1", "UV_OFFLINE": "1"}
+DEVICES = ("null", "zero", "full", "random", "urandom", "tty")  # bound into each sandbox's private /dev
 ACCEPT = "application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
 
 
@@ -170,10 +171,20 @@ class Pool:
             # directory) need user.overlay.* xattrs; trusted.* ones fail with EIO.
             # A fresh proc mount is refused under the pod's masked /proc, so it is bound; the pid namespace
             # still makes killing the anchor end every process the sandbox started.
+            # /dev is private: the sandbox's root is the pod's root (--map-root-user), so a shared /dev let one
+            # task replace the pod's /dev/null for every later sandbox (2026-10-16). Bound device nodes cannot be
+            # removed (EBUSY); anything else written to this /dev stays in the sandbox.
+            dev = f"{work}/merged/dev"
+            nodes = "; ".join(f"touch {dev}/{node}; mount --bind /dev/{node} {dev}/{node}" for node in DEVICES)
             setup = (f"set -e; mount -t tmpfs -o size={self.upper_size} tmpfs {work}/rw; "
                      f"mkdir {work}/rw/upper {work}/rw/work; "
                      f"mount -t overlay overlay -o userxattr,lowerdir={lower},upperdir={work}/rw/upper,workdir={work}/rw/work "
-                     f"{work}/merged; mount --rbind /dev {work}/merged/dev; mount --rbind /proc {work}/merged/proc; "
+                     f"{work}/merged; mount -t tmpfs -o size=1m,mode=755 tmpfs {dev}; {nodes}; "
+                     f"mkdir {dev}/pts {dev}/shm; mount -t devpts -o newinstance,ptmxmode=0666,mode=620 devpts "
+                     f"{dev}/pts || mount --rbind /dev/pts {dev}/pts; mount -t tmpfs tmpfs {dev}/shm; "
+                     f"ln -s pts/ptmx {dev}/ptmx; ln -s /proc/self/fd {dev}/fd; ln -s /proc/self/fd/0 {dev}/stdin; "
+                     f"ln -s /proc/self/fd/1 {dev}/stdout; ln -s /proc/self/fd/2 {dev}/stderr; "
+                     f"mount --rbind /proc {work}/merged/proc; "
                      f"mount -t tmpfs tmpfs {work}/merged/tmp; ip link set lo up || true; "
                      f"exec {shlex.quote(sys.executable)} -c {shlex.quote(ANCHOR)} {work}/merged")
             with (work / "setup.log").open("wb") as log:  # never inherit the server's stdout/stderr

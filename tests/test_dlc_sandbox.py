@@ -125,6 +125,14 @@ def test_live_sandbox_isolation(tmp_path):
         assert pool.execute(second, "test -e new/file.txt", "/testbed", 30)["returncode"] == 1
         recreate = pool.execute(first, "rm -rf .git/hooks && mkdir .git/hooks && touch .git/hooks/x", "/testbed", 30)
         assert recreate["returncode"] == 0, recreate  # opaque directory over a deleted lower one
+        # /dev is private: device nodes cannot be replaced, and nothing written there reaches the pod or a neighbour
+        tamper = pool.execute(first, "rm /dev/null; ln -sf /proc/1/fd/0 /dev/null; touch /dev/probe-file; "
+                                     "test -c /dev/null && echo x > /dev/null && git status > /dev/null && echo kept",
+                              "/testbed", 30)
+        assert tamper["output"].rstrip().endswith("kept"), tamper
+        assert pool.execute(second, "test -c /dev/null && test ! -e /dev/probe-file && ls /dev/pts /dev/shm",
+                            "/", 30)["returncode"] == 0
+        assert not Path("/dev/probe-file").exists() and Path("/dev/null").is_char_device()
         expired = pool.execute(first, "echo started; sleep 30 & sleep 30", "/", 1)
         assert expired == {"output": "started\n\nCommand timed out (pod) after 1s", "returncode": 124}
         for _ in range(50):  # killed background processes are reaped by the anchor within its 1 s poll
