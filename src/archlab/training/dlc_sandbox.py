@@ -380,6 +380,16 @@ def _call(method, url, body=b"", timeout=60, content_type="application/json"):
             return error.code, {"error": raw[:200].decode(errors="replace")}
 
 
+def _affinity_order(image, servers):
+    """Rendezvous order: each image prefers the same few pool pods, falling back through all of them.
+
+    A pod unpacks an image on first use and keeps only what fits its scratch disk, so random placement makes
+    every pod unpack every task image (minutes each, and concurrent unpacks on a cold pod can fail). The order
+    depends only on (image, server), so pods joining or leaving move few images.
+    """
+    return sorted(servers, key=lambda server: hashlib.sha256(f"{image}\0{server}".encode()).digest(), reverse=True)
+
+
 @dataclass
 class DLCEnvironmentConfig:
     image: str
@@ -402,8 +412,7 @@ class DLCEnvironment:
         body = json.dumps({"image": self.config.image, "lifetime": self.config.sandbox_timeout}).encode()
         while True:
             servers = [json.loads(p.read_text())["url"] for p in Path(self.config.pool_dir).glob("*.json")]
-            random.shuffle(servers)
-            for server in servers:
+            for server in _affinity_order(self.config.image, servers):
                 try:
                     # A stale or unreachable announcement must neither stall nor fail creation.
                     if _call("GET", server, timeout=5)[0] != 200:

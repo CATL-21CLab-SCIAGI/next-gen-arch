@@ -202,3 +202,13 @@ def test_client_ignores_environment_proxy_and_skips_bad_servers(fake_server, mon
     env = dlc_sandbox.DLCEnvironment(image=IMAGE, pool_dir=str(pool))
     env.start()
     assert env.url.endswith("/sandboxes/box")
+
+
+def test_images_prefer_stable_pool_servers():
+    servers = [f"http://192.168.0.{i}:8765" for i in range(48)]
+    order = dlc_sandbox._affinity_order(IMAGE, servers)
+    assert sorted(order) == sorted(servers)  # every server stays reachable as a fallback
+    assert order == dlc_sandbox._affinity_order(IMAGE, list(reversed(servers)))  # independent of listing order
+    assert dlc_sandbox._affinity_order(IMAGE, order[:-1])[0] == order[0]  # losing another pod keeps the preference
+    preferred = {dlc_sandbox._affinity_order(f"img@sha256:{i:064x}", servers)[0] for i in range(400)}
+    assert len(preferred) >= 40  # images spread over the pool
