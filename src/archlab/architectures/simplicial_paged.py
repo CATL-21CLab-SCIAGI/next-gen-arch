@@ -38,7 +38,7 @@ def _paged(Q, SC, LC, STABLE, LTABLE, SEQ, POS, ACC, MAX, SUM, scale,
     for i in range(SWP):
         j = short_lo + i
         if j <= pos:
-            block = tl.load(STABLE + seq * sst_s + j // BS)
+            block = tl.load(STABLE + seq * sst_s + j // BS).to(tl.int64)  # block * stride exceeds int32 in large caches
             base = block * sc_b + (j % BS) * sc_s + g * sc_h + d
             k1 = tl.load(SC + base)
             v1 = tl.load(SC + sc_a + base).to(tl.float32)
@@ -46,7 +46,7 @@ def _paged(Q, SC, LC, STABLE, LTABLE, SEQ, POS, ACC, MAX, SUM, scale,
             for start in range(long_lo, long_hi + 1, T):
                 k = start + t
                 valid = k <= long_hi
-                kb = tl.load(LTABLE + seq * lst_s + k // BS, valid, other=0)
+                kb = tl.load(LTABLE + seq * lst_s + k // BS, valid, other=0).to(tl.int64)
                 off = kb[:, None] * lc_b + (k[:, None] % BS) * lc_s + g * lc_h + d[None, :]
                 k2 = tl.load(LC + off, valid[:, None], other=0)
                 v2 = tl.load(LC + lc_a + off, valid[:, None], other=0)

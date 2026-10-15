@@ -136,3 +136,25 @@ def test_long_axis_splits_agree(dtype, tol):
     for splits in (2, 7, 19, None):
         many = simplicial_paged_attention(q, short, long, table, seq, pos, splits=splits, **kwargs)
         torch.testing.assert_close(many, one, rtol=tol, atol=tol)
+
+
+def test_block_offsets_beyond_int32_elements():
+    """Production caches hold > 2**31 elements: block * block_stride must not overflow (vLLM eval crash)."""
+    from archlab.architectures.simplicial_paged import simplicial_paged_attention
+
+    dim, heads, kv_heads, block_size, lengths = 64, 4, 1, 16, [40, 70]
+    (short, long), table, _ = _paged_batch(lengths, kv_heads, dim, block_size, torch.bfloat16, seed=3)
+    q = torch.randn(sum(lengths), heads, dim, device="cuda", dtype=torch.bfloat16)
+    seq = torch.tensor(sum(([s] * n for s, n in enumerate(lengths)), []), dtype=torch.int32, device="cuda")
+    pos = torch.tensor(sum((list(range(n)) for n in lengths), []), dtype=torch.int32, device="cuda")
+    kwargs = dict(short_window=16, long_window=60, scale=dim ** -0.5)
+    expected = simplicial_paged_attention(q, short, long, table, seq, pos, **kwargs)
+    shift = 2 ** 31 // (block_size * kv_heads * dim) + 7  # first moved block's offset exceeds int32
+    big = []
+    for cache in (short, long):
+        moved = torch.zeros((2, shift + cache.shape[1], block_size, kv_heads, dim), dtype=cache.dtype, device="cuda")
+        moved[:, shift:] = cache
+        big.append(moved)
+    moved_table = torch.where(table > 0, table + shift, table)
+    out = simplicial_paged_attention(q, big[0], big[1], moved_table, seq, pos, **kwargs)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)

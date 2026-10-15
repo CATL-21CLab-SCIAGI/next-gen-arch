@@ -179,3 +179,15 @@ def test_rootfs_eviction_is_lru_and_skips_pinned(tmp_path, monkeypatch):
     pool.evict()  # needs 500 free: evicts bb (+100) then cc (+100), never the pinned aa
     assert sorted(p.name for p in rootfs.glob("*.complete")) == ["sha256:aa.complete"]
     assert (rootfs / "aa").exists() and not (rootfs / "bb").exists()
+
+
+def test_image_spec_filters_injected_and_secret_names(tmp_path):
+    (tmp_path / "exports").mkdir()
+    (tmp_path / "exports" / "sha256:aa.env").write_bytes(b"\0".join([
+        b"PATH=/usr/local/cargo/bin:/usr/bin", b"CARGO_HOME=/usr/local/cargo", b"KUBERNETES_PORT=tcp://x",
+        b"PAI_WORKSPACE_ID=270", b"RANK=0", b"HOSTNAME=pod", b"OSS_ACCESS_KEY_ID=x", b"API_TOKEN=y",
+        b"LANG=C.UTF-8", b"MULTI=a=b"]) + b"\0")
+    assert dlc_sandbox.image_spec(tmp_path, "sha256:aa")["env"] == [
+        "PATH=/usr/local/cargo/bin:/usr/bin", "CARGO_HOME=/usr/local/cargo", "LANG=C.UTF-8", "MULTI=a=b"]
+    with pytest.raises(FileNotFoundError):
+        dlc_sandbox.image_spec(tmp_path, "sha256:bb")  # no record: refused, never guessed

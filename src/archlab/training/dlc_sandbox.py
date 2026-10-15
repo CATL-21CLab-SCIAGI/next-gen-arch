@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shlex
 import shutil
 import signal
@@ -75,6 +76,32 @@ def configs(map_path, root):
                                       "workdir": config.get("WorkingDir") or "/"}, indent=1) + "\n")
 
 
+# Names the DLC/Kubernetes runtime adds to an export pod's environment; never part of an image's Env.
+INJECTED = re.compile(r"^(KUBERNETES_|PAI_|DLC_|PET_|POD_|NCCL_|NVSHMEM_|GLOO_|MASTER_ADDR$|MASTER_PORT$|RANK$|"
+                      r"WORLD_SIZE|NPROC_PER_NODE$|REPLICA_TYPE$|REGION$|CLUSTER_NAME$|SCRAPE_PROMETHEUS_METRICS$|"
+                      r"KATA_CONTAINER$|NVIDIA_VISIBLE_DEVICES$|VF_Alloc$|USE_ALIBABACLOUD_GPU$|HOSTNAME$|HOME$|"
+                      r"SHLVL$|PWD$|OLDPWD$|_$)")
+SECRET = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH", re.IGNORECASE)
+
+
+def image_spec(root, digest):
+    """Env/WorkingDir of an image: its registry config if fetched, else the Env captured on DLC.
+
+    The captured Env is the export pod's process environment minus injected and secret-like names.
+    An image with neither record is refused rather than run with a guessed environment.
+    """
+    record = Path(root) / "images" / f"{digest}.json"
+    if record.exists():
+        return json.loads(record.read_text())
+    captured = Path(root) / "exports" / f"{digest}.env"
+    if not captured.exists():
+        raise FileNotFoundError(f"no Env record for {digest}")
+    entries = [item for item in captured.read_bytes().decode(errors="replace").split("\0") if "=" in item]
+    env = [item for item in entries if not INJECTED.match(item.split("=", 1)[0])
+           and not SECRET.search(item.split("=", 1)[0])]
+    return {"env": env, "workdir": "/"}
+
+
 # ------------------------------------------------------------------------------------------ serve
 class Pool:
     def __init__(self, root, scratch, slots, upper_size="16g", reserve_fraction=0.25):
@@ -86,11 +113,9 @@ class Pool:
         """Unpack an exported image on first use; later sandboxes share it as their read-only lower layer.
 
         Unpacked images are evicted least-recently-used (never one pinned by a live or starting sandbox)
-        when free scratch space falls below ``reserve_fraction``. Without a config record the image Env is
-        empty, as in every squashed task image checked.
+        when free scratch space falls below ``reserve_fraction``.
         """
-        record = self.root / "images" / f"{digest}.json"
-        spec = json.loads(record.read_text()) if record.exists() else {"env": [], "workdir": "/"}
+        spec = image_spec(self.root, digest)
         target = self.scratch / "rootfs" / digest.split(":")[1]  # ":" separates overlay lowerdirs
         marker = self.scratch / "rootfs" / f"{digest}.complete"
         with self.lock:
