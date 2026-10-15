@@ -162,3 +162,20 @@ def test_live_client_through_server(tmp_path):
         env.cleanup()
         server.shutdown()
     assert pool.sandboxes == {}
+
+
+def test_rootfs_eviction_is_lru_and_skips_pinned(tmp_path, monkeypatch):
+    pool = dlc_sandbox.Pool(tmp_path / "images", tmp_path / "scratch", slots=1, reserve_fraction=0.5)
+    rootfs = tmp_path / "scratch" / "rootfs"
+    for age, name in enumerate(("sha256:aa", "sha256:bb", "sha256:cc")):
+        (rootfs / name.split(":")[1]).mkdir(parents=True)
+        (rootfs / name.split(":")[1] / "blob").write_bytes(b"x" * 100)
+        marker = rootfs / f"{name}.complete"
+        marker.touch()
+        os.utime(marker, (age, age))  # aa least recently used
+    pool.pinned["sha256:aa"] = 1
+    usage = shutil._ntuple_diskusage(total=1000, used=850, free=150)
+    monkeypatch.setattr(dlc_sandbox.shutil, "disk_usage", lambda path: usage)
+    pool.evict()  # needs 500 free: evicts bb (+100) then cc (+100), never the pinned aa
+    assert sorted(p.name for p in rootfs.glob("*.complete")) == ["sha256:aa.complete"]
+    assert (rootfs / "aa").exists() and not (rootfs / "bb").exists()

@@ -77,26 +77,55 @@ def configs(map_path, root):
 
 # ------------------------------------------------------------------------------------------ serve
 class Pool:
-    def __init__(self, root, scratch, slots, upper_size="16g"):
+    def __init__(self, root, scratch, slots, upper_size="16g", reserve_fraction=0.25):
         self.root, self.scratch, self.slots, self.upper_size = Path(root), Path(scratch), slots, upper_size
-        self.sandboxes, self.lock, self.unpack_locks = {}, threading.Lock(), {}
+        self.reserve_fraction = reserve_fraction
+        self.sandboxes, self.lock, self.unpack_locks, self.pinned = {}, threading.Lock(), {}, {}
 
     def rootfs(self, digest):
-        """Unpack an exported image once per pod; later sandboxes share it as their read-only lower layer."""
-        spec = json.loads((self.root / "images" / f"{digest}.json").read_text())
+        """Unpack an exported image on first use; later sandboxes share it as their read-only lower layer.
+
+        Unpacked images are evicted least-recently-used (never one pinned by a live or starting sandbox)
+        when free scratch space falls below ``reserve_fraction``. Without a config record the image Env is
+        empty, as in every squashed task image checked.
+        """
+        record = self.root / "images" / f"{digest}.json"
+        spec = json.loads(record.read_text()) if record.exists() else {"env": [], "workdir": "/"}
         target = self.scratch / "rootfs" / digest.split(":")[1]  # ":" separates overlay lowerdirs
+        marker = self.scratch / "rootfs" / f"{digest}.complete"
         with self.lock:
             lock = self.unpack_locks.setdefault(digest, threading.Lock())
         with lock:
-            if not (self.scratch / "rootfs" / f"{digest}.complete").exists():
+            if marker.exists():
+                os.utime(marker)
+            else:
+                self.evict()
                 shutil.rmtree(target, ignore_errors=True)
                 target.mkdir(parents=True)
                 subprocess.run(["tar", "--numeric-owner", "-xpzf", str(self.root / "exports" / f"{digest}.tar.gz"),
                                 "-C", str(target)], check=True, capture_output=True)
                 for mountpoint in ("proc", "sys", "dev", "mnt", "tmp", "run"):
                     (target / mountpoint).mkdir(exist_ok=True)
-                (self.scratch / "rootfs" / f"{digest}.complete").touch()
+                marker.touch()
         return target, spec
+
+    def evict(self):
+        (self.scratch / "rootfs").mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(self.scratch)
+        with self.lock:
+            unpinned = sorted((m for m in (self.scratch / "rootfs").glob("*.complete")
+                               if not self.pinned.get(m.name.removesuffix(".complete"))),
+                              key=lambda m: m.stat().st_mtime)
+            free = usage.free
+            for marker in unpinned:
+                if free >= self.reserve_fraction * usage.total:
+                    break
+                digest = marker.name.removesuffix(".complete")
+                target = self.scratch / "rootfs" / digest.split(":")[1]
+                size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file() and not f.is_symlink())
+                marker.unlink()
+                shutil.rmtree(target, ignore_errors=True)
+                free += size
 
     def create(self, image, lifetime=7200.0):
         digest = image.split("@")[1]
@@ -105,6 +134,7 @@ class Pool:
                 return None
             sandbox_id = uuid.uuid4().hex[:16]
             self.sandboxes[sandbox_id] = None  # reserve the slot while unpacking
+            self.pinned[digest] = self.pinned.get(digest, 0) + 1
         try:
             lower, spec = self.rootfs(digest)
             work = self.scratch / "sandboxes" / sandbox_id
@@ -147,11 +177,13 @@ class Pool:
             env.update(OFFLINE_ENV, HOME="/root")
             with self.lock:
                 self.sandboxes[sandbox_id] = {"process": process, "init": init, "work": work, "env": env,
+                                              "digest": digest,
                                               "deadline": time.monotonic() + lifetime}
             return sandbox_id
         except Exception:
             with self.lock:
                 self.sandboxes.pop(sandbox_id, None)
+                self.pinned[digest] -= 1
             raise
 
     def enter(self, sandbox_id):
@@ -206,6 +238,8 @@ class Pool:
     def kill(self, sandbox_id):
         with self.lock:
             box = self.sandboxes.pop(sandbox_id, None)
+            if box:
+                self.pinned[box["digest"]] -= 1
         if box:
             # Killing the pid-namespace init ends every process in the sandbox (including ones entered with
             # nsenter); unshare must stay alive to reap it, or it lingers as a zombie under the pod's pid 1.
@@ -276,13 +310,6 @@ def make_server(pool, port):
 def serve(root, pool_dir, slots, port, scratch):
     pool = Pool(root, scratch, slots)
 
-    def warm():  # unpack every exported image up front so creation is a ~0.1 s overlay mount
-        for export in sorted((pool.root / "exports").glob("sha256:*.tar.gz")):
-            try:
-                pool.rootfs(export.name.removesuffix(".tar.gz"))
-            except Exception as error:
-                print(json.dumps({"warm_failed": export.name, "error": str(error)[:300]}), flush=True)
-
     def expire():  # sandboxes a crashed client never cleaned up give their slots back, like E2B's timeout
         while True:
             time.sleep(30)
@@ -290,7 +317,6 @@ def serve(root, pool_dir, slots, port, scratch):
                 if box is not None and time.monotonic() > box["deadline"]:
                     pool.kill(sandbox_id)
 
-    threading.Thread(target=warm, daemon=True).start()
     threading.Thread(target=expire, daemon=True).start()
     server = make_server(pool, port)
     host = socket.gethostname()
