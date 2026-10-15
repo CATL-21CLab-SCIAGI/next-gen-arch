@@ -191,3 +191,14 @@ def test_image_spec_filters_injected_and_secret_names(tmp_path):
         "PATH=/usr/local/cargo/bin:/usr/bin", "CARGO_HOME=/usr/local/cargo", "LANG=C.UTF-8", "MULTI=a=b"]
     with pytest.raises(FileNotFoundError):
         dlc_sandbox.image_spec(tmp_path, "sha256:bb")  # no record: refused, never guessed
+
+
+def test_client_ignores_environment_proxy_and_skips_bad_servers(fake_server, monkeypatch):
+    state, pool = fake_server
+    state["create"] = [200]
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")  # a proxy that would refuse every request
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    (pool / "proxy-like.json").write_text(json.dumps({"url": "http://127.0.0.1:9/not-a-pool"}))
+    env = dlc_sandbox.DLCEnvironment(image=IMAGE, pool_dir=str(pool))
+    env.start()
+    assert env.url.endswith("/sandboxes/box")

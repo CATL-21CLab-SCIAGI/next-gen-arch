@@ -362,14 +362,22 @@ def _transport(operation, detail):
     return TransportError(f"DLC sandbox {operation} infrastructure failure: {detail}")
 
 
+# Pool endpoints are private pod addresses: never route them through an environment HTTP proxy.
+_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _call(method, url, body=b"", timeout=60, content_type="application/json"):
     request = urllib.request.Request(url, data=body if method in ("POST", "PUT") else None, method=method,
                                      headers={"Content-Type": content_type})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _DIRECT.open(request, timeout=timeout) as response:
             return response.status, json.loads(response.read() or b"{}")
     except urllib.error.HTTPError as error:
-        return error.code, json.loads(error.read() or b"{}")
+        raw = error.read()
+        try:
+            return error.code, json.loads(raw or b"{}")
+        except ValueError:  # an intermediary (not the pool server) answered
+            return error.code, {"error": raw[:200].decode(errors="replace")}
 
 
 @dataclass
@@ -397,7 +405,9 @@ class DLCEnvironment:
             random.shuffle(servers)
             for server in servers:
                 try:
-                    _call("GET", server, timeout=5)  # a stale announcement of a gone pod must not stall creation
+                    # A stale or unreachable announcement must neither stall nor fail creation.
+                    if _call("GET", server, timeout=5)[0] != 200:
+                        continue
                     status, reply = _call("POST", f"{server}/sandboxes", body, timeout=900)
                 except OSError:
                     continue  # a pod that is gone or restarting is skipped like a full one
