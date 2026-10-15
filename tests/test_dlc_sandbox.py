@@ -220,3 +220,16 @@ def test_images_prefer_stable_pool_servers():
     assert dlc_sandbox._affinity_order(IMAGE, order[:-1])[0] == order[0]  # losing another pod keeps the preference
     preferred = {dlc_sandbox._affinity_order(f"img@sha256:{i:064x}", servers)[0] for i in range(400)}
     assert len(preferred) >= 40  # images spread over the pool
+
+
+def test_failed_unpack_is_cleaned_and_refused_like_a_full_pod(tmp_path):
+    root = tmp_path / "images"
+    (root / "exports").mkdir(parents=True)
+    (root / "images").mkdir()
+    digest = "sha256:" + "ab" * 32
+    (root / "exports" / f"{digest}.tar.gz").write_bytes(b"not a gzip archive")
+    (root / "images" / f"{digest}.json").write_text(json.dumps({"image": f"x@{digest}", "layers": [], "env": []}))
+    pool = dlc_sandbox.Pool(root, tmp_path / "scratch", slots=1)
+    assert pool.create(f"x@{digest}") is None  # HTTP 503: the client moves on to its next pod
+    assert pool.sandboxes == {} and pool.pinned[digest] == 0
+    assert not (tmp_path / "scratch" / "rootfs" / digest.split(":")[1]).exists()  # no partial tree left behind

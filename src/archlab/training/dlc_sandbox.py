@@ -104,6 +104,10 @@ def image_spec(root, digest):
 
 
 # ------------------------------------------------------------------------------------------ serve
+class UnpackError(RuntimeError):
+    """This pod could not unpack an image (e.g. scratch disk full); the client should try another pod."""
+
+
 class Pool:
     def __init__(self, root, scratch, slots, upper_size="16g", reserve_fraction=0.25):
         self.root, self.scratch, self.slots, self.upper_size = Path(root), Path(scratch), slots, upper_size
@@ -128,8 +132,14 @@ class Pool:
                 self.evict()
                 shutil.rmtree(target, ignore_errors=True)
                 target.mkdir(parents=True)
-                subprocess.run(["tar", "--numeric-owner", "-xpzf", str(self.root / "exports" / f"{digest}.tar.gz"),
-                                "-C", str(target)], check=True, capture_output=True)
+                result = subprocess.run(["tar", "--numeric-owner", "-xpzf",
+                                         str(self.root / "exports" / f"{digest}.tar.gz"), "-C", str(target)],
+                                        capture_output=True)
+                if result.returncode:
+                    # A partial tree would keep the scratch disk full for every later unpack on this pod.
+                    shutil.rmtree(target, ignore_errors=True)
+                    raise UnpackError(f"{digest}: tar exit {result.returncode}: "
+                                      f"{result.stderr.decode(errors='replace')[-300:]}")
                 for mountpoint in ("proc", "sys", "dev", "mnt", "tmp", "run"):
                     (target / mountpoint).mkdir(exist_ok=True)
                 marker.touch()
@@ -216,10 +226,13 @@ class Pool:
                                               "digest": digest,
                                               "deadline": time.monotonic() + lifetime}
             return sandbox_id
-        except Exception:
+        except Exception as error:
             with self.lock:
                 self.sandboxes.pop(sandbox_id, None)
                 self.pinned[digest] -= 1
+            if isinstance(error, UnpackError):
+                print(f"unpack failed, refusing like a full pod: {error}", file=sys.stderr, flush=True)
+                return None
             raise
 
     def enter(self, sandbox_id):
