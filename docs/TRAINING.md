@@ -56,7 +56,7 @@ When the E2B pools refuse capacity, `archlab.training.dlc_sandbox.DLCEnvironment
 - Sandboxes have loopback only and use E2B's login shell and offline pip/uv variables. A full pod answers 503, so clients wait for capacity exactly as with E2B.
 - Images are root filesystems exported on DLC from the private mirror tags, stored under `<images>/exports/<digest>.tar.gz`. `configs` fetches the digest-verified image configs.
 - Admission evidence is the per-task comparison against the E2B runtime receipts: base commit, verifier return code and baseline reward. Separately, exports are compared with the publisher layers.
-- Unlike E2B, `/proc` is the pod's (bound, not remounted).
+- Command timeouts return code 124 with partial output, as upstream's Kubernetes environment does; transport failures abort the session. Unlike E2B, `/proc` is the pod's (bound, not remounted): other processes' command lines are visible, while their environments, roots and signals are not reachable.
 
 `train` performs admission once and starts verl only after it passes. Use `qualify` instead when you want the checks without starting production; running both commands repeats the live checks.
 

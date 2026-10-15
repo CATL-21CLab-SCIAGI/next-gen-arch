@@ -10,7 +10,8 @@ Contract
   network beyond loopback, matching E2B ``allow_internet_access=False``. Commands run via ``nsenter``
   with the image environment plus the offline pip/uv variables. A full pod answers 503 like E2B's
   pool. Servers announce ``http://ip:port`` and capacity in ``<pool>/<host>.json``.
-- DLCEnvironment: the client. Transport failures raise TransportError (never a test verdict);
+- DLCEnvironment: the client. Transport failures raise TransportError (never a test verdict); an
+  expired command returns code 124 with its partial output, as upstream's Kubernetes environment does;
   capacity refusals wait within ``capacity_wait_seconds`` exactly like E2BEnvironment.
 usage: python -m archlab.training.dlc_sandbox configs <template-map.json> <root>
        python -m archlab.training.dlc_sandbox serve <root> <pool-dir> [--slots N] [--port P]
@@ -175,8 +176,11 @@ class Pool:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            process.communicate()
-            return None
+            output, _ = process.communicate()  # includes what the command printed before the deadline
+            # Upstream's reference environment (kubernetes.py, pod_timeout): an expired command is an ordinary
+            # observation with returncode 124, not a transport failure; the agent continues.
+            return {"output": output.decode(errors="replace") + f"\nCommand timed out (pod) after {timeout}s",
+                    "returncode": 124}
         return {"output": output.decode(errors="replace"), "returncode": process.returncode}
 
     def members(self, sandbox_id):
@@ -242,8 +246,8 @@ def make_server(pool, port):
                     return self.reply(200, {"id": sandbox_id})
                 if len(parts) == 3 and parts[2] == "exec":
                     request = json.loads(self.body())
-                    result = pool.execute(parts[1], request["command"], request["cwd"], request["timeout"])
-                    return self.reply(504 if result is None else 200, result or {"error": "command timeout"})
+                    return self.reply(200, pool.execute(parts[1], request["command"], request["cwd"],
+                                                        request["timeout"]))
                 if len(parts) == 3 and parts[2] in ("files", "dirs"):
                     path = urllib.parse.parse_qs(url.query)["path"][0]
                     pool.write(parts[1], path, self.body(), parts[2] == "dirs")

@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -124,7 +125,13 @@ def test_live_sandbox_isolation(tmp_path):
         assert pool.execute(second, "test -e new/file.txt", "/testbed", 30)["returncode"] == 1
         recreate = pool.execute(first, "rm -rf .git/hooks && mkdir .git/hooks && touch .git/hooks/x", "/testbed", 30)
         assert recreate["returncode"] == 0, recreate  # opaque directory over a deleted lower one
-        assert pool.execute(first, "sleep 30", "/", 1) is None
+        expired = pool.execute(first, "echo started; sleep 30 & sleep 30", "/", 1)
+        assert expired == {"output": "started\n\nCommand timed out (pod) after 1s", "returncode": 124}
+        for _ in range(50):  # killed background processes are reaped by the anchor within its 1 s poll
+            if not pool.members(first):
+                break
+            time.sleep(0.1)
+        assert pool.members(first) == []
         anchor = pool.sandboxes[first]["init"]
     finally:
         pool.kill(first)
