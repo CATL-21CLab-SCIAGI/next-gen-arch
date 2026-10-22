@@ -66,8 +66,11 @@ def complete_job(jobs: Path, label: str) -> Path | None:
     return None
 
 
-def score(job: Path, *, bootstrap: int = 2000) -> dict:
-    """Mean reward over trials (an errored trial scores 0, as on the leaderboard) with a task-bootstrap 95% CI."""
+def score(job: Path, *, bootstrap: int = 2000, valid: set[str] | None = None) -> dict:
+    """Mean reward over trials (an errored trial scores 0, as on the leaderboard) with a task-bootstrap 95% CI.
+
+    `valid` (tasks whose reference solution passes here) adds the same mean over that subset, so environment
+    limits of this site are visible separately from the model."""
     rows = []
     for trial in sorted(job.glob("*/result.json")):
         record = json.loads(trial.read_text())
@@ -85,7 +88,10 @@ def score(job: Path, *, bootstrap: int = 2000) -> dict:
             errors[error] = errors.get(error, 0) + 1
     return {"mean_reward": sum(rewards) / len(rewards), "ci95": [boots[int(0.025 * bootstrap)], boots[int(0.975 * bootstrap) - 1]],
             "trials": len(rows), "solved": sum(1 for reward in rewards if reward >= 1.0), "errors": errors,
-            "solved_tasks": sorted(task for task, reward, _ in rows if reward >= 1.0)}
+            "solved_tasks": sorted(task for task, reward, _ in rows if reward >= 1.0),
+            **({"oracle_valid": {"tasks": sum(1 for task, _, _ in rows if task in valid),
+                                 "mean_reward": sum(r for task, r, _ in rows if task in valid)
+                                 / max(1, sum(1 for task, _, _ in rows if task in valid))}} if valid else {})}
 
 
 class EvalNode:
@@ -149,6 +155,8 @@ def run_harbor(plan: dict, model_name: str, port: int, label: str, agent: str = 
 def log_mlflow(plan: dict, point: dict, result: dict) -> None:
     metrics = {"tb21/mean_reward": result["mean_reward"], "tb21/ci95_low": result["ci95"][0],
                "tb21/ci95_high": result["ci95"][1], "tb21/solved": result["solved"]}
+    if "oracle_valid" in result:
+        metrics["tb21/mean_reward_oracle_valid"] = result["oracle_valid"]["mean_reward"]
     Curves(plan["mlflow"]).log(point["curve"], f"tb21:{point['label']}", point["step"], metrics,
                                tags={"tb21_settings": json.dumps(plan["settings"])})
 
@@ -189,7 +197,8 @@ def run(plan_path: Path) -> None:
             log(label=label, error="Harbor finished without a complete result.json")
             time.sleep(600)
             continue
-        result = score(job)
+        oracle = complete_job(jobs, "oracle")
+        result = score(job, valid=set(score(oracle)["solved_tasks"]) if oracle else None)
         ledger["points"][label] = {**point, **result, "job": str(job), "finished": time.strftime("%F %T"),
                                    "mlflow": False}
         log(done=label, mean_reward=result["mean_reward"], solved=result["solved"], errors=result["errors"])

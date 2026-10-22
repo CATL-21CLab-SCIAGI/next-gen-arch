@@ -68,3 +68,14 @@ def test_errored_trials_score_zero(tmp_path):
     assert result["mean_reward"] == 0.5 and result["trials"] == 4 and result["solved"] == 2
     assert result["errors"] == {"AgentTimeoutError": 1} and result["solved_tasks"] == ["task-0", "task-3"]
     assert 0.0 <= result["ci95"][0] <= 0.5 <= result["ci95"][1] <= 1.0
+
+
+def test_oracle_valid_subset_is_reported_separately(tmp_path):
+    for index, reward in enumerate([1.0, 0.0, 1.0, 0.0]):
+        trial = tmp_path / f"t{index}"
+        trial.mkdir()
+        trial.joinpath("result.json").write_text(json.dumps({"task_name": f"task-{index}",
+                                                             "verifier_result": {"rewards": {"reward": reward}}}))
+    result = tb21.score(tmp_path, bootstrap=50, valid={"task-0", "task-1", "task-2"})
+    assert result["mean_reward"] == 0.5
+    assert result["oracle_valid"] == {"tasks": 3, "mean_reward": 2 / 3}
