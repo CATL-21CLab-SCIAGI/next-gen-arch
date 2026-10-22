@@ -77,16 +77,18 @@ class Arm:
                         "{print $1}'").split()
 
     def ensure_agent_pods(self) -> None:
-        pods = self.spec["agent_pods"]
+        pods, config = self.spec["agent_pods"], dlc_jobs.site(self.spec["dlc_site"])
         record = Path(self.spec["head_dir"]) / "agent-pods-job.json"
         try:
-            state = dlc_jobs.status(json.loads(record.read_text())["JobId"])
-        except (OSError, KeyError, ValueError, RuntimeError):
-            state = "unknown"
+            state = dlc_jobs.status(json.loads(record.read_text())["JobId"], config)
+        except (OSError, KeyError, ValueError) as error:
+            state = f"unrecorded ({type(error).__name__})"
+        except RuntimeError as error:  # the API did not answer: never double-submit on an unknown state
+            log(f"agent pod status unavailable ({str(error)[:120]}); not resubmitting")
+            return
         if state in LIVE_POD_STATES:
             return
         log(f"agent pods {state}; resubmitting {pods['pods']} x {pods['cpu']} CPU")
-        config = dlc_jobs.site()
         body = dlc_jobs.job_body(config, name=pods["name"], pods=pods["pods"], cpu=pods["cpu"],
                                  memory_gi=pods["memory"], shared_memory_gi=16,
                                  command=dlc_jobs.agent_pods_command(self.spec["head_dir"], pods["ray_cpus"]))

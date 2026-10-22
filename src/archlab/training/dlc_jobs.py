@@ -1,7 +1,7 @@
 """CPU DLC jobs around agentic RL: sandbox pools, Ray agent pods and task-image exports, built by one job body.
 
-Site settings (workspace, quota, VPC, image, NAS, the GPU-full node list) come from a private JSON
-(`ARCHLAB_DLC_SITE`, default `.runtime/dlc-site.json`). CPU pods go only to nodes whose GPUs are all occupied, so
+Site settings (workspace, quota, VPC, image, NAS, the GPU-full node list) come from a private JSON named by
+`--site` or `ARCHLAB_DLC_SITE` (this deployment: `.runtime/dlc-site.json` in the main checkout). CPU pods go only to nodes whose GPUs are all occupied, so
 CPU work never blocks a free GPU; refresh `gpu_full_nodes` from the quota node listing before growing a pool.
 usage: python -m archlab.training.dlc_jobs sandbox-pool --name N --pods P --slots S --source <snapshot> --registry <dir>
        python -m archlab.training.dlc_jobs agent-pods --name N --pods P --ray-cpus R --head-dir <dir>
@@ -16,13 +16,15 @@ import os
 import subprocess
 from pathlib import Path
 
-SITE = Path(os.environ.get("ARCHLAB_DLC_SITE", Path(__file__).resolve().parents[3] / ".runtime/dlc-site.json"))
 IMAGES = "/mnt/nas/evergreen/sandbox-images/mimo-v2.6-rl-oss"
 EXPORT_MIRROR = "<private-registry>/pai-sandbox-tasks/mimo-v2.6-rl-oss:{}"
 
 
-def site() -> dict:
-    return json.loads(SITE.read_text())
+def site(path: str | os.PathLike | None = None) -> dict:
+    path = path or os.environ.get("ARCHLAB_DLC_SITE")
+    if not path:
+        raise RuntimeError("DLC site settings: pass a site file or set ARCHLAB_DLC_SITE")
+    return json.loads(Path(path).read_text())
 
 
 def job_body(config: dict, *, name: str, command: str, pods: int, cpu: int, memory_gi: int,
@@ -73,16 +75,17 @@ def aliyun(config: dict, action: str, *arguments: str) -> dict:
     return json.loads(reply.stdout)
 
 
-def create(body: dict, config: dict | None = None) -> str:
-    return aliyun(config or site(), "CreateJob", "--body", json.dumps(body))["JobId"]
+def create(body: dict, config: dict) -> str:
+    return aliyun(config, "CreateJob", "--body", json.dumps(body))["JobId"]
 
 
-def status(job_id: str, config: dict | None = None) -> str:
-    return aliyun(config or site(), "GetJob", "--JobId", job_id)["Status"]
+def status(job_id: str, config: dict) -> str:
+    return aliyun(config, "GetJob", "--JobId", job_id)["Status"]
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--site", help="site settings JSON (default: $ARCHLAB_DLC_SITE)")
     sub = parser.add_subparsers(dest="kind", required=True)
     for kind in ("sandbox-pool", "agent-pods"):
         command = sub.add_parser(kind)
@@ -100,7 +103,7 @@ def main(argv: list[str] | None = None) -> None:
     agents.add_argument("--head-dir", required=True)
     sub.add_parser("status").add_argument("job")
     args = parser.parse_args(argv)
-    config = site()
+    config = site(args.site)
     if args.kind == "status":
         print(status(args.job, config))
         return

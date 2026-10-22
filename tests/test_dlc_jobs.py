@@ -23,3 +23,18 @@ def test_job_commands_restart_in_place():
     export = dlc_jobs.image_export_command("/root/exports/sha256:ab.tar.gz")
     assert "E=/root/exports/sha256:ab.env" in export and "gzip -1 > $O.part; mv $O.part $O" in export
     assert dlc_jobs.image_export_command("/o.tar.gz", env_only=True).endswith("mv $E.part $E")
+
+
+def test_site_settings_must_be_named(tmp_path, monkeypatch):
+    import json
+
+    import pytest
+
+    monkeypatch.delenv("ARCHLAB_DLC_SITE", raising=False)
+    with pytest.raises(RuntimeError, match="site"):
+        dlc_jobs.site()
+    path = tmp_path / "site.json"
+    path.write_text(json.dumps(SITE))
+    assert dlc_jobs.site(path) == SITE
+    monkeypatch.setenv("ARCHLAB_DLC_SITE", str(path))
+    assert dlc_jobs.site() == SITE
