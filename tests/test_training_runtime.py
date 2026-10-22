@@ -42,3 +42,27 @@ def test_prior_worker_setup_is_preserved(tmp_path, monkeypatch):
     new = launch_config(config)
     assert new.ray_kwargs.ray_init.runtime_env.env_vars.ARCHLAB_WORKER_SETUP_HOOK == (
         "archlab.architectures.fa4_attention.fa4_runtime_contract")
+
+
+def test_actors_are_pinned_to_the_creating_node(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from archlab.training.runtime import pinned_to_driver_node
+
+    class Strategy:
+        def __init__(self, node, soft):
+            self.node, self.soft = node, soft
+
+    ray = SimpleNamespace(
+        get_runtime_context=lambda: SimpleNamespace(get_node_id=lambda: "gpu-head"),
+        util=SimpleNamespace(scheduling_strategies=SimpleNamespace(NodeAffinitySchedulingStrategy=Strategy)))
+    monkeypatch.setitem(sys.modules, "ray", ray)
+
+    class Actor:
+        @staticmethod
+        def options(scheduling_strategy):
+            return SimpleNamespace(remote=lambda *args, **kwargs: (scheduling_strategy, args, kwargs))
+
+    strategy, args, kwargs = pinned_to_driver_node(Actor).remote(1, key=2)
+    assert (strategy.node, strategy.soft, args, kwargs) == ("gpu-head", False, (1,), {"key": 2})

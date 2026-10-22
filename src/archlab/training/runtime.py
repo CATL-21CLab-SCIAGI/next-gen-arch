@@ -46,7 +46,35 @@ def launch_config(config):
     return runtime
 
 
-def run(config):
-    from verl.trainer.main_ppo import main
+def pinned_to_driver_node(actor_class):
+    """Place an actor on the node that creates it.
 
-    return main(launch_config(config))
+    On an external Ray head, CPU agent pods join the cluster and are evictable. Losing the TaskRunner there ends
+    the run; on the GPU head it survives pod loss (the rollout controller is pinned the same way, uni-agent 0007).
+    """
+
+    class Pinned:
+        @staticmethod
+        def remote(*args, **kwargs):
+            import ray
+
+            strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                ray.get_runtime_context().get_node_id(), soft=False)
+            return actor_class.options(scheduling_strategy=strategy).remote(*args, **kwargs)
+
+    return Pinned
+
+
+def run(config):
+    from verl.trainer import main_ppo
+
+    config = launch_config(config)
+    if config.ray_kwargs.ray_init.get("address") not in (None, "local"):
+        main_ppo.TaskRunnerV1 = pinned_to_driver_node(main_ppo.TaskRunnerV1)
+    return main_ppo.main(config)
+
+
+if __name__ == "__main__":  # python -m archlab.training.runtime <resolved.yaml>
+    import sys
+
+    raise SystemExit(run(OmegaConf.load(sys.argv[1])))
