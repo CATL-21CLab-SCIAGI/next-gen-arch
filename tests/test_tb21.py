@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from archlab.evaluation import tb21
+from archlab.evaluation import ladder, tb21
 
 
 def export(root, label):
@@ -29,17 +29,17 @@ def plan(tmp_path):
 
 
 def test_priority_order_newest_then_fill_ins(plan):
-    labels = [point["label"] for point in tb21.candidates(plan, set())]
+    labels = [point["label"] for point in ladder.candidates(plan, set())]
     assert labels == ["native", "arm-9b-step50", "arm-9b-step100", "arm-9b-step20", "arm-9b-step40",
                       "arm-9b-step60", "arm-step20"]
 
 
 def test_newest_waits_for_a_full_interval_after_the_last_evaluated_step(plan, tmp_path):
     done = {"native", "arm-9b-step50", "arm-9b-step100"}
-    assert "arm-9b-step110" not in [p["label"] for p in tb21.candidates(plan, done)]
+    assert "arm-9b-step110" not in [p["label"] for p in ladder.candidates(plan, done)]
     export(tmp_path / "exports", "arm-9b-step120")
-    assert tb21.candidates(plan, done)[0]["label"] == "arm-9b-step120"
-    assert tb21.candidates(plan, done)[0]["step"] == 120
+    assert ladder.candidates(plan, done)[0]["label"] == "arm-9b-step120"
+    assert ladder.candidates(plan, done)[0]["step"] == 120
 
 
 def test_harbor_command_keeps_official_budgets_and_mounts_the_toolchain():

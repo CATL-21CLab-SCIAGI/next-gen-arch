@@ -21,48 +21,13 @@ import sys
 import time
 from pathlib import Path
 
+from archlab.evaluation.ladder import Curves, candidates
+
 SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "max_tokens": 80000, "max_turns": 500, "thinking": False}
 
 
 def log(**fields):
     print(json.dumps({"at": time.strftime("%F %T"), **fields}), flush=True)
-
-
-def exported_steps(exports: Path, prefix: str) -> list[int]:
-    steps = []
-    for path in exports.glob(f"{prefix}-step*"):
-        tail = path.name[len(prefix) + len("-step"):]
-        if tail.isdigit() and (path / "EXPORTED").exists():
-            steps.append(int(tail))
-    return sorted(steps)
-
-
-def candidates(plan: dict, done: set[str]) -> list[dict]:
-    """Points in priority order that are available and not yet scored."""
-    found, seen = [], set(done)
-    for entry in plan["points"]:
-        if "newest" in entry:
-            spec = entry["newest"]
-            steps = exported_steps(Path(spec["exports"]), spec["prefix"])
-            ran = [s for s in steps if f"{spec['prefix']}-step{s}" in done]
-            if steps and (not ran or steps[-1] - max(ran) >= spec["every"]):
-                points = [(steps[-1], spec)]
-            else:
-                points = []
-        elif "every" in entry:
-            spec = entry["every"]
-            points = [(s, spec) for s in exported_steps(Path(spec["exports"]), spec["prefix"]) if s % spec["every"] == 0]
-        else:
-            if Path(entry["model"]).exists():
-                found.append(entry)
-            continue
-        for step, spec in points:
-            label = f"{spec['prefix']}-step{step}"
-            if label not in seen:
-                seen.add(label)
-                found.append({"label": label, "model": str(Path(spec["exports"]) / label),
-                              "curve": spec["curve"], "step": step})
-    return [point for point in found if point["label"] not in done]
 
 
 def harbor_command(plan: dict, model_name: str, label: str, agent: str = "terminus-2") -> list[str]:
@@ -182,17 +147,10 @@ def run_harbor(plan: dict, model_name: str, port: int, label: str, agent: str = 
 
 
 def log_mlflow(plan: dict, point: dict, result: dict) -> None:
-    import mlflow
-
-    secrets = json.loads(Path(plan["mlflow"]["secrets"]).read_text())
-    os.environ["MLFLOW_TRACKING_TOKEN"] = secrets["token"]
-    mlflow.set_tracking_uri(secrets["tracking_uri"])
-    client = mlflow.tracking.MlflowClient()
-    run_id = json.loads(Path(plan["mlflow"]["runs"]).read_text())["runs"][point["curve"]]
-    for metric, value in {"tb21/mean_reward": result["mean_reward"], "tb21/ci95_low": result["ci95"][0],
-                          "tb21/ci95_high": result["ci95"][1], "tb21/solved": result["solved"]}.items():
-        client.log_metric(run_id, metric, value, step=point["step"])
-    client.set_tag(run_id, "tb21_settings", json.dumps(plan["settings"]))
+    metrics = {"tb21/mean_reward": result["mean_reward"], "tb21/ci95_low": result["ci95"][0],
+               "tb21/ci95_high": result["ci95"][1], "tb21/solved": result["solved"]}
+    Curves(plan["mlflow"]).log(point["curve"], f"tb21:{point['label']}", point["step"], metrics,
+                               tags={"tb21_settings": json.dumps(plan["settings"])})
 
 
 def run(plan_path: Path) -> None:
