@@ -16,6 +16,7 @@ done
 
 - `0007-observability-extensions.patch`: add optional trajectory-validation and metric-callback configuration, dispatch finite non-overwriting metrics through the existing trainer logger, and accept an explicit B300 MFU reference. Execution remains upstream-owned.
 - `0008-preserve-truncated-agent-status.patch`: set `finished` from agent completion before stock Uni-Agent masks unfinished episodes. A completed verifier is recorded separately as `verifier_finished`; capped runs keep their real truncation reason and original trajectory evidence. Reproduce the runner patch series against the pinned revision in `docs/upstreams.json`; `tests/test_mimo_reward_contract.py` executes both the actual runner and package mask writer.
+- `0009-padding-without-fa2-extension.patch`: when FA2 is absent, reuse verl's existing pure PyTorch padding helpers for FA4 installations. Padding values, masks and gradients remain unchanged; missing transitive dependencies still fail. Regression checks are in `tests/test_training_attention_padding.py`.
 
 At deployment set `ARCHLAB_HARNESS_SPEC` to the absolute path of `recipes/rl/harness/single_bash.yaml`; the recipe forwards this to every Ray actor as `MIXED_HARNESS_SPEC`. The preset uses the official E2B SDK and an authorized private PAI sandbox. Supply a private key-file path and a verified image-to-template map through the documented environment variables. Credentials stay in the parent SDK and are never copied into task environments.
 

@@ -12,19 +12,11 @@
 
 Exclusive allocation is the default. Shared-GPU execution requires explicit authorization, a recorded sharing policy and measured headroom.
 
-## Research-policy launch examples
+## Launch interfaces
 
-For a declared speedrun run, supply the data and output paths:
+Use `archlab resolve`, `archlab qualify` and `archlab train` with a package-backed contract from `recipes/rl/`; the [training guide](TRAINING.md) lists model and environment bindings. The launcher delegates execution to verl.
 
-```bash
-export NGA_DATA_ROOT=/path/to/nanochat
-export NGA_DATA_MANIFEST=/path/to/climbmix.manifest.json
-export NGA_OUTPUT_DIR=/path/to/new-run
-PYTHONPATH=src python -m archlab.cli render \
-  --config recipes/reference/speedrun_100m.yaml#research_baseline
-```
-
-For model-specific training, follow the entry named in its recipe. FineWeb, ClimbMix, supervised fine-tuning and RL have different cursor/target contracts.
+Historical speedrun/Megatron contracts retain their packing, optimizer and data-order semantics. Reproduce a dated experiment from its recorded source revision. Retired AutoModel and custom math-RL commands must not be used against the current working tree.
 
 ## Recovery
 

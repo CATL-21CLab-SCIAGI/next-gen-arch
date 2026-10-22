@@ -10,8 +10,29 @@ import hashlib
 import json
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+
+
+def transfer_plan(source: str | Path, destination: str) -> tuple[list[PurePosixPath], list[tuple[Path, str]]]:
+    """Map a file or directory to remote paths before performing any uploads.
+
+    Both sandbox transports preserve empty directories and reject links or
+    special files inside directory trees before uploading a partial task.
+    """
+    source = Path(source)
+    if source.is_file():
+        target = destination + source.name if destination.endswith("/") else destination
+        return [], [(source, target)]
+    if not source.is_dir() or source.is_symlink():
+        raise ValueError("transfer source must be a file or regular directory")
+    entries = sorted(source.rglob("*"))
+    if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in entries):
+        raise ValueError("directory transfer supports regular files and directories only")
+    root = PurePosixPath(destination)
+    directories = [root, *(root / path.relative_to(source) for path in entries if path.is_dir())]
+    files = [(path, str(root / path.relative_to(source))) for path in entries if path.is_file()]
+    return directories, files
 
 
 def sha256_file(path: str | Path, *, chunk_bytes: int = 8 * 1024 * 1024) -> str:

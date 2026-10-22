@@ -28,8 +28,12 @@ def input_lineage(source, experiment_path=None):
     source = Path(source).resolve()
     config = OmegaConf.load(source)
     export = Path(config.actor_rollout_ref.model.path).resolve()
-    receipt = json.loads((export / "EXPORT.json").read_text())
-    files = {"resolved_config": source, "export_receipt": export / "EXPORT.json"}
+    files = {"resolved_config": source}
+    experiment = None
+    if experiment_path:
+        files["experiment"] = Path(experiment_path).resolve()
+        experiment = json.loads(files["experiment"].read_text())
+        files["data_manifest"] = Path(experiment["data_manifest"]).resolve()
     variables = OmegaConf.select(config, "ray_kwargs.ray_init.runtime_env.env_vars", default={})
     if variables.get("MIXED_HARNESS_SPEC"):
         specification = Path(variables["MIXED_HARNESS_SPEC"]).resolve()
@@ -37,6 +41,25 @@ def input_lineage(source, experiment_path=None):
         for harness in OmegaConf.load(specification).harnesses:
             path = Path(harness.config)
             files[f"harness/{harness.label}"] = (path if path.is_absolute() else specification.parent / path).resolve()
+    if experiment and experiment["family"] == "muse_glimmer":
+        from archlab.training.publisher import verify_publisher
+
+        assert experiment["parent_stage"] == "published_checkpoint" and experiment["parent_tokens"] is None
+        assert export == Path(experiment["parent_checkpoint"]).resolve()
+        manifest = Path(experiment["publisher_manifest"]).resolve()
+        publisher = verify_publisher(export, manifest, model_id="meta-models/Muse-Glimmer-30B")
+        files["publisher_manifest"] = manifest
+        result = {name: {"path": str(path), "bytes": path.stat().st_size, "sha256": sha256_file(path)}
+                  for name, path in files.items()}
+        # verify_publisher just streamed every shard; do not read hundreds of GB
+        # again to construct the same proof. _probe repeats verification after use.
+        result.update({f"publisher/{name}": {"path": str(export / name),
+                       "bytes": (export / name).stat().st_size, "sha256": digest}
+                       for name, digest in publisher["files"].items()})
+        assert result["publisher_manifest"]["sha256"] == publisher["manifest_sha256"]
+        return result
+    receipt = json.loads((export / "EXPORT.json").read_text())
+    files["export_receipt"] = export / "EXPORT.json"
     for name in receipt["files"]:
         assert Path(name).name == name, "export receipt contains an external path"
         files[f"export/{name}"] = export / name
@@ -45,11 +68,8 @@ def input_lineage(source, experiment_path=None):
                       if receipt.get("training", {}).get("format") == "archlab-limite-agentic-sft-v1"
                       else "COMPLETE.json")
     files["parent_receipt"] = Path(parent["path"]) / parent_receipt
-    if experiment_path:
-        files["experiment"] = Path(experiment_path).resolve()
-        experiment = json.loads(files["experiment"].read_text())
+    if experiment:
         assert Path(experiment["parent_checkpoint"]).resolve() == Path(parent["path"]).resolve()
-        files["data_manifest"] = Path(experiment["data_manifest"]).resolve()
     result = {name: {"path": str(path), "bytes": path.stat().st_size, "sha256": sha256_file(path)}
               for name, path in files.items()}
     for name, expected in receipt["files"].items():
@@ -125,11 +145,9 @@ def _executed_bash_calls(messages):
     return completed
 
 
-def inspect_artifacts(output, *, native_context=131072):
+def inspect_artifacts(output, *, native_context=131072, strategy="megatron"):
     """Check package-written tokens, masks, verdicts, metrics and saved update."""
     from recipes.code.mimoagent_runner import _require_code_verdict
-
-    from archlab.artifacts import sha256_file
 
     output = Path(output)
     metrics = [json.loads(line) for line in (output / "metrics.jsonl").read_text().splitlines()]
@@ -212,18 +230,7 @@ def inspect_artifacts(output, *, native_context=131072):
     assert (checkpoint / "latest_checkpointed_iteration.txt").read_text().strip() == "1"
     assert (checkpoint / "global_step_1/data.pt").is_file()
     actor = checkpoint / "global_step_1/actor"
-    saved = json.loads((actor / "ckpt_contents.json").read_text())
-    assert saved["global_step"] == 1 and saved["world_size"] == 8
-    for name in ("model", "optimizer", "lr_scheduler", "rng_state"):
-        assert name in saved["contents"], f"incomplete resumable checkpoint: {name}"
-        location = actor / saved["contents"][name]["path"]
-        assert location.is_dir() and any(location.iterdir()), f"missing saved {name}"
-    model = actor / saved["contents"]["model"]["path"]
-    model_files = sorted(model.glob("*.safetensors"))
-    assert model_files and (model / "config.json").is_file(), "missing saved HF model/config"
-    model_files.extend(sorted(model.glob("*.json")))
-    exported = {path.name: {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
-                for path in model_files}
+    saved = _inspect_checkpoint(actor, strategy=strategy)
     contrast = sum(len(set(values)) > 1 for values in groups.values())
     learning_ready = contrast > 0 and stats["actor/grad_norm"] > 0
     return {"status": "execution_passed", "completed_verifiers": completed,
@@ -236,11 +243,73 @@ def inspect_artifacts(output, *, native_context=131072):
             "learnability": {"status": "observed" if learning_ready else "pending",
                              "requires": "mixed rewards within a prompt group and positive finite gradient",
                              "claim": "one update is not evidence of sustained improvement"},
-            "checkpoint": {"manifest_sha256": sha256_file(actor / "ckpt_contents.json"),
-                           "global_step": saved["global_step"], "world_size": saved["world_size"],
-                           "contents": saved["contents"], "export_files": exported},
+            "checkpoint": saved,
             "learning_signal": "present" if contrast else "absent_equal_rewards",
             "claim": "one real update; equal rewards establish execution only"}
+
+
+def _inspect_checkpoint(actor, *, strategy):
+    """Inspect the selected stock format; absence never selects another backend."""
+    from archlab.artifacts import sha256_file
+
+    if strategy == "fsdp2":
+        return _inspect_fsdp_checkpoint(actor)
+    assert strategy == "megatron", "unqualified checkpoint strategy"
+    saved = json.loads((actor / "ckpt_contents.json").read_text())
+    assert saved["global_step"] == 1 and saved["world_size"] == 8
+    for name in ("model", "optimizer", "lr_scheduler", "rng_state"):
+        assert name in saved["contents"], f"incomplete resumable checkpoint: {name}"
+        location = actor / saved["contents"][name]["path"]
+        assert location.is_dir() and any(location.iterdir()), f"missing saved {name}"
+    model = actor / saved["contents"]["model"]["path"]
+    model_files = sorted(model.glob("*.safetensors"))
+    assert model_files and (model / "config.json").is_file(), "missing saved HF model/config"
+    model_files.extend(sorted(model.glob("*.json")))
+    exported = {path.name: {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
+                for path in model_files}
+    return {"manifest_sha256": sha256_file(actor / "ckpt_contents.json"),
+            "global_step": saved["global_step"], "world_size": saved["world_size"],
+            "contents": saved["contents"], "export_files": exported}
+
+
+def _inspect_fsdp_checkpoint(actor):
+    """Hash stock FSDP shards without materializing model or optimizer tensors."""
+    import torch
+
+    from archlab.artifacts import sha256_file
+
+    metadata = actor / "fsdp_config.json"
+    saved = json.loads(metadata.read_text())
+    assert saved["FSDP_version"] == 2 and saved["world_size"] == 8
+    files = {"fsdp_config.json": metadata}
+    contents = {}
+    for prefix in ("model", "optim", "extra_state"):
+        names = {f"{prefix}_world_size_8_rank_{rank}.pt" for rank in range(8)}
+        actual = {path.name for path in actor.glob(f"{prefix}_world_size_*_rank_*.pt")}
+        assert actual == names, f"incomplete or unexpected FSDP {prefix} ranks"
+        contents[prefix] = sorted(names)
+        for name in sorted(names):
+            path = actor / name
+            assert path.is_file() and path.stat().st_size > 0, f"empty FSDP payload: {name}"
+            files[name] = path
+            if prefix == "extra_state":
+                # These are this probe's own stock Python/NumPy RNG states.
+                # mmap avoids eager storage copies; full state restore is a
+                # separate distributed admission gate, not inferred here.
+                extra = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+                assert isinstance(extra.get("lr_scheduler"), dict) and extra["lr_scheduler"], name
+                rng = extra.get("rng")
+                assert isinstance(rng, dict) and {"cpu", "numpy", "random", "cuda"} <= rng.keys(), name
+    hf = actor / "huggingface"
+    for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+        assert (hf / name).is_file(), f"missing saved native model/tokenizer asset: {name}"
+        assert isinstance(json.loads((hf / name).read_text()), dict), name
+    files.update({str(path.relative_to(actor)): path for path in hf.rglob("*") if path.is_file()})
+    return {"format": "verl-fsdp2", "manifest_sha256": sha256_file(metadata),
+            "global_step": 1, "world_size": saved["world_size"], "contents": contents,
+            "files": {name: {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
+                      for name, path in sorted(files.items())},
+            "restore_verified": False}
 
 
 def _probe(tmp_path, *, startup):
@@ -280,7 +349,7 @@ def _probe(tmp_path, *, startup):
         evidence = json.loads((tmp_path / "startup.json").read_text())
         assert evidence["gpus"] >= 8 and evidence["agent_requests"] == 0
     else:
-        evidence = inspect_artifacts(tmp_path)
+        evidence = inspect_artifacts(tmp_path, strategy=config.actor_rollout_ref.actor.strategy)
     from archlab.artifacts import sha256_file
 
     evidence.update(source_config_sha256=sha256_file(source), smoke_config_sha256=sha256_file(config_path),
@@ -577,6 +646,108 @@ def test_input_lineage_verifies_actual_export_bytes(tmp_path, package_sft):
     (export / "model.safetensors").write_bytes(b"modified")
     with pytest.raises(AssertionError, match="export bytes changed"):
         input_lineage(config)
+
+
+def test_native_publisher_lineage_hashes_actual_weights_and_task_inputs(tmp_path):
+    from archlab.artifacts import sha256_file
+
+    model = tmp_path / "native"
+    model.mkdir()
+    for name in ("config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json"):
+        (model / name).write_text("{}")
+    (model / "chat_template.jinja").write_text("{{ messages }}")
+    (model / "model.safetensors").write_bytes(b"publisher-weight-fixture")
+    (model / "model.safetensors.index.json").write_text(json.dumps({
+        "weight_map": {"fixture.weight": "model.safetensors"}}))
+    manifest = tmp_path / "publisher.json"
+    manifest.write_text(json.dumps({"schema_version": 1, "model_id": "meta-models/Muse-Glimmer-30B",
+        "publisher_revision": "a" * 40,
+        "assets": {path.name: {"bytes": path.stat().st_size, "sha256": sha256_file(path)}
+                   for path in model.iterdir()}}))
+    data = tmp_path / "data.json"
+    data.write_text('{"split": "train"}')
+    harness = tmp_path / "harness.yaml"
+    harness.write_text("agent:\n  type: bashonly-agent\n")
+    spec = tmp_path / "spec.yaml"
+    spec.write_text("harnesses:\n  - label: native-bash\n    config: harness.yaml\n")
+    experiment = tmp_path / "experiment.json"
+    experiment.write_text(json.dumps({"family": "muse_glimmer", "parent_stage": "published_checkpoint",
+        "parent_tokens": None, "parent_checkpoint": str(model), "publisher_manifest": str(manifest),
+        "data_manifest": str(data)}))
+    config = tmp_path / "resolved.yaml"
+    config.write_text(f"actor_rollout_ref:\n  model:\n    path: {model}\n"
+                      f"ray_kwargs:\n  ray_init:\n    runtime_env:\n      env_vars:\n        MIXED_HARNESS_SPEC: {spec}\n")
+    lineage = input_lineage(config, experiment)
+    assert lineage["publisher/model.safetensors"]["sha256"] == sha256_file(model / "model.safetensors")
+    assert lineage["publisher_manifest"]["sha256"] == sha256_file(manifest)
+    assert lineage["harness/native-bash"]["sha256"] == sha256_file(harness)
+    assert lineage["data_manifest"]["sha256"] == sha256_file(data)
+    assert "export_receipt" not in lineage and "parent_receipt" not in lineage
+    (model / "model.safetensors").write_bytes(b"modified-weight-fixture")
+    with pytest.raises(ValueError, match="publisher artifact bytes changed"):
+        input_lineage(config, experiment)
+
+
+@pytest.mark.parametrize("defect", [None, "missing_model_rank", "missing_optim_rank", "missing_extra_rank",
+                                  "empty_optimizer", "wrong_world_size", "extra_rank", "missing_scheduler",
+                                  "missing_rng", "missing_cuda_rng", "missing_tokenizer"])
+def test_fsdp_checkpoint_inventory_requires_every_rank_and_resume_artifact(tmp_path, monkeypatch, defect):
+    import torch
+
+    actor = tmp_path / "actor"
+    actor.mkdir()
+    (actor / "fsdp_config.json").write_text(json.dumps({"FSDP_version": 2,
+                                                       "world_size": 4 if defect == "wrong_world_size" else 8}))
+    hf = actor / "huggingface"
+    hf.mkdir()
+    for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+        (hf / name).write_text("{}")
+    extra = {"lr_scheduler": {"last_epoch": 1},
+             "rng": {"cpu": torch.get_rng_state(), "numpy": np.random.get_state(),
+                     "random": (3, (1,), None), "cuda": torch.zeros(8, dtype=torch.uint8)}}
+    for rank in range(8):
+        # The inspector must never deserialize model/optimizer shard payloads.
+        for prefix in ("model", "optim"):
+            (actor / f"{prefix}_world_size_8_rank_{rank}.pt").write_bytes(b"opaque-payload-fixture")
+        torch.save(extra, actor / f"extra_state_world_size_8_rank_{rank}.pt")
+    if defect in {"missing_model_rank", "missing_optim_rank", "missing_extra_rank"}:
+        prefix = {"missing_model_rank": "model", "missing_optim_rank": "optim",
+                  "missing_extra_rank": "extra_state"}[defect]
+        (actor / f"{prefix}_world_size_8_rank_7.pt").unlink()
+    elif defect == "empty_optimizer":
+        (actor / "optim_world_size_8_rank_7.pt").write_bytes(b"")
+    elif defect == "extra_rank":
+        (actor / "model_world_size_8_rank_8.pt").write_bytes(b"unexpected-rank")
+    elif defect in {"missing_scheduler", "missing_rng", "missing_cuda_rng"}:
+        if defect == "missing_scheduler":
+            extra.pop("lr_scheduler")
+        elif defect == "missing_rng":
+            extra.pop("rng")
+        else:
+            extra["rng"].pop("cuda")
+        torch.save(extra, actor / "extra_state_world_size_8_rank_7.pt")
+    elif defect == "missing_tokenizer":
+        (hf / "tokenizer.json").unlink()
+    loaded, original_load = [], torch.load
+
+    def load_extra_only(path, **kwargs):
+        assert Path(path).name.startswith("extra_state_")
+        assert kwargs == {"map_location": "cpu", "weights_only": False, "mmap": True}
+        loaded.append(Path(path).name)
+        return original_load(path, **kwargs)
+
+    monkeypatch.setattr(torch, "load", load_extra_only)
+    if defect:
+        with pytest.raises(AssertionError):
+            _inspect_checkpoint(actor, strategy="fsdp2")
+    else:
+        result = _inspect_checkpoint(actor, strategy="fsdp2")
+        assert result["format"] == "verl-fsdp2" and result["world_size"] == 8
+        assert result["restore_verified"] is False
+        assert len(result["files"]) == 28 and len(loaded) == 8
+        assert all(len(item["sha256"]) == 64 for item in result["files"].values())
+        with pytest.raises(FileNotFoundError):
+            _inspect_checkpoint(actor, strategy="megatron")
 
 
 def test_smoke_owns_ray_cluster_without_changing_source(tmp_path):

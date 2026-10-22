@@ -34,6 +34,10 @@ DeepSeek has no Jinja chat template. Preserve native reasoning, tool schema and 
 
 ## Output
 
+Publish tokenized datasets under `${DATASET_ROOT}/tokenized/<dataset-and-tokenizer-version>/`.
+Keep raw source corpora outside `tokenized/`. Moving a published dataset changes
+its storage location, not its tokenization contract or completion status.
+
 ```text
 manifest.json                 immutable source/format/runtime contract
 tokenizer/                    exact tokenizer assets

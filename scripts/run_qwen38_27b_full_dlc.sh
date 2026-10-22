@@ -44,6 +44,6 @@ case "$NGA_OUTPUT_ROOT" in
 esac
 
 production_name="${NGA_OUTPUT_ROOT##*/compat-}"
-export NGA_OUTPUT_ROOT="/mnt/oss/evergreen/next-gen-arch/$production_name"
+export NGA_OUTPUT_ROOT="/mnt/oss/evergreen/runs/arch/next-gen-arch--$production_name"
 
 exec bash "$(dirname "$0")/run_qwen38_flash_next_full_dlc.sh"

@@ -2,7 +2,94 @@
 
 The primary RL path composes XiaomiMiMo/verl's code recipe and delegates execution to its V1 trainer. Local code owns the scientific contract, verified model export and dataset index. It does not implement another optimizer loop, agent scheduler or monitoring system.
 
-## Current pilot
+## Current Qwen3.5 code RL
+
+The two current runs use native Qwen3.5-4B, upstream FSDP2 and vLLM. The maintained
+contract is [`qwen35_code.yaml`](../recipes/rl/qwen35_code.yaml), composed over
+pinned upstream defaults with one YAML overlay:
+
+- [`qwen35_code_local.yaml`](../recipes/rl/qwen35_code_local.yaml): original v3c,
+  batch 8, the 113-task pool, a local Ray head.
+- [`qwen35_code_efficiency.yaml`](../recipes/rl/qwen35_code_efficiency.yaml): v4e,
+  batch 16, the 80-task selected curriculum, and external CPU agent workers.
+
+Both preserve 262,144 tokens of context, eight responses per prompt, DAPO group
+filtering, prompt-mean policy loss, two versions of allowed policy lag and token
+importance correction capped at two. This is a configuration/curriculum
+comparison; the two runs do not isolate architecture or systems efficiency.
+The resolved overlay output has been compared field-for-field to both live
+configurations. Historical interpolation values are intentionally preserved,
+including unused `actor/ref/critic.rollout_n=4` while generation uses `rollout.n=8`.
+
+Supply model, data, output and sandbox paths through deployment environment
+variables declared by the recipe. `ARCHLAB_MODEL_MANIFEST` identifies the model
+asset provenance. For an explicit restart, set both `ARCHLAB_RESUME_CHECKPOINT`
+and `ARCHLAB_RESUME_MODE=resume_path`; otherwise the recipe starts fresh. For example:
+
+```bash
+archlab resolve recipes/rl/qwen35_code.yaml \
+  --overlay recipes/rl/qwen35_code_efficiency.yaml --output "$ARCHLAB_OUTPUT"
+```
+
+The maintained DLC environment client now owns task discovery, file transfer and
+transport semantics. Existing CPU pool snapshots continue to own isolated server
+execution. Tracking credentials are read from `ARCHLAB_MLFLOW_CONFIG` by the
+shared launcher and its Ray worker setup hook; token values stay out of printed
+Ray configuration. The snapshot launcher supplies the qualified `PYTHONPATH`.
+
+**The new source is not production-qualified yet.** `qualify` records the missing
+Qwen-specific GPU and task evidence and `train` stops at that gate. Existing
+trainers retain their immutable source and active launch handles. Exact recipe
+parity is not proof of FSDP restart, hybrid prefix-cache/logprob parity, full-context
+memory, verifier correctness or throughput after moving source. In particular,
+training samples top-k 20/top-p 0.95 while learner replay computes full-vocabulary
+probabilities: the recorded decoupled importance correction must be evaluated with
+that contract, rather than applying the older Limite full-support parity bound.
+
+## Muse agentic pilot
+
+[muse_code.yaml](../recipes/rl/muse_code.yaml) defines a fresh native
+`meta-models/Muse-Glimmer-30B` control for executable code tasks. It starts from
+the publisher checkpoint with a fresh Adam optimizer, rather than Limite SFT or
+old RL state. This establishes agentic capability before a separately qualified
+attention replacement experiment. The recipe's presence does not mean GPU
+qualification or production training has completed.
+
+The learner uses stock verl FSDP2 across eight B300s, FP32 master parameters,
+BF16 compute and native Transformers FlashAttention-4. Native vLLM serves the
+publisher's Muse architecture, reasoning and tool protocol. Its global and
+sliding attention, normalization, output scaling and logit softcap remain part
+of the native model. No Megatron weight conversion is used for this control.
+Image and video inputs are disabled for these text-only tasks.
+
+The 131,072-token context is preserved: 16,384 prompt tokens and 114,688 response
+tokens, with 8,192 tokens per agent turn. Length-capped turns remain unfinished
+episodes and are excluded from policy updates. Sampling uses temperature 1,
+top-p 1 and no top-k cutoff, explicitly differing from the publisher's default
+top-p/top-k settings. The native template uses high reasoning strength. The
+MiMo bash agent, isolated task environments and executable verifier are reused.
+
+The initial pilot has two task groups with four responses each, at most eight
+active task environments, one policy version of asynchronous lag, and upstream
+token importance correction capped at two. It requests 20 fresh updates,
+validation and full checkpoints every five updates, retaining the latest two
+resume checkpoints. MLflow records the experiment as **Muse — RL**.
+
+Sharded model and optimizer state stay on the GPUs. Offloading all FP32 masters
+and Adam moments would exceed the target node's 256 GiB host RAM. Rollout reserves
+30% of each GPU. This budget still requires actual simultaneous learner/serving
+memory checks; capacity cannot be inferred from model weight size alone.
+
+For this recipe, set `ARCHLAB_PARENT_CHECKPOINT` to the verified native publisher
+directory and `ARCHLAB_MODEL_MANIFEST` to its pinned asset manifest. Use
+`recipes/rl/harness/muse_single_bash.yaml` for `ARCHLAB_HARNESS_SPEC`; the remaining
+deployment variables and thin `resolve` / `train` interface below are shared.
+The isolated runtime records its exact package lock separately from container
+dependencies. Native model construction, sampled-probability parity, all-layer
+backward, full optimizer/RNG restore, full-context capacity and a real nonzero
+agentic GRPO update must pass before production admission.
+
+## Limite pilot
 
 `recipes/rl/limite_code.yaml` starts fresh software-engineering RL from the normal Limite **2B adapter-warmup endpoint**, selected using AIME rather than cross-entropy alone. The original matched normal/simplicial checkpoints both completed 2,000,158,720 tokens at step 7,630. Their frozen publisher backbone is verified before the adapters are restored and **all weights are unfrozen for RL**. The new normal recipe explicitly uses the publisher’s FlashAttention-2 reduction for both backbone and preludes; weights and attention geometry remain unchanged. The earlier TileLang migration is preserved as a separate failed admission candidate.
 

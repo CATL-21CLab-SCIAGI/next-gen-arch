@@ -24,7 +24,7 @@ DENSE_27B_LAUNCHERS = {DENSE_27B_LAUNCHER, FULL_DENSE_27B_LAUNCHER}
 ALLOWED_LAUNCHERS = {LAUNCHER, FLASH_NEXT_FULL_LAUNCHER, *DENSE_27B_LAUNCHERS}
 DEFAULT_ALLOWED_REPO_ROOT = Path("/mnt/nas/evergreen")
 DEFAULT_CONTROL_ROOT = Path(
-    "/mnt/nas/evergreen/next-gen-arch/qwen38-quarter-fp4-fineweb100b-control"
+    "/mnt/nas/evergreen/ops/control/arch/qwen38-quarter-fp4-fineweb100b-control"
 )
 
 _GENERATION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
@@ -254,14 +254,27 @@ def validate_request(
     if "NGA_PRECISION" in environment and environment["NGA_PRECISION"] not in {"bf16", "fp4"}:
         raise ValueError("NGA_PRECISION must be bf16 or fp4")
     path_prefixes = dict(_PATH_PREFIXES)
-    if launcher == FLASH_NEXT_FULL_LAUNCHER:
-        path_prefixes["NGA_OUTPUT_ROOT"] = Path("/mnt/oss/evergreen/next-gen-arch")
+    oss_output = launcher == FLASH_NEXT_FULL_LAUNCHER or (
+        launcher in {LAUNCHER, DENSE_27B_LAUNCHER}
+        and environment.get("NGA_OUTPUT_ROOT", "").startswith("/mnt/oss/")
+    )
+    if oss_output:
+        path_prefixes["NGA_OUTPUT_ROOT"] = Path("/mnt/oss/evergreen/runs/arch")
     for key, root in path_prefixes.items():
         if key not in environment:
             continue
         path = Path(environment[key])
         if not path.is_absolute() or not _is_within(path, root):
             raise ValueError(f"{key} must be under {root}")
+        if key == "NGA_OUTPUT_ROOT" and launcher != FULL_DENSE_27B_LAUNCHER and _is_within(
+            path, Path("/mnt/nas/evergreen/next-gen-arch")
+        ):
+            raise ValueError("NGA_OUTPUT_ROOT uses a retired namespace; apply the storage relocation map")
+        if key == "NGA_OUTPUT_ROOT" and oss_output:
+            relative = path.resolve(strict=False).relative_to(root.resolve(strict=False))
+            run_name = relative.parts[0] if relative.parts else ""
+            if not run_name.startswith("next-gen-arch--") or run_name == "next-gen-arch--":
+                raise ValueError("NGA_OUTPUT_ROOT must use runs/arch/next-gen-arch--<run-id>")
     if "NGA_PYTHON" in environment and environment["NGA_PYTHON"] != "/opt/venv/bin/python":
         raise ValueError("NGA_PYTHON must use the container-owned /opt/venv/bin/python")
     if (

@@ -1,4 +1,4 @@
-"""Compose the pinned MiMo recipe with a small, typed experiment contract."""
+"""Compose pinned verl recipes with a small, typed experiment contract."""
 
 from __future__ import annotations
 
@@ -40,15 +40,19 @@ class Experiment:
     parent_checkpoint: str = MISSING
     parent_stage: str = "adapter_sft"
     parent_tokens: int | None = 2_000_158_720
+    publisher_manifest: str | None = None
     data_manifest: str = MISSING
+    resume_checkpoint: str | None = None
+    maximum_policy_lag: int = 1
     pilot: AgenticPilot | None = None
     throughput: ThroughputContract = field(default_factory=ThroughputContract)
     # Overrides use upstream names; there is no second set of optimizer defaults.
     settings: dict[str, Any] = field(default_factory=dict)
 
 
-def read_experiment(path: Path, overrides: list[str] = ()) -> Experiment:
-    config = OmegaConf.merge(OmegaConf.structured(Experiment), OmegaConf.load(path))
+def read_experiment(path: Path, overrides: list[str] = (), *, overlays: list[Path] = ()) -> Experiment:
+    config = OmegaConf.merge(OmegaConf.structured(Experiment), OmegaConf.load(path),
+                             *(OmegaConf.load(overlay) for overlay in overlays))
     for override in overrides:
         key, separator, raw = override.partition("=")
         if not separator or not key:
@@ -62,7 +66,9 @@ def read_experiment(path: Path, overrides: list[str] = ()) -> Experiment:
             OmegaConf.update(config, key, value, merge=False)
     experiment = OmegaConf.to_object(config)
     experiment.throughput.validate()
-    if experiment.engine != "megatron":
+    if experiment.family not in {"limite", "muse_glimmer", "qwen3_5"}:
+        raise ValueError("unknown model family")
+    if experiment.family == "limite" and experiment.engine != "megatron":
         raise ValueError("the primary execution engine is megatron")
     if experiment.attention not in {"native", "tilelang", "te"}:
         raise ValueError("attention must be native, tilelang or te")
@@ -70,11 +76,25 @@ def read_experiment(path: Path, overrides: list[str] = ()) -> Experiment:
         raise ValueError("execution must be sync or colocate_async")
     if experiment.variant not in {"normal", "simplicial", "linsimp", "triadic"}:
         raise ValueError("unknown architecture variant")
-    if experiment.intervention not in {"insert_attention", "replace_attention"}:
+    if experiment.intervention not in {"insert_attention", "replace_attention", "none"}:
         raise ValueError("unknown architecture intervention")
     if experiment.native_context <= 0:
         raise ValueError("native_context must be positive")
-    if experiment.parent_stage == "package_sft":
+    if experiment.maximum_policy_lag < 0:
+        raise ValueError("maximum_policy_lag must be nonnegative")
+    if experiment.family != "qwen3_5" and experiment.maximum_policy_lag != 1:
+        raise ValueError("the existing Limite and Muse pilots permit at most one policy version of lag")
+    if experiment.resume_checkpoint and experiment.family != "qwen3_5":
+        raise ValueError("the existing Limite and Muse pilots require fresh RL")
+    if experiment.family in {"muse_glimmer", "qwen3_5"}:
+        if (experiment.engine != "dp" or experiment.variant != "normal"
+                or experiment.attention != "native" or experiment.intervention != "none"
+                or experiment.parent_stage != "published_checkpoint" or experiment.parent_tokens is not None
+                or not experiment.publisher_manifest):
+            raise ValueError("native control requires DP, unchanged publisher weights and an asset manifest")
+    elif experiment.intervention == "none":
+        raise ValueError("Limite requires its explicit attention intervention")
+    elif experiment.parent_stage == "package_sft":
         if (experiment.intervention != "replace_attention" or experiment.variant != "simplicial"
                 or experiment.attention != "tilelang" or experiment.parent_tokens is not None):
             raise ValueError("package SFT replacement uses simplicial TileLang and receipt-derived token budgets")
@@ -92,13 +112,25 @@ def compose_verl(experiment: Experiment, upstream: Path) -> DictConfig:
     Megatron and attention kernels are separate axes. Selecting an axis does not
     establish model support; numerical admission is required before execution.
     """
-    with initialize_config_dir(
-        config_dir=str((upstream / "recipes/code/config").resolve()), version_base=None
-    ):
-        searchpath = json.dumps("file://" + str((upstream / "verl/trainer/config").resolve()))
-        config = compose(config_name="train", overrides=[
-            f"hydra.searchpath=[{searchpath}]", f"model_engine={experiment.engine}",
-        ])
+    if experiment.engine == "dp":
+        # MiMo's code recipe fixes Megatron defaults. Reuse standard DP training
+        # and declare its existing dataclass extension fields omitted by the YAML.
+        with initialize_config_dir(
+            config_dir=str((upstream / "verl/trainer/config").resolve()), version_base=None
+        ):
+            config = compose(config_name="ppo_trainer", overrides=[
+                "model_engine=dp", "+actor_rollout_ref.rollout.custom=null",
+                "+actor_rollout_ref.rollout.agent.agent_loop_manager_class=null",
+                "+actor_rollout_ref.actor.use_rollout_log_probs=false",
+            ])
+    else:
+        with initialize_config_dir(
+            config_dir=str((upstream / "recipes/code/config").resolve()), version_base=None
+        ):
+            searchpath = json.dumps("file://" + str((upstream / "verl/trainer/config").resolve()))
+            config = compose(config_name="train", overrides=[
+                f"hydra.searchpath=[{searchpath}]", f"model_engine={experiment.engine}",
+            ])
     OmegaConf.set_struct(config, True)
     for key, value in experiment.settings.items():
         OmegaConf.update(config, key, value, merge=False)
@@ -116,27 +148,31 @@ def compose_verl(experiment: Experiment, upstream: Path) -> DictConfig:
 
 def validate_science(experiment: Experiment, config: DictConfig) -> None:
     actor = config.actor_rollout_ref.actor
-    if config.model_engine != experiment.engine or actor.strategy != "megatron":
+    strategy = "fsdp2" if experiment.engine == "dp" else "megatron"
+    if config.model_engine != experiment.engine or actor.strategy != strategy:
         raise ValueError("resolved learner strategy differs from the experiment engine")
     if config.algorithm.adv_estimator != "grpo":
         raise ValueError("the agentic code pilot requires GRPO")
-    if actor.megatron.dtype != "bfloat16":
-        raise ValueError("native mixed precision requires the bfloat16 Megatron contract")
-    if actor.megatron.patch_recomputation_backward:
-        raise ValueError("native Limite owns checkpointing; runtime Megatron patches must be disabled")
-    if config.actor_rollout_ref.model.override_config:
+    if experiment.family == "muse_glimmer":
+        _validate_muse_science(experiment, config)
+    elif experiment.engine == "megatron":
+        if actor.megatron.dtype != "bfloat16":
+            raise ValueError("native mixed precision requires the bfloat16 Megatron contract")
+        if actor.megatron.patch_recomputation_backward:
+            raise ValueError("native Limite owns checkpointing; runtime Megatron patches must be disabled")
+    if experiment.family == "limite" and config.actor_rollout_ref.model.override_config:
         raise ValueError("model geometry overrides require a new verified export")
     rollout = config.actor_rollout_ref.rollout
     if experiment.intervention == "replace_attention":
         _validate_conversion_science(experiment, config)
-    if not rollout.enforce_eager:
+    if experiment.family == "limite" and not rollout.enforce_eager:
         compilation = rollout.engine_kwargs.vllm.get("compilation_config", {})
         if (rollout.max_num_seqs != 1 or compilation.get("mode") != 0
                 or compilation.get("cudagraph_mode") != "FULL_DECODE_ONLY"
                 or compilation.get("cudagraph_capture_sizes") != [1]
                 or compilation.get("max_cudagraph_capture_size") != 1):
             raise ValueError("native serving requires eager execution or explicit single-sequence decode graphs")
-    if experiment.attention == "native":
+    if experiment.family == "limite" and experiment.attention == "native":
         attention = rollout.engine_kwargs.vllm.attention_config
         if (experiment.variant != "normal" or attention.backend != "FLASH_ATTN"
                 or attention.flash_attn_version != 2):
@@ -162,18 +198,91 @@ def validate_science(experiment: Experiment, config: DictConfig) -> None:
         raise ValueError("the pilot requires one upstream token importance correction, capped at 2")
     if config.actor_rollout_ref.actor.use_kl_loss or config.algorithm.use_kl_in_reward:
         raise ValueError("this controlled code pilot does not include a reference-policy KL")
-    if (experiment.intervention != "replace_attention"
+    if (experiment.family == "limite" and experiment.intervention != "replace_attention"
             and rollout.custom.agent_framework.mask_unfinished_episode):
         raise ValueError("unfinished trajectories must remain visible in this pilot")
-    if not 0 <= config.trainer.v1.sampler.max_off_policy_threshold <= 1:
-        raise ValueError("initial agentic pilot permits at most one policy version of lag")
-    if config.trainer.resume_mode != "disable":
+    if not 0 <= config.trainer.v1.sampler.max_off_policy_threshold <= experiment.maximum_policy_lag:
+        raise ValueError("policy lag exceeds the explicit experiment contract")
+    if experiment.resume_checkpoint:
+        if (config.trainer.resume_mode != "resume_path"
+                or config.trainer.resume_from_path != experiment.resume_checkpoint):
+            raise ValueError("resume must use the explicit checkpoint lineage")
+    elif config.trainer.resume_mode != "disable":
         raise ValueError("fresh RL must reset the optimizer, RNG and training counters")
     if (rollout.custom.agent_framework.get("trajectory_validator") != "archlab.training.rollout.RolloutContract"
             or config.trainer.get("metrics_extension") != "archlab.training.metrics.step_metrics"):
         raise ValueError("the primary pilot requires validated rollout and performance contracts")
     if config.ray_kwargs.ray_init.runtime_env.env_vars.get("VERL_MFU_DEVICE_NAME") != "B300":
         raise ValueError("MFU hardware must reflect the actual B300 allocation")
+    if experiment.family == "qwen3_5":
+        # Native package support differs from the Limite cache bridge. Model,
+        # graph and hybrid-prefix-cache qualification is checked separately.
+        model = config.actor_rollout_ref.model
+        if (model.path != experiment.parent_checkpoint or model.external_lib
+                or model.trust_remote_code or model.custom_chat_template
+                or dict(model.override_config) != {"attn_implementation": "flash_attention_2"}
+                or dict(config.data.apply_chat_template_kwargs) != {"enable_thinking": False}
+                or actor.fsdp_config.dtype != "bfloat16"
+                or actor.fsdp_config.model_dtype != "fp32"
+                or rollout.multi_turn.format != "qwen3_coder"
+                or rollout.logprobs_mode != "processed_logprobs"):
+            raise ValueError("Qwen native control requires its declared model, codec and mixed precision")
+
+
+def _validate_muse_science(experiment: Experiment, config: DictConfig) -> None:
+    """Resolve the native control; this does not qualify its runtime or lineage."""
+    actor = config.actor_rollout_ref.actor
+    model = config.actor_rollout_ref.model
+    rollout = config.actor_rollout_ref.rollout
+    if (model.path != experiment.parent_checkpoint or model.external_lib or model.trust_remote_code
+            or model.custom_chat_template or model.hf_config_path or model.tokenizer_path):
+        raise ValueError("Muse must load its unchanged publisher checkpoint, tokenizer and template together")
+    if dict(model.override_config) != {"attn_implementation": "flash_attention_4"}:
+        raise ValueError("Muse permits only its explicit native FlashAttention-4 kernel override, without geometry changes")
+    if (actor.fsdp_config.strategy != "fsdp2" or actor.fsdp_config.dtype != "bfloat16"
+            or actor.fsdp_config.model_dtype != "fp32" or actor.fsdp_config.ulysses_sequence_parallel_size != 1
+            or actor.fsdp_config.fsdp_size != 8
+            or actor.fsdp_config.param_offload or actor.fsdp_config.optimizer_offload
+            or config.trainer.nnodes != 1 or config.trainer.n_gpus_per_node != 8):
+        raise ValueError("Muse requires GPU-resident DP8 FSDP2 with FP32 master weights and BF16 compute")
+    if (model.use_remove_padding or model.use_fused_kernels or model.use_liger
+            or model.lora_rank or model.lora.rank or model.lora_adapter_path
+            or not model.enable_gradient_checkpointing or model.mtp.enable
+            or actor.ppo_micro_batch_size_per_gpu != 1 or actor.use_dynamic_bsz
+            or actor.use_torch_compile or actor.fsdp_config.use_torch_compile
+            or actor.fsdp_config.qat.enable):
+        raise ValueError("Muse admission requires native full-weight microbatches without unqualified kernels or quantization")
+    if (actor.optim.optimizer != "Adam" or actor.optim.optimizer_impl != "torch.optim"
+            or actor.optim.lr != 1e-6 or list(actor.optim.betas) != [.9, .95]
+            or actor.optim.weight_decay != 0 or actor.optim.override_optimizer_config):
+        raise ValueError("Muse control requires explicit torch Adam at 1e-6 with betas (0.9, 0.95)")
+    if (experiment.execution != "colocate_async" or experiment.native_context != 131072
+            or rollout.name != "vllm" or not rollout.enforce_eager or rollout.ignore_eos
+            or rollout.prompt_length != 16384 or rollout.response_length != 114688
+            or rollout.quantization or rollout.quantization_config_file
+            or rollout.tensor_model_parallel_size != 1 or rollout.pipeline_model_parallel_size != 1
+            or rollout.data_parallel_size != 1 or rollout.max_num_seqs != 1
+            or rollout.gpu_memory_utilization != .3
+            or rollout.multi_turn.format != "muse_glimmer"
+            or dict(rollout.engine_kwargs.vllm) != {
+                "model_impl": "vllm", "limit_mm_per_prompt": {"image": 0, "video": 0}}
+            or dict(config.data.apply_chat_template_kwargs) != {"reasoning_strength": "high"}):
+        raise ValueError("Muse control requires native eager vLLM serving and the publisher's reasoning/tool protocol")
+    if (rollout.temperature != 1. or not rollout.do_sample or rollout.top_p != 1. or rollout.top_k != -1
+            or rollout.logprobs_mode != "processed_logprobs" or not rollout.val_kwargs.do_sample
+            or any(rollout.val_kwargs[key] != rollout[key] for key in ("temperature", "top_p", "top_k"))):
+        raise ValueError("Muse control requires full-support processed behavior probabilities")
+    if (config.data.train_batch_size != 2 or actor.ppo_mini_batch_size != 2 or rollout.n != 4
+            or config.algorithm.filter_groups.enable or not config.algorithm.norm_adv_by_std_in_grpo
+            or not rollout.custom.agent_framework.mask_unfinished_episode):
+        raise ValueError("Muse control requires two stock GRPO groups of four and unfinished-episode masking")
+    pilot = experiment.pilot
+    if (pilot is None or pilot.max_turn_tokens != 8192 or pilot.step_limit != 500
+            or pilot.minimum_prompt_groups != 2 or pilot.minimum_completed_verifiers != 8
+            or min(pilot.minimum_tool_calls, pilot.minimum_observation_tokens,
+                   pilot.minimum_reward_contrast_groups) < 1
+            or pilot.maximum_truncated_trajectories != 0):
+        raise ValueError("Muse admission requires complete agentic traces, executable rewards and reward contrast")
 
 
 def _validate_conversion_science(experiment: Experiment, config: DictConfig) -> None:

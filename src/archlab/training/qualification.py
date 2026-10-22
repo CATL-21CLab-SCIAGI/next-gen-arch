@@ -39,6 +39,17 @@ INTEGRATION_TESTS = {
     "real_policy_grpo_update": ("test_agentic_pipeline.py::test_real_policy_grpo_update", False),
 }
 
+MUSE_INTEGRATION_TESTS = {
+    "package_optimizer_restart": ("test_hf_agentic_training.py::test_package_fsdp_training_restart", True),
+    "serving_reload_parity": ("test_muse_serving.py::test_native_serving_sampled_parity", False),
+    "native_context_backward": ("test_muse_context.py::test_native_context_backward", True),
+    "native_context_serving": ("test_muse_context.py::test_native_context_serving", False),
+    "stock_ray_startup": INTEGRATION_TESTS["stock_ray_startup"],
+    "learner_throughput": ("test_muse_throughput.py::test_package_learner_throughput", True),
+    "agent_tool_verifier": INTEGRATION_TESTS["agent_tool_verifier"],
+    "real_policy_grpo_update": INTEGRATION_TESTS["real_policy_grpo_update"],
+}
+
 PREREQUISITES = {
     "serving_reload_parity": ("package_optimizer_restart",),
     "agent_tool_verifier": ("sandbox_coverage",),
@@ -133,10 +144,16 @@ def check_runtime(experiment, config):
     import torch
 
     packages = {}
-    for distribution in ("torch", "transformers", "ray", "verl", "mimoagent", "uni-agent", "e2b",
-                         "megatron-core", "transformer-engine",
-                         {"tilelang": "tilelang", "te": "transformer-engine", "native": "flash-attn"}[experiment.attention],
-                         config.actor_rollout_ref.rollout.name):
+    # Patched upstream source identities are verified by check_upstream; they
+    # need not also have editable-install metadata in an isolated package layer.
+    dependencies = ["torch", "transformers", "ray", "e2b",
+                    config.actor_rollout_ref.rollout.name]
+    if experiment.family == "muse_glimmer":
+        dependencies.append("flash-attn-4")
+    else:
+        dependencies.extend(("megatron-core", "transformer-engine",
+            {"tilelang": "tilelang", "te": "transformer-engine", "native": "flash-attn"}[experiment.attention]))
+    for distribution in dependencies:
         packages[distribution] = importlib.metadata.version(distribution)
     if sys.version_info[:2] != (3, 12):
         raise ValueError("The pinned MiMo Agent requires Python 3.12")
@@ -223,6 +240,23 @@ def check_sft_parent(experiment, *, package_receipt=None):
 
 
 def check_model(experiment, config):
+    if experiment.family == "muse_glimmer":
+        from archlab.training.publisher import verify_publisher
+
+        root = Path(config.actor_rollout_ref.model.path).resolve()
+        if root != Path(experiment.parent_checkpoint).resolve():
+            raise ValueError("native policy does not use its declared publisher checkpoint")
+        result = verify_publisher(root, Path(experiment.publisher_manifest),
+                                  model_id="meta-models/Muse-Glimmer-30B")
+        model = json.loads((root / "config.json").read_text())
+        generation = json.loads((root / "generation_config.json").read_text())
+        if (model.get("model_type") != "muse_glimmer"
+                or model.get("architectures") != ["MuseGlimmerForConditionalGeneration"]
+                or model["text_config"]["max_position_embeddings"] != experiment.native_context
+                or generation.get("eos_token_id") != [200001, 200008]
+                or generation.get("pad_token_id") != 200018):
+            raise ValueError("native Muse model, context or termination differs from its contract")
+        return result
     from archlab.training.limite_artifacts import verify_export
 
     if experiment.family != "limite" or experiment.variant not in {"normal", "simplicial"}:
@@ -279,6 +313,24 @@ def check_model(experiment, config):
 
 
 def check_execution(experiment, config):
+    if experiment.family == "muse_glimmer":
+        from transformers import AutoConfig
+        from verl.utils.model import get_hf_auto_model_class
+        from vllm.config import ModelConfig
+        from vllm.model_executor.models import ModelRegistry
+
+        root = str(Path(config.actor_rollout_ref.model.path).resolve())
+        native = AutoConfig.from_pretrained(root, local_files_only=True, trust_remote_code=False)
+        learner = get_hf_auto_model_class(native)._model_mapping[type(native)]
+        serving_config = ModelConfig(model=root, dtype="bfloat16", trust_remote_code=False,
+                                     max_model_len=experiment.native_context, model_impl="vllm")
+        serving, name = ModelRegistry.resolve_model_cls(native.architectures, serving_config)
+        if (learner.__name__ != "MuseGlimmerForConditionalGeneration"
+                or serving.__module__ != "vllm.model_executor.models.muse_glimmer"):
+            raise ValueError("native Muse requires upstream Transformers and vLLM implementations")
+        return dict(learner=f"{learner.__module__}.{learner.__qualname__}", strategy="fsdp2",
+                    serving=name, implementation=f"{serving.__module__}.{serving.__qualname__}",
+                    scope="registration only; actual GPU model, optimizer and RL checks remain required")
     if experiment.engine != "megatron":
         raise ValueError("the native Limite learner requires the Megatron bridge")
     if experiment.attention == "te":
@@ -406,6 +458,9 @@ def run_pytest(nodes, output, *, deployment=None, timeout=1800, world_size=1,
                    ARCHLAB_PARITY_GENERATED_TOKENS="128",
                    ARCHLAB_PARITY_TEMPERATURE=str(OmegaConf.select(
                        config, "actor_rollout_ref.rollout.temperature", default=1.)))
+        if OmegaConf.select(config, "model_engine") == "dp":
+            env["ARCHLAB_LEARNER_WORK"] = str(output / "learner")
+            env["ARCHLAB_MUSE_TOKENIZER"] = str(config.actor_rollout_ref.model.path)
     sources = source_manifest()
     atomic_write_json(output / "source.json", sources)
     with (output / "pytest.log").open("w") as log:
@@ -488,6 +543,28 @@ def qualify(experiment, config, upstream, output):
     atomic_write_json(output / "experiment.json", asdict(experiment))
     sources = source_manifest()
     atomic_write_json(output / "source.json", sources)
+    if experiment.family == "qwen3_5":
+        # Exact configuration migration does not transfer runtime qualification
+        # from an immutable production snapshot to this changed source tree.
+        # Reusing Muse tests here would silently test a different model/codec.
+        checks = [_check("scientific_config", lambda: (validate_science(experiment, config) or {})),
+                  dict(name="native_qwen_deployment", status="pending", reason=(
+                      "Resolve parity is verified. Admission still requires this source's native Qwen "
+                      "model/tokenizer lineage, FSDP optimizer/resume, hybrid prefix-cache and sampled "
+                      "logprob parity, full-context memory, executable verifier, and throughput evidence. "
+                      "The live immutable launch handles remain authoritative until that migration passes.")),
+                  _check("source_unchanged", lambda: check_source_unchanged(sources))]
+        result = dict(format="archlab-training-qualification-v1", passed=False,
+                      config_sha256=fingerprint(config), checks=checks,
+                      blockers=[row["name"] for row in checks if row["status"] != "passed"])
+        atomic_write_json(output / "qualification.json", result)
+        return result
+    muse = experiment.family == "muse_glimmer"
+    fixtures = (["tests/test_training_publisher.py", "tests/test_muse_agentic_codec.py",
+                 "tests/test_training_attention_padding.py"] if muse
+                else ["tests/test_training_limite.py", *([
+                    "tests/test_limite_conversion.py", "tests/test_training_serving_conversion.py",
+                ] if experiment.intervention == "replace_attention" else [])])
     checks = [_check("scientific_config", lambda: (validate_science(experiment, config) or {})),
               _check("upstream_runtime", lambda: check_upstream(upstream)),
               _check("upstream_config", lambda: check_package_config(config)),
@@ -495,11 +572,9 @@ def qualify(experiment, config, upstream, output):
               _check("agentic_data", lambda: check_data(experiment, config, output)),
               _check("model_export", lambda: check_model(experiment, config)),
               _check("execution_bridge", lambda: check_execution(experiment, config)),
-              _check("native_model_fixture", lambda: run_pytest(
-                  ["tests/test_training_limite.py", *([
-                      "tests/test_limite_conversion.py", "tests/test_training_serving_conversion.py",
-                  ] if experiment.intervention == "replace_attention" else [])], output / "native_fixture"))]
-    if experiment.intervention == "replace_attention":
+              _check("native_model_fixture", lambda: run_pytest(fixtures, output / "native_fixture",
+                  deployment=output if muse else None))]
+    if muse or experiment.intervention == "replace_attention":
         checks.append(_check("bootstrap_curriculum", lambda: check_curriculum(experiment, config)))
     # These tests must use this exact resolved config/export and execute on the
     # requested GPU world. Existing tiny fixtures cannot replace production-scale
@@ -508,7 +583,8 @@ def qualify(experiment, config, upstream, output):
     from archlab.training.sandbox import check_sandbox
 
     checks.append(_check("sandbox_coverage", lambda: check_sandbox(experiment, config)))
-    for test, (node, distributed) in INTEGRATION_TESTS.items():
+    plan = MUSE_INTEGRATION_TESTS if muse else INTEGRATION_TESTS
+    for test, (node, distributed) in plan.items():
         if ready:
             passed = {row["name"] for row in checks if row["status"] == "passed"}
             missing = sorted(set(PREREQUISITES.get(test, ())) - passed)
@@ -516,7 +592,7 @@ def qualify(experiment, config, upstream, output):
                 checks.append(dict(name=test, status="pending", reason="prerequisites not passed: " + ", ".join(missing)))
                 continue
             updated_model = None
-            if test == "serving_reload_parity":
+            if test == "serving_reload_parity" and not muse:
                 updated_model = output / "package_optimizer_restart/learner/engine-checkpoint/model/huggingface"
             checks.append(_check(test, lambda test=test, node=node, distributed=distributed,
                                 updated_model=updated_model: run_pytest(
@@ -524,6 +600,11 @@ def qualify(experiment, config, upstream, output):
                 world_size=config.trainer.n_gpus_per_node if distributed else 1,
                 timeout=14760 if test == "real_policy_grpo_update" else 1800,
                 updated_model=updated_model)))
+            if muse and test == "package_optimizer_restart":
+                # The same native test verifies all original parameter shards,
+                # independent HF forward parity and gradients through all layers.
+                checks.append(dict(name="native_distributed_oracle", status=checks[-1]["status"],
+                                   evidence="package_optimizer_restart", shared_actual_execution=True))
             if test == "learner_throughput":
                 from archlab.training.performance import check_throughput
 

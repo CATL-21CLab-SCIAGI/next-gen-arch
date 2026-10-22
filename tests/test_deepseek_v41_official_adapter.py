@@ -61,33 +61,6 @@ def test_production_layer_selection_master_precision_and_budget():
     assert all((ADAPTER_MARKER in name) == p.requires_grad for name, p in after.items())
 
 
-@pytest.mark.parametrize("variant", ["linear", "linsimp", "gdn", "triadic"])
-def test_matched_installer_preserves_backbone_and_actual_branch_budget(variant):
-    from pathlib import Path
-
-    from archlab.automodel.triadic_scratch_qualification import (
-        mixer_specification,
-        read_matched_contract,
-    )
-
-    recipe = Path(__file__).parents[1] / "recipes/triadic/matched_scratch_w640_d20.yaml"
-    spec = mixer_specification(read_matched_contract(recipe), variant)
-    config = V41AdapterConfig(**spec["adapter_config"])
-    model = _skeleton(config, count=1)
-    original = dict(model.named_parameters())
-    adapters = install_official_adapters(
-        model, config, layer_indices=(0,), variant=variant, backend="reference", matched_mixer=spec
-    )
-    adapter = adapters[0]
-    budget = adapter.parameter_contract()
-    assert budget["relative_parameter_error"] < 0.005
-    assert sum(p.numel() for p in adapter.parameters()) == budget["total_parameters"]
-    after = dict(model.named_parameters())
-    assert all(after[name] is value and not value.requires_grad for name, value in original.items())
-    assert all((ADAPTER_MARKER in name) == p.requires_grad for name, p in after.items())
-    assert all(p.dtype == torch.float32 for p in adapter.parameters())
-
-
 def test_expansion_wrapper_keeps_upstream_result_and_deepcopy_ownership():
     config = _small_config()
     model = _skeleton(config, count=1)

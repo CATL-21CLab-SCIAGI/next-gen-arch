@@ -8,12 +8,6 @@ from types import SimpleNamespace
 
 import torch
 
-from archlab.automodel.qwen.evaluate import (
-    added_modules,
-    continuation_scores,
-    encode_pair,
-    math_completion,
-)
 from archlab.evaluation.capability import (
     EvaluationConfig,
     MathGrader,
@@ -77,45 +71,6 @@ class CapabilityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             EvaluationConfig(max_context=4096)
 
-    def test_loglikelihood_matches_tokenwise_oracle(self):
-        model, tokenizer = TinyCausalModel(), CharacterTokenizer()
-        for choices in (["A", "B"], [" A", " BB"]):
-            result = continuation_scores(
-                model, tokenizer, "Q:", choices, max_context=20, device="cpu"
-            )
-            for index, choice in enumerate(choices):
-                ids = tokenizer.encode("Q:" + choice)
-                expected = sum(
-                    model.table[ids[j - 1]].log_softmax(-1)[ids[j]].item()
-                    for j in range(2, len(ids))
-                )
-                self.assertAlmostEqual(result["loglikelihoods"][index], expected, places=5)
-                self.assertAlmostEqual(
-                    result["character_normalized_loglikelihoods"][index],
-                    expected / len(choice.removeprefix(" ")),
-                    places=5,
-                )
-        self.assertEqual(
-            encode_pair(tokenizer, "Q: ", "A"), (tokenizer.encode("Q:"), tokenizer.encode(" A"))
-        )
-        with self.assertRaises(ValueError):
-            continuation_scores(model, tokenizer, "Q:", ["long"], max_context=2, device="cpu")
-
-    def test_generation_eos_and_cap(self):
-        tokenizer, model = CharacterTokenizer(), TinyCausalModel()
-        model.table.fill_(-10)
-        model.table[:, ord("z")] = 10
-        config = EvaluationConfig(max_context=20, max_new_tokens=4)
-        result = math_completion(
-            model, tokenizer, "Q", config=config, eos_ids={ord("z"), ord("x")}, device="cpu"
-        )
-        self.assertEqual(
-            (result["stop_reason"], result["new_tokens"], result["completion"]), ("eos", 1, "")
-        )
-        result = math_completion(
-            model, tokenizer, "Q", config=config, eos_ids={ord("x")}, device="cpu"
-        )
-        self.assertEqual((result["stop_reason"], result["completion"]), ("token_cap", "zzzz"))
 
     @unittest.skipUnless(
         pinned_harness_available(), "requires installed lm-eval==0.4.13"
@@ -184,40 +139,6 @@ class CapabilityTests(unittest.TestCase):
                 "exact_match"
             ],
             0,
-        )
-
-    @unittest.skipUnless(importlib.util.find_spec("nemo_automodel"), "requires pinned AutoModel")
-    def test_disabled_nonzero_additions_recover_original_exactly(self):
-        from test_automodel_simplicial import AutoModelSimplicialTests
-
-        from archlab.automodel.qwen.simplicial import AdditiveMoERead, install_simplicial_modules
-
-        torch.manual_seed(138)
-        model, config = AutoModelSimplicialTests().model_and_config()
-        model.eval()
-        tokens = torch.randint(2, 64, (1, 11))
-        originals = {n: (p, p.detach().clone()) for n, p in model.named_parameters()}
-        with torch.no_grad():
-            before = model(input_ids=tokens, output_hidden_states=True)
-        adapters = install_simplicial_modules(model, config, backend="reference")
-        with torch.no_grad():
-            for adapter in adapters.values():
-                adapter.output.weight.normal_(std=0.02)
-            self.assertFalse(torch.equal(before.logits, model(input_ids=tokens).logits))
-            with added_modules(model, enabled=False):
-                after = model(input_ids=tokens, output_hidden_states=True)
-            torch.testing.assert_close(before.logits, after.logits, atol=0, rtol=0)
-            self.assertEqual(len(before.hidden_states), len(after.hidden_states))
-            for a, b in zip(before.hidden_states, after.hidden_states, strict=True):
-                torch.testing.assert_close(a, b, atol=0, rtol=0)
-        for name, (parameter, saved) in originals.items():
-            self.assertIs(dict(model.named_parameters())[name], parameter)
-            torch.testing.assert_close(parameter, saved, atol=0, rtol=0)
-        with self.assertRaisesRegex(RuntimeError, "test restore"):
-            with added_modules(model, enabled=False):
-                raise RuntimeError("test restore")
-        self.assertTrue(
-            all(m.adapter_enabled for m in model.modules() if isinstance(m, AdditiveMoERead))
         )
 
 

@@ -6,6 +6,11 @@ import pytest
 import torch
 
 import archlab.megatron.train as megatron_train
+from archlab.campaigns import (
+    TEN_M_BATCH_TOKENS,
+    get_campaign_variant,
+    get_ten_m_variant,
+)
 from archlab.megatron.train import (
     SpeedrunSchedule,
     _current_training_iteration,
@@ -21,11 +26,6 @@ from archlab.megatron.train import (
     resolve_fineweb_variant,
 )
 from archlab.optimizers.recipes import get_optimization_recipe
-from archlab.speedrun.campaigns import (
-    TEN_M_BATCH_TOKENS,
-    get_campaign_variant,
-    get_ten_m_variant,
-)
 
 
 def test_current_training_iteration_prefers_live_megatron_counter():

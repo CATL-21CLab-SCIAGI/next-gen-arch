@@ -1,0 +1,11 @@
+# v4e also uses a different 80-task curriculum. ARCHLAB_CODE_DATA must name it;
+# this is a recipe comparison, not a pure systems-speed comparison.
+name: qwen35-4b-code-grpo-reward-only-v4e
+settings:
+  actor_rollout_ref.actor.ppo_mini_batch_size: 16
+  critic.ppo_mini_batch_size: 16
+  data.train_batch_size: 16
+  actor_rollout_ref.rollout.custom.agent_framework.gateway_count: 4
+  actor_rollout_ref.rollout.custom.agent_framework.agent_runners.mimoagent.max_concurrent_sessions: 256
+  ray_kwargs.ray_init.address: auto
+  ray_kwargs.ray_init.runtime_env.env_vars.UNI_AGENT_RUNNER_TASK_NUM_CPUS: '1'

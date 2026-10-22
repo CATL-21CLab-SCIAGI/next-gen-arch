@@ -6,6 +6,14 @@ from pathlib import Path
 import pytest
 import torch
 
+from archlab.campaigns import (
+    FINEWEB_CAMPAIGN_VARIANTS,
+    TEN_M_VARIANTS,
+    campaign_model_config_kwargs,
+    get_campaign_variant,
+    ten_m_model_config_kwargs,
+    verify_ten_m_contract,
+)
 from archlab.optimizers.recipes import OPTIMIZATION_RECIPES
 from archlab.speedrun.campaign_compare import (
     DEFAULT_REFERENCE,
@@ -18,14 +26,6 @@ from archlab.speedrun.campaign_compare import (
     overlay_results,
     summarize,
     validate_results,
-)
-from archlab.speedrun.campaigns import (
-    FINEWEB_CAMPAIGN_VARIANTS,
-    TEN_M_VARIANTS,
-    campaign_model_config_kwargs,
-    get_campaign_variant,
-    ten_m_model_config_kwargs,
-    verify_ten_m_contract,
 )
 from archlab.speedrun.models import build_model_config, instantiate_model
 

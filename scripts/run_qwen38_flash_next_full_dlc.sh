@@ -8,9 +8,9 @@ set -euo pipefail
 
 NGA_REPO_ROOT="${NGA_REPO_ROOT:?set the immutable repository root}"
 NGA_EXPECTED_COMMIT="${NGA_EXPECTED_COMMIT:?set the immutable repository commit}"
-NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100b-qwen38-de4b8e4d43b9}"
+NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/tokenized/fineweb-edu-100b-qwen38-de4b8e4d43b9}"
 NGA_TOKENIZER="${NGA_TOKENIZER:-/mnt/oss/models/qwen38-flash-next-de4b8e4d43b9}"
-NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:?set a fresh /mnt/oss/evergreen/next-gen-arch run directory}"
+NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:?set a fresh /mnt/oss/evergreen/runs/arch/next-gen-arch--<run-id> directory}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
 source "$(dirname "$0")/lib/dlc_runtime.sh"
 nga_load_recipe "${NGA_LAUNCH_RECIPE:-$NGA_REPO_ROOT/recipes/qwen/launches.yaml#flash_next_full}"
@@ -19,8 +19,8 @@ if [[ "$NGA_LAUNCH_FAMILY" != "flash-next" ]]; then
     exit 1
 fi
 NGA_MEGATRON_ROOT="${NGA_MEGATRON_ROOT:-/opt/Megatron-Bridge/3rdparty/Megatron-LM}"
-# next-gen-arch itself may be an OSS symlink; use a distinct real NAS directory.
-NGA_LIVE_LOG_ROOT="${NGA_LIVE_LOG_ROOT:-/mnt/nas/evergreen/arch-live-logs/${NGA_OUTPUT_ROOT##*/}}"
+# Keep live logs on NAS independently of archived OSS run outputs.
+NGA_LIVE_LOG_ROOT="${NGA_LIVE_LOG_ROOT:-/mnt/nas/evergreen/ops/logs/arch-live-logs/${NGA_OUTPUT_ROOT##*/}}"
 export NGA_EXPECTED_NODES NGA_GPUS_PER_NODE
 
 SOURCE_CONFIG_SHA256="889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b"
@@ -64,9 +64,9 @@ if [[ "$NGA_FLASH_NEXT_MODEL_VARIANT" != "full" && \
     exit 1
 fi
 case "$NGA_OUTPUT_ROOT" in
-    /mnt/oss/evergreen/next-gen-arch/*) ;;
+    /mnt/oss/evergreen/runs/arch/next-gen-arch--?*) ;;
     *)
-        echo "checkpoints must be under /mnt/oss/evergreen/next-gen-arch" >&2
+        echo "checkpoints must use /mnt/oss/evergreen/runs/arch/next-gen-arch--<run-id>" >&2
         exit 1
         ;;
 esac

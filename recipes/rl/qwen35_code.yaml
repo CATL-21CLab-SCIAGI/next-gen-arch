@@ -1,0 +1,164 @@
+# Native Qwen3.5-4B historical recipe; unchanged live science, not new GPU admission.
+# Supply exactly one placement overlay. Environment paths and credentials stay local.
+name: qwen35-4b-code-grpo-reward-only-v3c
+family: qwen3_5
+variant: normal
+intervention: none
+engine: dp
+attention: native
+execution: colocate_async
+native_context: 262144
+parent_checkpoint: ${oc.env:ARCHLAB_PARENT_CHECKPOINT}
+parent_stage: published_checkpoint
+parent_tokens: null
+publisher_manifest: ${oc.env:ARCHLAB_MODEL_MANIFEST}
+data_manifest: ${oc.env:ARCHLAB_CODE_DATA}/manifest.json
+resume_checkpoint: ${oc.env:ARCHLAB_RESUME_CHECKPOINT,null}
+maximum_policy_lag: 2
+settings:
+  actor_rollout_ref.actor.optim.optimizer: Adam
+  actor_rollout_ref.actor.optim.lr: 5.0e-06
+  actor_rollout_ref.actor.optim.betas:
+  - 0.9
+  - 0.95
+  actor_rollout_ref.actor.fsdp_config.fsdp_size: 8
+  actor_rollout_ref.actor.fsdp_config.use_torch_compile: false
+  actor_rollout_ref.actor.fsdp_config.strategy: fsdp2
+  actor_rollout_ref.actor.rollout_n: 4
+  actor_rollout_ref.actor.strategy: fsdp2
+  actor_rollout_ref.actor.ppo_mini_batch_size: 8
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.actor.ppo_max_token_len_per_gpu: 262144
+  actor_rollout_ref.actor.loss_agg_mode: prompt-mean
+  actor_rollout_ref.actor.calculate_entropy: true
+  actor_rollout_ref.actor.use_torch_compile: false
+  actor_rollout_ref.actor.entropy_from_logits_with_chunking: true
+  actor_rollout_ref.actor.entropy_from_logits_chunk_size: 16384
+  actor_rollout_ref.actor.use_remove_padding: false
+  actor_rollout_ref.actor.use_rollout_log_probs: true
+  actor_rollout_ref.ref.rollout_n: 4
+  actor_rollout_ref.ref.strategy: fsdp2
+  actor_rollout_ref.ref.use_torch_compile: false
+  actor_rollout_ref.ref.log_prob_max_token_len_per_gpu: 262144
+  actor_rollout_ref.rollout.name: vllm
+  actor_rollout_ref.rollout.top_k: 20
+  actor_rollout_ref.rollout.top_p: 0.95
+  actor_rollout_ref.rollout.prompt_length: 8192
+  actor_rollout_ref.rollout.response_length: 253952
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.75
+  actor_rollout_ref.rollout.tensor_model_parallel_size: 1
+  actor_rollout_ref.rollout.max_num_batched_tokens: 131072
+  actor_rollout_ref.rollout.max_model_len: 262144
+  actor_rollout_ref.rollout.max_num_seqs: 64
+  actor_rollout_ref.rollout.load_format: auto
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu: 262144
+  actor_rollout_ref.rollout.disable_log_stats: false
+  actor_rollout_ref.rollout.n: 8
+  actor_rollout_ref.rollout.engine_kwargs:
+    vllm:
+      model_impl: vllm
+      limit_mm_per_prompt:
+        image: 0
+        video: 0
+  actor_rollout_ref.rollout.val_kwargs:
+    'n': 1
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    do_sample: true
+  actor_rollout_ref.rollout.multi_turn.enable: true
+  actor_rollout_ref.rollout.multi_turn.format: qwen3_coder
+  actor_rollout_ref.rollout.agent.num_workers: 4
+  actor_rollout_ref.rollout.agent.agent_loop_manager_class: uni_agent.framework.entry.AgentFrameworkRolloutAdapter
+  actor_rollout_ref.rollout.trace.project_name: Qwen3.5 — agentic RL
+  actor_rollout_ref.rollout.trace.experiment_name: ${name}
+  actor_rollout_ref.rollout.prometheus.enable: true
+  actor_rollout_ref.rollout.prometheus.served_model_name: ${parent_checkpoint}
+  actor_rollout_ref.rollout.custom:
+    agent_framework:
+      gateway_count: 2
+      log_dir: ${oc.env:ARCHLAB_OUTPUT}/agents
+      mask_unfinished_episode: false
+      trajectory_validator: archlab.training.rollout.RolloutContract
+      ship_turn_index: false
+      repetition_detect:
+        enable: false
+      agent_runners:
+        mimoagent:
+          runner_fqn: recipes.code.mimoagent_runner.mimoagent_runner
+          dispatch_mode: ray_task
+          max_concurrent_sessions: 128
+          trajectory_selection: longest
+          session_timeout_seconds: 7200
+          agent_request_idle_timeout_seconds: 720
+          trajectory_timeout_by_dataset: {}
+  actor_rollout_ref.model.path: ${parent_checkpoint}
+  actor_rollout_ref.model.override_config:
+    attn_implementation: flash_attention_2
+  actor_rollout_ref.model.use_remove_padding: false
+  actor_rollout_ref.model.use_fused_kernels: true
+  data.train_files:
+  - ${oc.env:ARCHLAB_CODE_DATA}/train.parquet
+  data.val_files:
+  - ${oc.env:ARCHLAB_CODE_DATA}/validation.parquet
+  data.max_prompt_length: 8192
+  data.max_response_length: 253952
+  data.train_batch_size: 8
+  data.gen_batch_size: 1
+  data.val_batch_size: 2
+  data.seed: 42
+  data.dataloader_num_workers: 2
+  data.custom_cls.path: pkg://recipes.code.dataset
+  data.custom_cls.name: MimoAgentSWEDataset
+  data.apply_chat_template_kwargs:
+    enable_thinking: false
+  critic.rollout_n: 4
+  critic.ppo_mini_batch_size: 8
+  reward.custom_reward_function.path: pkg://recipes.code.reward
+  reward.reward_model.rollout.name: null
+  algorithm.rollout_correction.rollout_is: token
+  algorithm.adv_estimator: grpo
+  algorithm.norm_adv_by_std_in_grpo: false
+  algorithm.filter_groups.enable: true
+  algorithm.filter_groups.metric: reward
+  distillation.teacher_models.teacher_model.inference.name: vllm
+  distillation.teacher_models.teacher_model.inference.prompt_length: 16384
+  distillation.teacher_models.teacher_model.inference.response_length: 114688
+  transfer_queue.enable: true
+  transfer_queue.backend.SimpleStorage.num_data_storage_units: 2
+  trainer.total_epochs: 100
+  trainer.total_training_steps: 200
+  trainer.project_name: Qwen3.5 — agentic RL
+  trainer.experiment_name: ${name}
+  trainer.logger:
+  - console
+  - mlflow
+  trainer.save_freq: 5
+  trainer.resume_mode: ${oc.env:ARCHLAB_RESUME_MODE,disable}
+  trainer.resume_from_path: ${resume_checkpoint}
+  trainer.val_before_train: false
+  trainer.default_local_dir: ${oc.env:ARCHLAB_OUTPUT}/checkpoints
+  trainer.max_actor_ckpt_to_keep: 3
+  trainer.metrics_extension: archlab.training.metrics.step_metrics
+  trainer.v1.trainer_mode: colocate_async
+  trainer.v1.sampler.max_off_policy_threshold: 2
+  ray_kwargs.ray_init:
+    address: ${oc.env:ARCHLAB_RAY_ADDRESS,local}
+    runtime_env:
+      env_vars:
+        VERL_MFU_DEVICE_NAME: B300
+        TRANSFER_QUEUE_ENABLE: '1'
+        UNI_AGENT_RUNNER_TASK_NUM_CPUS: '0.03125'
+        MIXED_HARNESS_SPEC: ${oc.env:ARCHLAB_HARNESS_SPEC}
+        MIXED_HARNESS_MODE: prompt
+        E2B_DOMAIN: ${oc.env:E2B_DOMAIN}
+        ARCHLAB_E2B_KEY_FILE: ${oc.env:ARCHLAB_E2B_KEY_FILE}
+        ARCHLAB_E2B_TEMPLATE_MAP: ${oc.env:ARCHLAB_E2B_TEMPLATE_MAP}
+        TRITON_PTXAS_PATH: ${oc.env:TRITON_PTXAS_PATH,/usr/local/cuda/bin/ptxas}
+        TRITON_PTXAS_BLACKWELL_PATH: ${oc.env:TRITON_PTXAS_PATH,/usr/local/cuda/bin/ptxas}
+        ARCHLAB_DLC_SANDBOX_POOL: ${oc.env:ARCHLAB_DLC_SANDBOX_POOL}
+  actor_rollout_ref.actor.use_fused_kernels: false
+  actor_rollout_ref.actor.fsdp_config.entropy_from_logits_chunk_size: 2048
+  actor_rollout_ref.actor.fsdp_config.entropy_from_logits_with_chunking: false
+  critic.loss_agg_mode: token-mean

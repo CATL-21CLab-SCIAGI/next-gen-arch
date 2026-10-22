@@ -29,9 +29,13 @@
       {
         "path": "scripts/patches/verl/0008-preserve-truncated-agent-status.patch",
         "sha256": "dc8afdc6c38d247947cb61742b252308822531436cccca5663e043e8a036bf42"
+      },
+      {
+        "path": "scripts/patches/verl/0009-padding-without-fa2-extension.patch",
+        "sha256": "d14992802576bcc23178d6eb6d6baac9a46a8eaf249ee2e9cb508cf81f66a317"
       }
     ],
-    "working_diff_sha256": "871c59f032584f896007218326566a94e56744bb8ec9d778a21637257704b02d",
+    "working_diff_sha256": "72277bea867c8e59a03576e5c4d068ddede80ecc79ed350ffe32d4ff74a04a05",
     "url": "https://github.com/XiaomiMiMo/verl.git",
     "path": "third_party/verl",
     "runtime": "Primary agentic RL engine and monitoring; native Limite learner and serving integration remain under GPU qualification. Agent execution requires an authorized sandbox.",
@@ -58,9 +62,13 @@
           {
             "path": "scripts/patches/uni-agent/0005-preserve-length-finish-reason.patch",
             "sha256": "4d403ee7e5eac20d8215e5b4a85f94fadc3913c47b5d43ebf51e7b9da83318e4"
+          },
+          {
+            "path": "scripts/patches/uni-agent/0006-native-muse-codec.patch",
+            "sha256": "7a6d09d19d7fbebb9becf3b43a070d2f833441105d0f508ceecb93729ad195f6"
           }
         ],
-        "working_diff_sha256": "2503db165894e8cbda17a94052e867ef1d950ce8b854a94433973b67ed3fd15f",
+        "working_diff_sha256": "2ecbeea61857dc610e2e3173373765a8ee7b5c6d97b06f058dbc153e83d1456c",
         "path": "third_party/uni_agent",
         "url": "https://github.com/XiaomiMiMo/uni-agent.git"
       },

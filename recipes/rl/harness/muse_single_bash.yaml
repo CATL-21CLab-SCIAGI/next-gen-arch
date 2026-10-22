@@ -1,0 +1,3 @@
+harnesses:
+  - label: muse-native-code-bash
+    config: muse_code_bash.yaml

@@ -2,7 +2,6 @@
 
 import copy
 import json
-import math
 from types import SimpleNamespace
 
 import pytest
@@ -11,11 +10,9 @@ from torch import nn
 
 from archlab.architectures.limite_adapter import backbone_state, set_trainable_mode
 from archlab.automodel import limite_adapter_common as common
-from archlab.automodel.limite_adapter_communication import check_warmup_resume
 from archlab.optimizers.limite_warmup import (
     FullWeightWarmupAdamW,
     build_warmup_optimizer,
-    warmup_learning_rates,
 )
 
 
@@ -218,58 +215,6 @@ def test_native_to_tilelang_migration_is_explicit_and_preserves_weights(tmp_path
     assert full.model.adapter_config["attention_backend"] == "tilelang"
     for name, parameter in full.state_dict().items():
         torch.testing.assert_close(parameter, model.state_dict()[name], atol=0, rtol=0)
-
-
-def test_full_resume_retains_phase_origin_and_refuses_budget_or_lr_changes():
-    schedule = dict(
-        target_tokens=10_000_000_000,
-        adapter_peak_lr=1e-4,
-        adapter_warmup_steps=100,
-        backbone_peak_lr=1e-5,
-        backbone_warmup_steps=100,
-        full_weight_start_step=7630,
-        full_weight_start_tokens=2_000_158_720,
-        source_2b_checkpoint="matched-2B",
-    )
-    prior = dict(
-        trainable_mode="full",
-        global_batch=128,
-        context=2048,
-        data_contract="sealed",
-        warmup_schedule=schedule,
-    )
-    check_warmup_resume(
-        prior,
-        global_batch=128,
-        context=2048,
-        data_contract="sealed",
-        warmup_schedule=copy.deepcopy(schedule),
-    )
-    first = warmup_learning_rates(7630, 2_000_158_720, schedule)[1]
-    resumed = warmup_learning_rates(15260, 4_000_317_440, json.loads(json.dumps(schedule)))[1]
-    assert first == pytest.approx(1e-7)
-    assert resumed > first * 50
-    for step, tokens in ((7630, 2_000_158_720), (15260, 4_000_317_440), (30520, 8_000_634_880)):
-        original_adapter_lr = (
-            1e-4
-            * min(1.0, (step + 1) / 100)
-            * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * tokens / 10_000_000_000)))
-        )
-        assert warmup_learning_rates(step, tokens, schedule)[0] == original_adapter_lr
-    for key, value in (
-        ("target_tokens", 12_000_000_000),
-        ("backbone_peak_lr", 1e-4),
-        ("full_weight_start_step", 15260),
-    ):
-        changed = dict(schedule, **{key: value})
-        with pytest.raises(ValueError, match="budget or learning-rate schedule"):
-            check_warmup_resume(
-                prior,
-                global_batch=128,
-                context=2048,
-                data_contract="sealed",
-                warmup_schedule=changed,
-            )
 
 
 @pytest.mark.slow

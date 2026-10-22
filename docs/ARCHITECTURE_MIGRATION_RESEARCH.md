@@ -134,7 +134,7 @@ single-pair observations motivate studying the training phase; they do not
 establish a general degradation law. Historical dropped document endings and
 repetition also affect how much RL must repair before it can improve reasoning.
 
-The [current RL contract](../recipes/limite/full_math_rl_native_context.yaml)
+The [historical RL contract](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/full_math_rl_native_context.yaml)
 restarts from each variant's 10B weights and permits the native 131,072-token
 context minus the actual prompt. Both inherit the same historical SFT recipe.
 Finite gradients and correct probability accounting qualify execution; they

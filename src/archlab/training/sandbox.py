@@ -11,9 +11,9 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
-from archlab.artifacts import sha256_file
+from archlab.artifacts import sha256_file, transfer_plan
 
 
 def _env(name):
@@ -176,21 +176,7 @@ class E2BEnvironment:
         """
         if self.sandbox is None:
             raise RuntimeError("sandbox is not started")
-        source = Path(src_path)
-        if source.is_file():
-            directories = []
-            files = [(source, dest_path + source.name if dest_path.endswith("/") else dest_path)]
-        elif source.is_dir() and not source.is_symlink():
-            entries = sorted(source.rglob("*"))
-            if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in entries):
-                raise ValueError("directory transfer supports regular files and directories only")
-            destination = PurePosixPath(dest_path)
-            directories = [destination, *(destination / path.relative_to(source)
-                            for path in entries if path.is_dir())]
-            files = [(path, str(destination / path.relative_to(source)))
-                     for path in entries if path.is_file()]
-        else:
-            raise ValueError("transfer source must be a file or regular directory")
+        directories, files = transfer_plan(src_path, dest_path)
         failure = None
         try:
             for directory in directories:

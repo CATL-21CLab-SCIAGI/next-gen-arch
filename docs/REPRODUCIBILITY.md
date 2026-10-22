@@ -16,15 +16,13 @@ Use the existing validated GPU runtime. Development setup is in [the contributio
 
 ## Inspect frozen evidence
 
+The frozen manifest remains in `src/archlab/data/parameter-scale-100m-1b-v1-manifest.json`. Its library reader is retained:
+
 ```bash
-PYTHONPATH=src python -m archlab.cli verify
-PYTHONPATH=src python -m archlab.cli show --size 100m --variant engram --seed 42
-PYTHONPATH=src python -m archlab.cli render \
-  --config recipes/reference/speedrun_100m.yaml#qwen_gdn \
-  --path data_root=/path/to/prepared/data
+PYTHONPATH=src python -c 'from archlab.registry import verify_manifest; print(verify_manifest())'
 ```
 
-The frozen manifest includes historical checkpoint flags. Use the research-policy recipe for a new reportable run.
+Historical commands and checkpoint flags belong to the recorded source revision. The maintained RL workflow is documented in the [training guide](TRAINING.md); see the [retirement boundary](wiki/Code-Map.md#retirement-boundary) before using an old launcher.
 
 ## Backend reproduction
 

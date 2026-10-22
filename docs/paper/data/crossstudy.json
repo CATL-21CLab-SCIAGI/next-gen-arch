@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "evidence_extracted_date": "2026-10-13",
+  "qwen": {
+    "label": "Qwen-style W320 pilot",
+    "training_tokens": 3003121664,
+    "seed": 42,
+    "validation_targets": 131072,
+    "arms": {
+      "global": {
+        "ce": 3.663524866104126,
+        "parameters": 387680960
+      },
+      "local": {
+        "ce": 3.6414647102355957,
+        "parameters": 387680960
+      },
+      "simplicial": {
+        "ce": 3.649627447128296,
+        "parameters": 387926912
+      }
+    },
+    "limitations": [
+      "Ordinary partial RoPE on Q/K1/K2; not a relative-position-invariant trilinear formulation.",
+      "One seed; prefix of longer learning-rate schedule."
+    ]
+  },
+  "deepseek": [
+    {
+      "id": "frozen",
+      "label": "Frozen adapters",
+      "training_tokens": 50119869,
+      "normal": 0.798750225982666,
+      "simplicial": 0.8001211503448487,
+      "validation_targets": 1000000,
+      "ci_delta": null,
+      "status": "matched 307-update endpoint"
+    },
+    {
+      "id": "full",
+      "label": "Full continuation",
+      "training_tokens": 756364650,
+      "normal": 0.7009004339996642,
+      "simplicial": 0.7018952912945433,
+      "validation_targets": 1000000,
+      "ci_delta": [
+        0.0007454409431927814,
+        0.0012692670075858297
+      ],
+      "ci_method": "paired percentile bootstrap clustered by exact problem hash",
+      "problem_clusters": 162,
+      "bootstrap_replicates": 10000,
+      "bootstrap_seed": 20260915,
+      "status": "final common checkpoint; planned 1B budget not completed"
+    },
+    {
+      "id": "original_scratch",
+      "label": "Original scratch",
+      "training_tokens": 240875236,
+      "normal": 4.122233340290406,
+      "simplicial": 4.160267787740116,
+      "validation_targets": 1000000,
+      "ci_delta": null,
+      "status": "early stop at 2.41% of planned 10B budget"
+    }
+  ],
+  "delta_definition": "simplicial minus ordinary attention within each study; lower favors simplicial",
+  "limitations": [
+    "Distinct data, models and training phases: absolute cross-entropies must not be pooled.",
+    "One training pair per study; evaluation-sample confidence intervals do not estimate training-seed variation."
+  ],
+  "sources": [
+    {
+      "path": "results/simplicial-dlc-pilots-20260906-5072d1d/A/metrics.jsonl",
+      "bytes": 141513,
+      "sha256": "19190aa781e2114270c10c6c4aa3a706384f175e52c384486dac7550b15bcd4a"
+    },
+    {
+      "path": "results/simplicial-dlc-pilots-20260906-5072d1d/B/metrics.jsonl",
+      "bytes": 141513,
+      "sha256": "83dd0dc55c1aaeddf772cd870f4e4aff852ea29f4904a4c13206f457510197ae"
+    },
+    {
+      "path": "results/simplicial-dlc-pilots-20260906-5072d1d/C/metrics.jsonl",
+      "bytes": 141539,
+      "sha256": "3fadaf3c84269734c2f33d55f9b5f8a44ad7f107dbb48bc7d4fc6b908570d2d7"
+    },
+    {
+      "path": "results/deepseek-v41-normal-control-20260914/production-v1/validation.jsonl",
+      "bytes": 1526,
+      "sha256": "0e3fb56cdaa382001e8ccf8465bd8ca7e0ad9610afbe0293986f3ebeede9456c"
+    },
+    {
+      "path": "results/deepseek-v41-official-20260914/production-v8/validation.jsonl",
+      "bytes": 2296,
+      "sha256": "4ffaebdb47ad303f2fef8822421466f2104ef4b237cb4477232ba66d367f2d5f"
+    },
+    {
+      "path": "results/deepseek-v41-full-comparison-20260914/evaluation-windows/normal-004537-simplicial-004537-6da75dbb/HELDOUT_MATH.json",
+      "bytes": 5906,
+      "sha256": "1ca0cac66aaecb38012e3f73523a6d4ce60287fdafb27f0257a30da4dfe199c4"
+    },
+    {
+      "path": "results/deepseek-v41-scratch-w640-d20-20260915/eval-matched-240m-v2/COMPARISON.json",
+      "bytes": 4903,
+      "sha256": "99d0cc532ff658e7a4c48dd55ace7a6fcd851a2739864d3e5177a11de05212f8"
+    }
+  ]
+}

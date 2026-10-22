@@ -1,0 +1,4 @@
+# Original v3c placement; shared recipe uses batch 8 and the full 113-task pool.
+settings:
+  ray_kwargs.ray_init:
+    num_cpus: 32

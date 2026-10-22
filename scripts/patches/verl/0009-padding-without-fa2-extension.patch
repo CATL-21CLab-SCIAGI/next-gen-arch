@@ -1,0 +1,20 @@
+diff --git a/verl/utils/attention_utils.py b/verl/utils/attention_utils.py
+index ae66e537c40ce11ca2873e00b1db4a6453455547..273d5d71378c8be12c2e0fa3ea1b7166be276d4f 100644
+--- a/verl/utils/attention_utils.py
++++ b/verl/utils/attention_utils.py
+@@ -27,7 +27,14 @@ def _get_attention_functions() -> tuple[Callable, Callable, Callable, Callable]:
+     if is_torch_npu_available(check_device=False):
+         from verl.utils.npu_flash_attn_utils import index_first_axis, pad_input, rearrange, unpad_input
+     else:
+-        from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
++        try:
++            from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
++        except ModuleNotFoundError as error:
++            if error.name not in {"flash_attn", "flash_attn.bert_padding"}:
++                raise
++            # FA3/FA4 do not require the FA2 extension. These existing helpers
++            # are pure PyTorch and preserve padding/autograd on CUDA as well.
++            from verl.utils.npu_flash_attn_utils import index_first_axis, pad_input, rearrange, unpad_input
+ 
+     _index_first_axis, _pad_input, _rearrange, _unpad_input = index_first_axis, pad_input, rearrange, unpad_input
+ 

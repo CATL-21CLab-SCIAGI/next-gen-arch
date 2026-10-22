@@ -1,0 +1,448 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-10-13",
+  "scope": "Sanitized historical methods evidence for the academic manuscript; no new model execution or GPU qualification.",
+  "source_path_base": "repository root; results receipts remain in private team storage",
+  "tail_eos": {
+    "source": "tail_eos",
+    "sampling_method": "64 evenly spaced shard prefixes; metadata window arithmetic over their documents; direct binary checks of up to the first 16 terminal windows per prefix.",
+    "sampled_prefixes": 64,
+    "total_prefixes": 2533,
+    "counts": {
+      "documents": 112773,
+      "tokens": 861933705,
+      "training_targets": 743170048,
+      "long_documents": 83403,
+      "short_documents": 29370,
+      "terminal_eos_position_retained_assuming_penultimate": 104,
+      "last_token_retained": 53,
+      "targets_dropped": 118650884,
+      "sampled_actual_terminal_eos": 1003,
+      "sampled_actual_terminal_eos_target_retained": 4
+    },
+    "metadata_estimate": {
+      "retained_terminal_eos_positions": 104,
+      "long_documents": 83403,
+      "assumption": "EOS is at the penultimate token position; this is not an exhaustive binary EOS check."
+    },
+    "direct_binary_check": {
+      "actual_terminal_eos_observed": 1003,
+      "actual_terminal_eos_targets_retained": 4
+    },
+    "limitations": [
+      "The sampled prefixes include both training and validation prefixes.",
+      "The sampling was evenly spaced, not a randomized population sample.",
+      "The audit identifies missing ending supervision; it does not establish causality for repetition or reasoning outcomes."
+    ]
+  },
+  "numerical_validation": {
+    "hardware": "NVIDIA B300",
+    "source": "prototype_oracle",
+    "operator": "joint-normalized windowed 2-simplicial attention",
+    "reference": "independent FP32 attention oracle",
+    "relative_l2_definition": "norm(actual.float() - expected.float()) / max(norm(expected.float()), 1e-6)",
+    "acceptance_bounds": {
+      "output_relative_l2_less_than": 0.005,
+      "each_used_input_gradient_relative_l2_less_than": 0.01,
+      "source": "oracle_acceptance_test",
+      "source_lines": [
+        33,
+        35,
+        95,
+        101
+      ]
+    },
+    "cases": [
+      {
+        "short_axis_tile": 16,
+        "short_window": 1,
+        "long_window": 1,
+        "sequence_length": 17,
+        "output_relative_l2": 0.0,
+        "output_max_absolute_error": 0.0,
+        "input_gradient_relative_l2_in_recorded_order": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0023369076661765575
+        ],
+        "maximum_input_gradient_relative_l2": 0.0023369076661765575
+      },
+      {
+        "short_axis_tile": 16,
+        "short_window": 16,
+        "long_window": 17,
+        "sequence_length": 33,
+        "output_relative_l2": 0.0011812488082796335,
+        "output_max_absolute_error": 0.011543750762939453,
+        "input_gradient_relative_l2_in_recorded_order": [
+          0.004064683336764574,
+          0.0042100707069039345,
+          0.004133690148591995,
+          0.0019945709500461817,
+          0.0028658208902925253
+        ],
+        "maximum_input_gradient_relative_l2": 0.0042100707069039345
+      },
+      {
+        "short_axis_tile": 16,
+        "short_window": 16,
+        "long_window": 1025,
+        "sequence_length": 2048,
+        "output_relative_l2": 0.000432441767770797,
+        "output_max_absolute_error": 0.0020571351051330566,
+        "input_gradient_relative_l2_in_recorded_order": [
+          0.003923598676919937,
+          0.004234014078974724,
+          0.004509349819272757,
+          0.000681770674418658,
+          0.0025600790977478027
+        ],
+        "maximum_input_gradient_relative_l2": 0.004509349819272757
+      },
+      {
+        "short_axis_tile": 16,
+        "short_window": 16,
+        "long_window": 2048,
+        "sequence_length": 2048,
+        "output_relative_l2": 0.0004104402905795723,
+        "output_max_absolute_error": 0.0023148655891418457,
+        "input_gradient_relative_l2_in_recorded_order": [
+          0.0036042167339473963,
+          0.0037396170664578676,
+          0.004070035647600889,
+          0.0007104427204467356,
+          0.002717388793826103
+        ],
+        "maximum_input_gradient_relative_l2": 0.004070035647600889
+      }
+    ],
+    "fresh_adapter_admissions": [
+      {
+        "variant": "normal",
+        "source": "normal_admission",
+        "passed": true,
+        "attention_backend": "tilelang",
+        "initial_output_error": 0.0,
+        "frozen_parent_sha256": "a97f9b7303a1b207db924956c7a180f7604b6caeb7f61d873a756ec1b8b8d126",
+        "trainable_parameters": 188806080,
+        "frozen_parameters": 1035254176,
+        "updates": [
+          {
+            "loss": 0.030509909614920616,
+            "gradient_norm": 0.4120340049266815
+          },
+          {
+            "loss": 0.027036799117922783,
+            "gradient_norm": 0.36815086007118225
+          },
+          {
+            "loss": 0.024164296686649323,
+            "gradient_norm": 0.7231627106666565
+          }
+        ],
+        "checkpoint_restore_exact": true
+      },
+      {
+        "variant": "simplicial",
+        "source": "simplicial_admission",
+        "passed": true,
+        "attention_backend": "tilelang",
+        "initial_output_error": 0.0,
+        "frozen_parent_sha256": "a97f9b7303a1b207db924956c7a180f7604b6caeb7f61d873a756ec1b8b8d126",
+        "trainable_parameters": 220263360,
+        "frozen_parameters": 1035254176,
+        "updates": [
+          {
+            "loss": 0.030509909614920616,
+            "gradient_norm": 0.3109927177429199
+          },
+          {
+            "loss": 0.027876878157258034,
+            "gradient_norm": 0.3108005225658417
+          },
+          {
+            "loss": 0.022408248856663704,
+            "gradient_norm": 0.23618806898593903
+          }
+        ],
+        "checkpoint_restore_exact": true
+      }
+    ],
+    "limitations": [
+      "These historical prototype and fresh-adapter checks are distinct from the executed warmup checkpoints and full training outcomes.",
+      "No GPU check was rerun for manuscript preparation.",
+      "The reference bounds are relative norm bounds, not per-element tolerances or guarantees for untested shapes and backends."
+    ]
+  },
+  "aime_provenance": {
+    "dataset": {
+      "repository": "MathArena/aime_2026",
+      "revision": "d2de22f3c656b4f56cf8981212186377d1e23bc3",
+      "filename": "data/train-00000-of-00001.parquet",
+      "split": "train (published exam set)",
+      "problems": 30,
+      "source": "aime_code",
+      "source_lines": [
+        35,
+        39
+      ]
+    },
+    "sampling": {
+      "responses_per_problem": 4,
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "total_context_tokens": 131072,
+      "completion_budget": "131072 minus actual prompt token count",
+      "paired_seed_by_problem_and_sample": true,
+      "protocol_source": "evidence_audit"
+    },
+    "grader": {
+      "name": "math-verify",
+      "recorded_version": "0.8.0",
+      "source": "aime_code",
+      "source_lines": [
+        92,
+        106
+      ],
+      "implementation_source": "grader_code",
+      "score": "symbolic final-answer correctness after closed reasoning",
+      "reasoning_text_not_mined_for_answer": true,
+      "natural_eos_required_for_correctness": false,
+      "context_exhaustion_recorded_separately": true,
+      "version_provenance": "Historical grading contract recorded in the evaluation source; not a measurement of the current installed package."
+    },
+    "metric": "mean response correctness (pass@1), averaging four responses within each of 30 problems",
+    "warmup_marginal_interval": {
+      "method": "percentile bootstrap of problem-level mean correctness",
+      "draws": 10000,
+      "seed": 20261002,
+      "source": "aime_code",
+      "source_lines": [
+        141,
+        172
+      ]
+    },
+    "paired_interval": {
+      "method": "percentile bootstrap of paired problem-level mean correctness differences; all four responses remain together",
+      "draws": 100000,
+      "seed": 20261008,
+      "quantiles": [
+        0.025,
+        0.975
+      ],
+      "source": "paired_effects",
+      "algorithm_source": "paired_bootstrap_code",
+      "metadata_source": "paired_metadata_snapshot",
+      "verified_against_existing_aggregate": true,
+      "verification": "Recomputed from the existing stripped metadata snapshot, using correctness and problem identifiers only; no raw completion text was read or emitted.",
+      "comparisons": [
+        {
+          "left": "sft-simplicial-10B",
+          "right": "sft-normal-10B",
+          "difference_percentage_points": 5.0,
+          "paired_problem_bootstrap_95pct_percentage_points": [
+            -1.6666666666666667,
+            11.666666666666666
+          ],
+          "problems_left_higher": 7,
+          "problems_tied": 21,
+          "problems_left_lower": 2,
+          "left_correct_responses": 25,
+          "right_correct_responses": 19,
+          "responses_per_model": 120
+        },
+        {
+          "left": "sft-simplicial-2B",
+          "right": "sft-normal-2B",
+          "difference_percentage_points": 1.6666666666666667,
+          "paired_problem_bootstrap_95pct_percentage_points": [
+            -5.833333333333333,
+            9.166666666666666
+          ],
+          "problems_left_higher": 6,
+          "problems_tied": 20,
+          "problems_left_lower": 4,
+          "left_correct_responses": 27,
+          "right_correct_responses": 25,
+          "responses_per_model": 120
+        },
+        {
+          "left": "sft-simplicial-4B",
+          "right": "sft-normal-4B",
+          "difference_percentage_points": 3.3333333333333335,
+          "paired_problem_bootstrap_95pct_percentage_points": [
+            -4.166666666666666,
+            11.666666666666666
+          ],
+          "problems_left_higher": 5,
+          "problems_tied": 21,
+          "problems_left_lower": 4,
+          "left_correct_responses": 25,
+          "right_correct_responses": 21,
+          "responses_per_model": 120
+        },
+        {
+          "left": "sft-simplicial-6B",
+          "right": "sft-normal-6B",
+          "difference_percentage_points": 0.8333333333333334,
+          "paired_problem_bootstrap_95pct_percentage_points": [
+            -8.333333333333332,
+            9.166666666666666
+          ],
+          "problems_left_higher": 8,
+          "problems_tied": 18,
+          "problems_left_lower": 4,
+          "left_correct_responses": 22,
+          "right_correct_responses": 21,
+          "responses_per_model": 120
+        },
+        {
+          "left": "rl-simplicial-final-step400",
+          "right": "rl-normal-final-step400",
+          "difference_percentage_points": 8.333333333333332,
+          "paired_problem_bootstrap_95pct_percentage_points": [
+            0.0,
+            18.333333333333332
+          ],
+          "problems_left_higher": 7,
+          "problems_tied": 20,
+          "problems_left_lower": 3,
+          "left_correct_responses": 25,
+          "right_correct_responses": 15,
+          "responses_per_model": 120
+        },
+        {
+          "left": "sft-simplicial-10B",
+          "right": "base-full-context",
+          "difference_percentage_points": 16.666666666666664,
+          "paired_problem_bootstrap_95pct_percentage_points": [
+            8.333333333333332,
+            25.833333333333336
+          ],
+          "problems_left_higher": 12,
+          "problems_tied": 17,
+          "problems_left_lower": 1,
+          "left_correct_responses": 25,
+          "right_correct_responses": 5,
+          "responses_per_model": 120
+        },
+        {
+          "left": "rl-normal-final-step400",
+          "right": "sft-normal-10B",
+          "difference_percentage_points": -3.3333333333333335,
+          "paired_problem_bootstrap_95pct_percentage_points": [
+            -11.666666666666666,
+            4.166666666666666
+          ],
+          "problems_left_higher": 4,
+          "problems_tied": 20,
+          "problems_left_lower": 6,
+          "left_correct_responses": 15,
+          "right_correct_responses": 19,
+          "responses_per_model": 120
+        },
+        {
+          "left": "rl-simplicial-final-step400",
+          "right": "sft-simplicial-10B",
+          "difference_percentage_points": 0.0,
+          "paired_problem_bootstrap_95pct_percentage_points": [
+            -10.833333333333334,
+            10.0
+          ],
+          "problems_left_higher": 6,
+          "problems_tied": 18,
+          "problems_left_lower": 6,
+          "left_correct_responses": 25,
+          "right_correct_responses": 25,
+          "responses_per_model": 120
+        }
+      ]
+    },
+    "limitations": [
+      "Intervals condition on the recorded checkpoints and assess evaluation-problem uncertainty, not training-seed variability.",
+      "Historical Base evaluation is zero-shot and does not reproduce the publisher current few-shot Base protocol.",
+      "Historical RL400 comparisons have different applied-update histories."
+    ]
+  },
+  "sources": [
+    {
+      "id": "tail_eos",
+      "path": "results/limite-sft-curve-eval-20261006/SFT_TAIL_EOS_AUDIT-20261007.json",
+      "bytes": 7060,
+      "sha256": "9cfff8909fc771fb40d1062026ddd219cb344eaa3a3f9b3fa9c42c8362675992",
+      "public_source": false
+    },
+    {
+      "id": "prototype_oracle",
+      "path": "results/limite-tilelang-comparison-20260930/qualification/PROTOTYPE_ORACLE.json",
+      "bytes": 1357,
+      "sha256": "0f8f0f03865c84039d4ab84acb598ab47598258fea69fa76a15a7c923399ca91",
+      "public_source": false
+    },
+    {
+      "id": "normal_admission",
+      "path": "results/limite-tilelang-comparison-20260930/qualification/admission-normal/QUALIFIED.json",
+      "bytes": 769,
+      "sha256": "cd85f6f9ae9383602a726576e46cb1c2d0b9ca8fae2a1a55c8a0140c7f1755eb",
+      "public_source": false
+    },
+    {
+      "id": "simplicial_admission",
+      "path": "results/limite-tilelang-comparison-20260930/qualification/admission-simplicial/QUALIFIED.json",
+      "bytes": 772,
+      "sha256": "020b896e21515e55aa8b2658d8b170ee356c9572067549524f34d298eb728ea9",
+      "public_source": false
+    },
+    {
+      "id": "aime_code",
+      "path": "src/archlab/evaluation/limite_math.py",
+      "bytes": 10028,
+      "sha256": "9f22b1b44dafda3586305d971bba35b980312195edb1af7776651b18ad2d5884",
+      "public_source": true
+    },
+    {
+      "id": "grader_code",
+      "path": "src/archlab/evaluation/math_reward.py",
+      "bytes": 2923,
+      "sha256": "cef3c8d85a45f62f3a7354cbcc2861b76bee9f61960fc8e9de367c617ff42c97",
+      "public_source": true
+    },
+    {
+      "id": "oracle_acceptance_test",
+      "path": "tests/test_tilelang_attention.py",
+      "bytes": 11302,
+      "sha256": "12be644f12db9c3dc2b4732545871409bfad0685e23e855599a77757d27b9f45",
+      "public_source": true
+    },
+    {
+      "id": "paired_effects",
+      "path": "results/limite-deck-audit-20261009/refreshed-report/data/paired-effects.csv",
+      "bytes": 987,
+      "sha256": "0601d5dbe8f78bdf2c3d72fc5ccb03d6027196e0f701e033a11992aa3f92af4a",
+      "public_source": false
+    },
+    {
+      "id": "paired_bootstrap_code",
+      "path": "results/limite-deck-audit-20261009/refreshed-report/build_report.py",
+      "bytes": 46537,
+      "sha256": "f2ac74d8936f90b85cf92bee0dedc5ecbd028bfc9142810ad9fe8ed9b7e37078",
+      "public_source": false
+    },
+    {
+      "id": "paired_metadata_snapshot",
+      "path": "results/limite-deck-audit-20261009/refreshed-report/snapshot.json",
+      "bytes": 2666480,
+      "sha256": "6d0bf3ef0c1a17140eb7458f6c147da85742899a61fd1cd042c0c7ee87ef07c3",
+      "public_source": false
+    },
+    {
+      "id": "evidence_audit",
+      "path": "results/limite-deck-audit-20261009/refreshed-report/data/evidence-audit.json",
+      "bytes": 44269,
+      "sha256": "8b77a997c65c7e31f1b0d13ccbed387b9537947b9952e6288ba52f96c4f87acf",
+      "public_source": false
+    }
+  ]
+}

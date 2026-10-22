@@ -6,11 +6,11 @@ set -euo pipefail
 : "${MASTER_ADDR:?PAI DLC must inject MASTER_ADDR}"
 : "${MASTER_PORT:?PAI DLC must inject MASTER_PORT}"
 
-NGA_REPO_ROOT="${NGA_REPO_ROOT:-/mnt/nas/evergreen/next-gen-arch-repo}"
+NGA_REPO_ROOT="${NGA_REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}"
 NGA_EXPECTED_COMMIT="${NGA_EXPECTED_COMMIT:?set the immutable next-gen-arch commit}"
-NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/fineweb-edu-100b-qwen38-de4b8e4d43b9}"
+NGA_DATA_ROOT="${NGA_DATA_ROOT:-/mnt/oss/datasets/tokenized/fineweb-edu-100b-qwen38-de4b8e4d43b9}"
 NGA_TOKENIZER="${NGA_TOKENIZER:-/mnt/oss/models/qwen38-flash-next-de4b8e4d43b9}"
-NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/nas/evergreen/next-gen-arch/qwen38-27b-quarter-bf16-fp32muon-fineweb100b-seed42}"
+NGA_OUTPUT_ROOT="${NGA_OUTPUT_ROOT:-/mnt/oss/evergreen/runs/arch/next-gen-arch--qwen38-27b-quarter-bf16-fp32muon-fineweb100b-seed42}"
 NGA_PYTHON="${NGA_PYTHON:-/opt/venv/bin/python}"
 source "$(dirname "$0")/lib/dlc_runtime.sh"
 case "$NGA_OUTPUT_ROOT" in
