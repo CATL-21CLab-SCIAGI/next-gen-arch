@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,6 +20,12 @@ from archlab.artifacts import sha256_file, transfer_plan
 
 def _env(name):
     return field(default_factory=lambda: os.environ.get(name, ""))
+
+
+def _capacity_refusal(error):
+    """True for pool-capacity refusals (HTTP 503 insufficient resources, 429 rate limit)."""
+    text = str(error)
+    return any(marker in text for marker in ("503", "429", "insufficient resources"))
 
 
 def _infrastructure_failure(operation, error):
@@ -99,6 +107,7 @@ class E2BEnvironmentConfig:
     api_key_file: str = _env("ARCHLAB_E2B_KEY_FILE")
     domain: str = _env("E2B_DOMAIN")
     user: str = "root"
+    capacity_wait_seconds: float = 1800.0
 
 
 class E2BEnvironment:
@@ -125,16 +134,28 @@ class E2BEnvironment:
         # The key stays in the parent-side SDK; task environments never receive it.
         key = Path(config.api_key_file).read_text().strip() if config.api_key_file else None
         failure = None
+        deadline = time.monotonic() + config.capacity_wait_seconds
+        delay = 15.0
         try:
-            self.sandbox = Sandbox.create(
-                template=entry["template_id"], timeout=config.sandbox_timeout,
-                domain=config.domain or None, api_key=key, allow_internet_access=False,
-                envs={"PIP_NO_INDEX": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1",
-                      "UV_OFFLINE": "1"},
-                request_timeout=60, metadata={"purpose": "archlab-code-rl"},
-            )
-        except Exception as error:
-            failure = _infrastructure_failure("create", error)
+            while True:
+                try:
+                    self.sandbox = Sandbox.create(
+                        template=entry["template_id"], timeout=config.sandbox_timeout,
+                        domain=config.domain or None, api_key=key, allow_internet_access=False,
+                        envs={"PIP_NO_INDEX": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+                              "UV_OFFLINE": "1"},
+                        request_timeout=60, metadata={"purpose": "archlab-code-rl"},
+                    )
+                    break
+                except Exception as error:
+                    # A shared pool refusing for capacity (503/429) is transient: wait for a slot
+                    # within a bounded budget. Every other failure stays an infrastructure error.
+                    if _capacity_refusal(error) and time.monotonic() + delay < deadline:
+                        time.sleep(delay * (0.5 + random.random()))
+                        delay = min(delay * 2, 120.0)
+                        continue
+                    failure = _infrastructure_failure("create", error)
+                    break
         finally:
             del key
         if failure is not None:

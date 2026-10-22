@@ -134,6 +134,17 @@ archlab resolve recipes/rl/limite_code.yaml --output "$ARCHLAB_OUTPUT"
 archlab train recipes/rl/limite_code.yaml --output "$ARCHLAB_OUTPUT"
 ```
 
+### CPU-DLC sandbox backend
+
+When the E2B pools refuse capacity, `archlab.training.dlc_sandbox.DLCEnvironment` serves the same MiMo environment contract from CPU DLC pods. Select it with the harness `environment_class` and set `ARCHLAB_DLC_SANDBOX_POOL` to the directory where pool servers announce themselves.
+
+- Each pod runs `python -m archlab.training.dlc_sandbox serve <images> <pool>`.
+- Each sandbox is a rootless user/mount/pid/network namespace. Its root is an overlay of the task image, with `userxattr` and a private tmpfs upper layer.
+- Sandboxes have loopback only and use E2B's login shell and offline pip/uv variables. A full pod answers 503, so clients wait for capacity exactly as with E2B.
+- Images are root filesystems exported on DLC from the private mirror tags, stored under `<images>/exports/<digest>.tar.gz`. `configs` fetches the digest-verified image configs.
+- Admission evidence is the per-task comparison against the E2B runtime receipts: base commit, verifier return code and baseline reward. Separately, exports are compared with the publisher layers.
+- Command timeouts return code 124 with partial output, as upstream's Kubernetes environment does; transport failures abort the session. Unlike E2B, `/proc` is the pod's (bound, not remounted): other processes' command lines are visible, while their environments, roots and signals are not reachable.
+
 `train` performs admission once and starts verl only after it passes. Use `qualify` instead when you want the checks without starting production; running both commands repeats the live checks.
 
 Install the project and the pinned verl/agent packages in an isolated environment that reuses the container's GPU runtime. Agent workers must import the same checkout and patches. Supply MLflow configuration through its standard environment variables; never put credentials in recipes or resolved artifacts. A functioning isolated task-container service is required. Dataset indexing alone does not qualify the agent loop.

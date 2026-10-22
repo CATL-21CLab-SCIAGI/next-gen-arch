@@ -1,0 +1,224 @@
+From 9c7643648f1e1e109dd30da2da3cf94e1317b229 Mon Sep 17 00:00:00 2001
+From: Eric Marcus <eric.marcus@kaiko.ai>
+Date: Mon, 31 Aug 2026 16:27:59 +0200
+Subject: [PATCH] [vllm, rollout] fix: gate rollout submission during
+ weight-sync drain for DP>1 (#7511)
+
+### What does this PR do?
+
+During a weight update, verl pauses the vLLM engines, waits for idle,
+swaps the weights,
+and resumes. The pause is vLLM's `pause_generation`, and everything
+turns on what that actually
+does: it stops the scheduler from running new requests, but it does not
+stop the engine from
+accepting them. That is deliberate and documented on vLLM's side ("all
+pause modes queue new adds")
+(not vllm version dependent). verl treats the pause as though nothing
+more can arrive, and nothing on the verl side stops a rollout request
+from being submitted while paused, and one that arrives before the
+drain's first check sets engines_running with nothing left to clear it.
+Problem: those requests are never executed; it sets engines_running,
+which is the flag the drain polls, and only a wave_complete from rank 0
+clears it. That never comes while paused, so the drain times out and
+raises TimeoutError.
+
+This only happens when dp>1, because in vllm the drain, [see
+here](https://github.com/vllm-project/vllm/blob/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac/vllm/v1/engine/async_llm.py#L1004-L1018),
+waits for `self.engine_core.dp_engines_running()`, which is set
+[here](https://github.com/vllm-project/vllm/blob/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac/vllm/v1/engine/core_client.py#L904-L906),
+contingent on `self.is_dp`. (footnote: this is the 'sync' version of add
+request, but the async version also sets the flag, just a bit deeper and
+less obviously linkable).
+
+The abort replicas
+[is](https://github.com/verl-project/verl/blob/7a830f6adb64839a5d798c0e5a790f5314a94993/verl/checkpoint_engine/base.py#L477-L480)
+a barrier; vllm pauses internally after completion of a full process
+engine step. For larger scale models this step takes longer and we have
+to be aligned between replicas, meaning larger model scale 'widens' the
+window between pause generation (that aborts) and the first dp engines
+running check (i.e. this error is seen more likely on large scale model
+with dp>1).
+
+
+#### Relationship to #7393
+
+#7393 deletes the drain, on the grounds that the flag "can lag behind
+the completed pause". That lag
+is the symptom above. Deleting it does stop the crash, but that drain is
+also the only check that the
+engines went quiet before verl writes weights into the live weight
+buffers. It is possible to go this deletion
+route, but it does allow the above 'orphan' requests and skips this
+waiting step, something that, in my opinion, might come back to bite us
+later in some way.
+
+Maybe @HollowMan6 (or someone else) has an opinion on this?
+
+
+### Checklist Before Starting
+
+- [x] Search for similar PRs:
+-
+https://github.com/verl-project/verl/pulls?q=is%3Apr+wait_for_requests_to_drain
+(returns #7393 only)
+- https://github.com/verl-project/verl/pulls?q=is%3Apr+pause_generation
+- [x] Format the PR title as `[{modules}] {type}: {description}`
+
+### Test
+
+Added some small unit tests about the sequence ordering, they don't
+literally reproduce the error, since it is a large scale training race.
+(let me know if you rather delete them)
+
+```bash
+pytest -q tests/workers/rollout/rollout_vllm/test_submitter_gate_on_cpu.py
+# with the change:    5 passed
+# change reverted:    3 failed, 2 passed
+```
+
+### API and Usage Example
+
+None.
+
+### Design & Code Changes
+
+Two new fields in `vLLMHttpServer`:
+`_submission_paused` is a gate on rollout submission, and `_admitting`
+counts requests that have
+passed the gate but not yet reached the engine.
+
+- `abort_all_requests()`: close the gate, wait for `_admitting` to reach
+zero, then call
+`pause_generation()` as before. Zero means every request that exists is
+already at the engine, so
+  the abort catches all of them (nothing enters after anymore).
+- `generate()`: parks while the gate is closed instead of rejecting, and
+counts itself in
+  `_admitting` until the engine has the request.
+- `resume_generation()`: reopens the gate, above the `node_rank != 0`
+return so every server reopens.
+
+
+### Checklist Before Submitting
+
+- [x] Read the Contribute Guide.
+- [x] Apply pre-commit checks.
+- [x] Documentation: n/a, no user-facing surface.
+- [x] Add unit test(s): `test_submitter_gate_on_cpu.py`.
+- [ ] Send a message in the `ci-request` channel once ready for CI.
+- [x] Not related to the `recipe` submodule.
+---
+ .../rollout/vllm_rollout/vllm_async_server.py | 50 +++++++++++++++++--
+ 1 file changed, 47 insertions(+), 3 deletions(-)
+
+diff --git a/verl/workers/rollout/vllm_rollout/vllm_async_server.py b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+index 5c4b613a..629152b2 100644
+--- a/verl/workers/rollout/vllm_rollout/vllm_async_server.py
++++ b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+@@ -17,6 +17,7 @@ import inspect
+ import json
+ import logging
+ import os
++import time
+ import uuid
+ from collections.abc import Mapping
+ from pprint import pprint
+@@ -72,6 +73,9 @@ from verl.workers.rollout.vllm_rollout.utils import (
+ 
+ _VLLM_VERSION = version.parse(vllm.__version__)
+ 
++# Max wait for admissions already past the submission gate to reach the engine.
++_GATE_BARRIER_TIMEOUT_S = 60.0
++
+ if os.getenv("VERL_USE_GPT_OSS", "0") == "1":
+     get_encoding()
+ 
+@@ -162,6 +166,13 @@ class vLLMHttpServer:
+         self.global_steps = None
+         self._warned_missing_spec_decode_stats = False
+ 
++        # vLLM's pause stops requests being scheduled but still accepts them, and a request
++        # admitted after the pause is invisible to the drain's liveness check.
++        self._submission_paused = False
++        self._admitting = 0
++        self._resume_event = asyncio.Event()
++        self._resume_event.set()
++
+         # used for http server
+         self._server_address = ray.util.get_node_ip_address().strip("[]")
+         self._server_port = None
+@@ -637,6 +648,13 @@ class vLLMHttpServer:
+                     lora_name=VLLM_LORA_NAME, lora_int_id=VLLM_LORA_INT_ID, lora_path=VLLM_LORA_PATH
+                 )
+ 
++        # No await between the final gate check and the bump: on the actor's single event loop
++        # that keeps "gate closed and _admitting == 0" from being observed mid-admission.
++        while self._submission_paused:
++            logger.debug("parking request %s until weight sync completes", request_id)
++            await self._resume_event.wait()
++        self._admitting += 1
++
+         with RLInsightLogger.trace_state("vllm_generate", state_lane_id=f"replica_{self.replica_rank}"):
+             generator = self.engine.generate(
+                 prompt=prompt,
+@@ -648,8 +666,16 @@ class vLLMHttpServer:
+ 
+             # Get final response
+             final_res: Optional[RequestOutput] = None
+-            async for output in generator:
+-                final_res = output
++            admitted = False
++            try:
++                async for output in generator:
++                    if not admitted:
++                        admitted = True
++                        self._admitting -= 1
++                    final_res = output
++            finally:
++                if not admitted:
++                    self._admitting -= 1
+             assert final_res is not None
+ 
+         extra_fields = {"global_steps": self.global_steps}
+@@ -910,11 +936,25 @@ class vLLMHttpServer:
+                 - request_ids: List of aborted request IDs
+         """
+         try:
++            # Close the gate first, then let admissions already past it land, so the pause
++            # below actually covers them.
++            self._submission_paused = True
++            self._resume_event.clear()
++            deadline = time.monotonic() + _GATE_BARRIER_TIMEOUT_S
++            while self._admitting > 0:
++                if time.monotonic() > deadline:
++                    logger.warning(
++                        "Submission gate barrier timed out with %d admission(s) in flight, proceeding",
++                        self._admitting,
++                    )
++                    break
++                await asyncio.sleep(0.01)
++
+             # Snapshot request IDs before pausing for reporting
+             request_ids = list(self.engine.output_processor.request_states.keys())
+ 
+             # pause_generation with wait_for_inflight_requests=False will:
+-            # 1. Set engine to paused state (blocks new generate calls)
++            # 1. Set engine to paused state (new requests are accepted but not scheduled)
+             # 2. Abort all in-flight requests
+             # 3. Wait for requests to drain
+             # 4. Clear prefix and mm caches if clear_cache=True.
+@@ -939,6 +979,10 @@ class vLLMHttpServer:
+ 
+     async def resume_generation(self):
+         """Resume generation after abort_all_requests (pause_generation)."""
++        # Before the node_rank guard: every server in the replica closed the gate, so every
++        # server must reopen it.
++        self._submission_paused = False
++        self._resume_event.set()
+         if self.node_rank != 0:
+             return
+         await self.engine.resume_generation()
+-- 
+2.43.0
+
