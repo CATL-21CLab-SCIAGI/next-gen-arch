@@ -137,8 +137,15 @@ def heldout(plan_path: Path) -> None:
     failed: set[str] = set()
     attempted: set[str] = set()  # one evaluation attempt per point per process; an incomplete run is reported
 
+    def running(label: str) -> bool:  # adopt an evaluation already in flight (e.g. across a tracker restart)
+        target = f"--output {runs / label} "
+        lines = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout.splitlines()
+        return any(target in f"{line} " for line in lines if "--manifest" in line)
+
     def evaluate(label: str, model: Path) -> dict | None:
         summary = runs / label / "summary.json"
+        if running(label):
+            return None
         if not (summary.exists() and json.loads(summary.read_text()).get("complete")) and label not in attempted:
             attempted.add(label)
             with open(logs / f"eval-{label}.log", "a") as out:
