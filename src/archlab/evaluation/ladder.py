@@ -148,13 +148,15 @@ def heldout(plan_path: Path) -> None:
             return None
         if not (summary.exists() and json.loads(summary.read_text()).get("complete")) and label not in attempted:
             attempted.add(label)
+            # The protocol pins the evaluator's import path, so every point runs the same code (frozen curve).
+            env = {**os.environ, "PYTHONPATH": protocol["pythonpath"]} if protocol.get("pythonpath") else None
             with open(logs / f"eval-{label}.log", "a") as out:
                 subprocess.run([sys.executable, "-u", "-m", "archlab.evaluation.agentic_curve", "--model", str(model),
                                 "--manifest", protocol["manifest"], "--source", protocol["source"],
                                 "--harness", protocol["harness"], "--pool", protocol["pool"],
                                 "--output", str(runs / label), "--label", label, "--seeds", protocol["seeds"],
                                 "--concurrency", str(protocol["concurrency"]), "--gpu-memory", str(protocol["gpu_memory"]),
-                                "--attempts", str(protocol["attempts"])], stdout=out, stderr=subprocess.STDOUT)
+                                "--attempts", str(protocol["attempts"])], stdout=out, stderr=subprocess.STDOUT, env=env)
         return json.loads(summary.read_text()) if summary.exists() else None
 
     while True:
