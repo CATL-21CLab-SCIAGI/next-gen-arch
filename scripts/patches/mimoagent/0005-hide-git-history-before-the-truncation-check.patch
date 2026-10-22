@@ -1,0 +1,14 @@
+diff --git a/src/mimoagent/environments/datasets/opensource_code.py b/src/mimoagent/environments/datasets/opensource_code.py
+--- a/src/mimoagent/environments/datasets/opensource_code.py
++++ b/src/mimoagent/environments/datasets/opensource_code.py
+@@ -121,7 +121,9 @@
+         self.git_add_safe_directory()
+         self._ensure_work_tree()
+         self._base_ref = self._capture_base_ref()
+-        self._assert_history_truncated()
++        self._prevent_git_hack(cutoff_commit=self._base_ref)
++        if not self._git_hidden:
++            self._assert_history_truncated()
+ 
+     def _ensure_work_tree(self) -> None:
+         """Make sure ``repo_path`` is a git work tree.
