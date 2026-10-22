@@ -151,7 +151,9 @@ def heldout(plan_path: Path) -> None:
             # The protocol pins the evaluator's import path, so every point runs the same code (frozen curve).
             env = {**os.environ, "PYTHONPATH": protocol["pythonpath"]} if protocol.get("pythonpath") else None
             with open(logs / f"eval-{label}.log", "a") as out:
-                subprocess.run([sys.executable, "-u", "-m", "archlab.evaluation.agentic_curve", "--model", str(model),
+                # A frozen curve names its evaluator file; the module is the same code for new curves.
+                runner = [protocol["runner"]] if protocol.get("runner") else ["-m", "archlab.evaluation.agentic_curve"]
+                subprocess.run([sys.executable, "-u", *runner, "--model", str(model),
                                 "--manifest", protocol["manifest"], "--source", protocol["source"],
                                 "--harness", protocol["harness"], "--pool", protocol["pool"],
                                 "--output", str(runs / label), "--label", label, "--seeds", protocol["seeds"],
