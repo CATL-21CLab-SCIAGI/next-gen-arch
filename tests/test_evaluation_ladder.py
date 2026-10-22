@@ -41,3 +41,14 @@ def test_each_point_is_logged_once_and_runs_are_shared_read_only(tmp_path, monke
     assert logged == [("run-9b", "tb21/mean_reward", 0.1, 0), ("new-4b", "tb21/mean_reward", 0.05, 0)]
     assert json.loads(heldout.read_text())["logged"] == ["9b|native-9b"]  # the other ledger is never written
     assert json.loads((tmp_path / "tb.json").read_text())["runs"] == {"9b": "run-9b", "4b": "new-4b"}
+
+
+def test_pooled_difference_pairs_tasks_across_points_and_seeds():
+    base = [{"per_task": {"a": {"successes": 0, "scored": 2}, "b": {"successes": 1, "scored": 2}}},
+            {"per_task": {"a": {"successes": 0, "scored": 4}, "b": {"successes": 1, "scored": 4}}}]
+    arm = [{"per_task": {"a": {"successes": 1, "scored": 2}, "b": {"successes": 2, "scored": 2}, "c": {"successes": 2, "scored": 2}}}]
+    result = ladder.pooled_difference(base, arm, bootstrap=200)
+    assert result["tasks"] == 2  # only tasks measured on both sides
+    assert abs(result["baseline"] - (0 + 2 / 6) / 2) < 1e-9 and result["trained"] == 0.75
+    assert abs(result["difference"] - (0.5 + (1 - 2 / 6)) / 2) < 1e-9
+    assert result["ci95"][0] <= result["difference"] <= result["ci95"][1]

@@ -142,7 +142,7 @@ def heldout(plan_path: Path) -> None:
         lines = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout.splitlines()
         return any(target in f"{line} " for line in lines if "--manifest" in line)
 
-    def evaluate(label: str, model: Path) -> dict | None:
+    def evaluate(label: str, model: Path, seeds: str | None = None) -> dict | None:
         summary = runs / label / "summary.json"
         if running(label):
             return None
@@ -156,13 +156,14 @@ def heldout(plan_path: Path) -> None:
                 subprocess.run([sys.executable, "-u", *runner, "--model", str(model),
                                 "--manifest", protocol["manifest"], "--source", protocol["source"],
                                 "--harness", protocol["harness"], "--pool", protocol["pool"],
-                                "--output", str(runs / label), "--label", label, "--seeds", protocol["seeds"],
+                                "--output", str(runs / label), "--label", label, "--seeds", seeds or protocol["seeds"],
                                 "--concurrency", str(protocol["concurrency"]), "--gpu-memory", str(protocol["gpu_memory"]),
                                 "--attempts", str(protocol["attempts"])], stdout=out, stderr=subprocess.STDOUT, env=env)
         return json.loads(summary.read_text()) if summary.exists() else None
 
     while True:
-        todo = [(p["label"], Path(p["model"]), p["curves"]) for p in plan["baselines"] if Path(p["model"]).exists()]
+        todo = [(p["label"], Path(p["model"]), p["curves"], p.get("seeds")) for p in plan["baselines"]
+                if Path(p["model"]).exists()]
         for arm, spec in plan["arms"].items():
             root = Path(spec["checkpoints"])
             steps = sorted(int(p.name.split("_")[-1]) for p in root.glob("global_step_*")
@@ -178,9 +179,9 @@ def heldout(plan_path: Path) -> None:
                     log(label=label, error=str(error))
                     failed.add(label)
                     continue
-                todo.append((label, model, [[spec["curve"], step]]))
-        for label, model, point_curves in todo:
-            summary = evaluate(label, model)
+                todo.append((label, model, [[spec["curve"], step]], None))
+        for label, model, point_curves, seeds in todo:
+            summary = evaluate(label, model, seeds)
             if not (summary and summary.get("complete")):
                 continue
             low, high = summary["task_bootstrap_95ci"]
@@ -192,17 +193,54 @@ def heldout(plan_path: Path) -> None:
                     curves.log(curve, label, step, metrics)
                 except Exception as error:  # never block evaluation on tracking
                     log(label=label, mlflow_error=f"{type(error).__name__}: {error}"[:300])
-        render(runs, Path(plan["curve_file"]), plan["eval"]["set"])
+        render(runs, Path(plan["curve_file"]), plan["eval"]["set"], plan.get("pooled", {}))
         time.sleep(300)
 
 
-def render(runs: Path, path: Path, eval_set: str) -> None:
+def per_task_rates(summary: dict) -> dict[str, tuple[float, int]]:
+    return {task: (row["successes"], row["scored"]) for task, row in summary["per_task"].items() if row["scored"]}
+
+
+def pooled_difference(base: list[dict], arm: list[dict], *, bootstrap: int = 4000) -> dict:
+    """Task-paired difference between pooled checkpoint samples and pooled baseline samples (task bootstrap CI).
+
+    Single points of a 43-task curve carry about +/-9 points of noise; pooling checkpoints and baseline seeds per task
+    is the more powerful test of whether training moved the policy."""
+    import random
+
+    def pool(summaries):
+        rates: dict[str, list[float]] = {}
+        for summary in summaries:
+            for task, (successes, scored) in per_task_rates(summary).items():
+                rates.setdefault(task, [0.0, 0])
+                rates[task][0] += successes
+                rates[task][1] += scored
+        return {task: successes / scored for task, (successes, scored) in rates.items()}
+
+    left, right = pool(base), pool(arm)
+    tasks = sorted(set(left) & set(right))
+    diff = [right[task] - left[task] for task in tasks]
+    rng = random.Random(0)
+    boots = sorted(sum(rng.choice(diff) for _ in diff) / len(diff) for _ in range(bootstrap))
+    return {"tasks": len(tasks), "baseline": sum(left[t] for t in tasks) / len(tasks),
+            "trained": sum(right[t] for t in tasks) / len(tasks), "difference": sum(diff) / len(diff),
+            "ci95": [boots[int(0.025 * bootstrap)], boots[int(0.975 * bootstrap) - 1]]}
+
+
+def render(runs: Path, path: Path, eval_set: str, pooled: dict | None = None) -> None:
     keys = ("label", "complete", "scored_samples", "expected_samples", "pass_at_1", "success_at_k",
             "task_bootstrap_95ci", "generated_tokens", "wall_seconds", "terminations")
-    points = [{k: s.get(k) for k in keys} for s in
-              (json.loads(p.read_text()) for p in sorted(runs.glob("*/summary.json"), key=lambda p: p.stat().st_mtime))]
-    path.write_text(json.dumps({"updated": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "set": eval_set, "points": points},
-                               indent=1))
+    summaries = {p.parent.name: json.loads(p.read_text())
+                 for p in sorted(runs.glob("*/summary.json"), key=lambda p: p.stat().st_mtime)}
+    points = [{k: s.get(k) for k in keys} for s in summaries.values()]
+    windows = {}
+    for name, spec in (pooled or {}).items():  # {"name": {"baseline": [labels], "trained": [labels]}}
+        base = [summaries[label] for label in spec["baseline"] if summaries.get(label, {}).get("complete")]
+        arm = [summaries[label] for label in spec["trained"] if summaries.get(label, {}).get("complete")]
+        if base and arm:
+            windows[name] = {**pooled_difference(base, arm), "baseline_points": len(base), "trained_points": len(arm)}
+    path.write_text(json.dumps({"updated": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "set": eval_set, "points": points,
+                                "pooled": windows}, indent=1))
 
 
 def main(argv: list[str] | None = None) -> None:
