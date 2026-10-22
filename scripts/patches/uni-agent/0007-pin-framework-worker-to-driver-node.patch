@@ -1,0 +1,16 @@
+diff --git a/uni_agent/framework/entry.py b/uni_agent/framework/entry.py
+--- a/uni_agent/framework/entry.py
++++ b/uni_agent/framework/entry.py
+@@ -130,7 +130,11 @@
+             )
+ 
+         gateway_manager = build_gateway_manager(config=config, llm_client=llm_client)
+-        framework_worker = AgentFrameworkWorker.remote(
++        # archlab 2026-10-21: keep the rollout controller on the creating (GPU head) node; CPU agent pods are
++        # evictable and losing this actor kills the run.
++        framework_worker = AgentFrameworkWorker.options(
++            scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
++                ray.get_runtime_context().get_node_id(), soft=False)).remote(
+             config=config,
+             gateway_manager=gateway_manager,
+             reward_loop_worker_handles=reward_loop_worker_handles,

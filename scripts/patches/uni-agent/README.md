@@ -37,3 +37,10 @@ malformed/capped calls, and exact retained generated tokens with observation
 loss masks. A semantic dictionary cannot represent every possible interleaving
 of Muse channels; only a representable reasoning/call pair is additionally
 compared with a complete native template rendering.
+
+`0007-pin-framework-worker-to-driver-node.patch` places the rollout controller
+(`AgentFrameworkWorker`) on the node that creates it. On an external Ray head,
+evictable CPU agent pods join the cluster; losing the controller there ended
+the run (2026-10-20/21), while losing a pod now only loses its runner tasks.
+`archlab.training.runtime` pins the TaskRunner the same way
+(`tests/test_training_runtime.py`).
