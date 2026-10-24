@@ -12,6 +12,10 @@ def fake_mlflow(monkeypatch):
         def get_experiment_by_name(self, name):
             return SimpleNamespace(experiment_id="1")
 
+        def search_runs(self, experiment_ids, filter_string, order_by, max_results):
+            name = filter_string.split("'")[1]
+            return [SimpleNamespace(info=SimpleNamespace(run_id=f"found-{name}"))] if name == "shared" else []
+
         def create_run(self, experiment_id, run_name, tags):
             return SimpleNamespace(info=SimpleNamespace(run_id=f"new-{run_name}"))
 
@@ -52,3 +56,12 @@ def test_pooled_difference_pairs_tasks_across_points_and_seeds():
     assert abs(result["baseline"] - (0 + 2 / 6) / 2) < 1e-9 and result["trained"] == 0.75
     assert abs(result["difference"] - (0.5 + (1 - 2 / 6)) / 2) < 1e-9
     assert result["ci95"][0] <= result["difference"] <= result["ci95"][1]
+
+
+def test_a_curve_opened_by_another_ladder_is_reused_by_name(tmp_path, monkeypatch):
+    logged = fake_mlflow(monkeypatch)
+    secrets = tmp_path / "mlflow.json"
+    secrets.write_text(json.dumps({"tracking_uri": "uri", "token": "t"}))
+    curves = ladder.Curves({"secrets": str(secrets), "ledger": str(tmp_path / "l.json"), "experiment": "e"})
+    assert curves.log("shared", "p", 0, {"m": 1.0}) and curves.log("fresh", "p", 0, {"m": 2.0})
+    assert [entry[0] for entry in logged] == ["found-shared", "new-fresh"]

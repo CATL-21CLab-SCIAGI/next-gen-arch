@@ -117,7 +117,11 @@ class Curves:
         if run_id is None:
             name = self.config["experiment"]
             experiment = client.get_experiment_by_name(name) or client.get_experiment(client.create_experiment(name))
-            run_id = client.create_run(experiment.experiment_id, run_name=curve, tags=self.config.get("tags", {})).info.run_id
+            # Two ladders (separate ledgers, separate hosts) can open the same curve: reuse a run of that name.
+            existing = client.search_runs([experiment.experiment_id], filter_string=f"tags.mlflow.runName = '{curve}'",
+                                          order_by=["attributes.start_time ASC"], max_results=1)
+            run_id = existing[0].info.run_id if existing else client.create_run(
+                experiment.experiment_id, run_name=curve, tags=self.config.get("tags", {})).info.run_id
         ledger["runs"][curve] = run_id
         for metric, value in metrics.items():
             client.log_metric(run_id, metric, value, step=step)
@@ -194,6 +198,7 @@ def heldout(plan_path: Path) -> None:
                     curves.log(curve, label, step, metrics)
                 except Exception as error:  # never block evaluation on tracking
                     log(label=label, mlflow_error=f"{type(error).__name__}: {error}"[:300])
+            render(runs, Path(plan["curve_file"]), plan["eval"]["set"], plan.get("pooled", {}))  # after every point
         render(runs, Path(plan["curve_file"]), plan["eval"]["set"], plan.get("pooled", {}))
         time.sleep(300)
 
