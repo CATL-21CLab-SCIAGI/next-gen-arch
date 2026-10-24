@@ -63,6 +63,7 @@ def main(argv: list[str] | None = None) -> None:
     out = Path(run["output"])
     out.mkdir(parents=True, exist_ok=True)
     student_device, teacher_device = run["student_device"], run["teacher_device"]
+    torch.cuda.set_device(torch.device(student_device))  # Triton kernels launch on the current device
     paths = sorted(p for root in run["trajectories"] for p in Path(root).glob("step_*/session-*/trajectory.npz"))
     train, evaluation = split(paths, run["eval_fraction"])
     rng = random.Random(run["seed"])
