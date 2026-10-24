@@ -61,3 +61,30 @@ def test_nonzero_branches_change_the_function():
         parent = model(tokens).logits
         insertion.install(model, branch_config("simplicial", output_initialization="normal"), [2], backend="reference")
         assert not torch.allclose(model(tokens).logits, parent)
+
+
+def test_distillation_split_is_by_task_and_kl_is_zero_against_itself(tmp_path):
+    import json
+
+    import numpy as np
+
+    from archlab.training import distill
+
+    paths = []
+    for task in range(40):
+        for rollout in range(2):
+            folder = tmp_path / f"step_1/session-{task}-{rollout}"
+            folder.mkdir(parents=True)
+            (folder / "session.json").write_text(json.dumps({"dataset_index": task}))
+            np.savez(folder / "trajectory.npz", traj0_prompt_ids=np.arange(3, dtype=np.int32),
+                     traj0_response_ids=np.arange(5, dtype=np.int32), traj0_response_mask=np.array([1, 1, 0, 1, 1], np.int8))
+            paths.append(folder / "trajectory.npz")
+    train, evaluation = distill.split(paths, 0.25)
+    tasks = lambda ps: {json.loads((p.parent / "session.json").read_text())["dataset_index"] for p in ps}  # noqa: E731
+    assert train and evaluation and not tasks(train) & tasks(evaluation)
+    ids, mask = distill.example(paths[0], 6)
+    assert ids.tolist() == [[0, 1, 2, 0, 1, 2]] and mask.tolist() == [[False, False, True, True, False, False]]  # no target past the window
+    model = tiny_model()
+    hidden = model.model(ids).last_hidden_state
+    total, count = distill.kl_to_teacher(hidden, model.lm_head(hidden), model.lm_head, mask, chunk=4)
+    assert count == 2 and abs(float(total)) < 1e-5
