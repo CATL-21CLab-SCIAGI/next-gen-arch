@@ -111,9 +111,14 @@ class EvalNode:
         return bool(self.ssh(f"curl -sf --noproxy '*' -m 3 {url} && echo up", check=False).strip())
 
     def start(self, model: str, name: str) -> int:
-        for pattern in self.serve.get("pause", []):
-            self.kill_matching(pattern)
         port, secrets = self.serve["port"], self.plan["secrets"]
+        # The playground and any server a previous ladder process left on our port give the GPU back first.
+        for pattern in [*self.serve.get("pause", []), f"api_server.*--port {port}"]:
+            self.kill_matching(pattern)
+        for _ in range(30):
+            if not self.healthy(port):
+                break
+            time.sleep(5)
         log_path = Path(self.plan["logs"]) / f"serve-{name}.log"
         pid = self.ssh(
             f"source {self.serve['env_script']}; "
