@@ -27,7 +27,7 @@ def test_resolved_config_overrides_only_resume_inputs(tmp_path):
     base = tmp_path / "base.yaml"
     OmegaConf.save(OmegaConf.create({"data": {"train_files": ["/old"], "seed": 42, "max_prompt_length": 8192},
                                      "trainer": {"save_freq": 10, "resume_mode": "disable"}}), base)
-    spec = {**SPEC, "base": str(base), "dir": str(tmp_path)}
+    spec = {**SPEC, "base": str(base), "dir": str(tmp_path), "total_steps": 200}
     launch = supervise.plan_launch(spec, 110, {})
     config = OmegaConf.load(supervise.resolved_config(spec, launch, "/ck/init-step110/global_step_110"))
     assert config.data.train_files == ["/d/new.parquet"] and config.data.seed == 1110
@@ -68,3 +68,16 @@ def test_agent_pods_are_resubmitted_only_when_known_dead(tmp_path, monkeypatch):
     record.unlink()
     arm.ensure_agent_pods()  # no record at all: start pods
     assert len(created) == 2
+
+
+def test_a_new_arm_starts_from_its_base_model_without_resume(tmp_path):
+    base = tmp_path / "base.yaml"
+    OmegaConf.save(OmegaConf.create({"data": {"train_files": ["/old"], "seed": 42},
+                                     "trainer": {"save_freq": 10, "resume_mode": "auto", "total_training_steps": 200}}), base)
+    spec = {**SPEC, "base": str(base), "dir": str(tmp_path), "checkpoints": str(tmp_path / "checkpoints"),
+            "total_steps": 40, "head_dir": str(tmp_path), "node": "n"}
+    assert supervise.Arm(spec).latest() == 0
+    launch = supervise.plan_launch(spec, 0, {})
+    config = OmegaConf.load(supervise.resolved_config(spec, launch, None))
+    assert config.trainer.resume_mode == "disable" and "resume_from_path" not in config.trainer
+    assert config.trainer.total_training_steps == 40 and config.data.seed == 1000

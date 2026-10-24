@@ -48,11 +48,12 @@ def switch_due(spec: dict, last: dict) -> bool:
     return bool(last) and (spec["data"] != last.get("data") or spec["source"] != last.get("source"))
 
 
-def resolved_config(spec: dict, launch: dict, resume_from: str) -> Path:
+def resolved_config(spec: dict, launch: dict, resume_from: str | None) -> Path:
     config = OmegaConf.load(spec["base"])
-    for key, value in {"data.train_files": [launch["data"]], "data.seed": launch["seed"],
-                       "trainer.resume_mode": "resume_path", "trainer.resume_from_path": resume_from,
-                       "trainer.save_freq": spec["save_freq"]}.items():
+    resume = {"trainer.resume_mode": "resume_path", "trainer.resume_from_path": resume_from} if resume_from else \
+        {"trainer.resume_mode": "disable"}
+    for key, value in {"data.train_files": [launch["data"]], "data.seed": launch["seed"], **resume,
+                       "trainer.save_freq": spec["save_freq"], "trainer.total_training_steps": spec["total_steps"]}.items():
         OmegaConf.update(config, key, value, merge=False, force_add=True)
     path = Path(spec["dir"]) / f"resolved-{spec['arm']}-s{launch['step']}.yaml"
     OmegaConf.save(config, path, resolve=True)
@@ -69,7 +70,8 @@ class Arm:
         return subprocess.run(["ssh", self.spec["node"], command], capture_output=True, text=True, check=check).stdout
 
     def latest(self) -> int:
-        return int((self.checkpoints / "latest_checkpointed_iteration.txt").read_text())
+        path = self.checkpoints / "latest_checkpointed_iteration.txt"
+        return int(path.read_text()) if path.exists() else 0  # 0: a new arm starts from its base model
 
     def trainer_pids(self) -> list[str]:
         pattern = f"resolved-{self.spec['arm']}-s"
@@ -110,14 +112,16 @@ class Arm:
         step = self.latest()
         launch = plan_launch(self.spec, step, last)
         resume = self.checkpoints / f"global_step_{step}"
-        if launch["mode"] == "fresh":  # actor, optimizer and RNG only; the saved dataloader belongs to old data
+        if step == 0:  # first launch of a new arm
+            resume = None
+        elif launch["mode"] == "fresh":  # actor, optimizer and RNG only; the saved dataloader belongs to old data
             init = self.dir / f"init-step{step}" / f"global_step_{step}"
             init.mkdir(parents=True, exist_ok=True)
             link = init / "actor"
             if not link.is_symlink():
                 link.symlink_to(resume / "actor")
             resume = init
-        config = resolved_config(self.spec, launch, str(resume))
+        config = resolved_config(self.spec, launch, str(resume) if resume else None)
         train_log = self.dir / "train.log"
         if train_log.exists() and train_log.stat().st_size:
             train_log.rename(self.dir / f"train-{time.strftime('%m%d-%H%M')}.log")

@@ -142,7 +142,7 @@ def heldout(plan_path: Path) -> None:
         lines = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout.splitlines()
         return any(target in f"{line} " for line in lines if "--manifest" in line)
 
-    def evaluate(label: str, model: Path, seeds: str | None = None) -> dict | None:
+    def evaluate(label: str, model: Path, seeds: str | None = None, gpu_memory: float | None = None) -> dict | None:
         summary = runs / label / "summary.json"
         if running(label):
             return None
@@ -157,13 +157,14 @@ def heldout(plan_path: Path) -> None:
                                 "--manifest", protocol["manifest"], "--source", protocol["source"],
                                 "--harness", protocol["harness"], "--pool", protocol["pool"],
                                 "--output", str(runs / label), "--label", label, "--seeds", seeds or protocol["seeds"],
-                                "--concurrency", str(protocol["concurrency"]), "--gpu-memory", str(protocol["gpu_memory"]),
+                                "--concurrency", str(protocol["concurrency"]),
+                                "--gpu-memory", str(gpu_memory or protocol["gpu_memory"]),
                                 "--attempts", str(protocol["attempts"])], stdout=out, stderr=subprocess.STDOUT, env=env)
         return json.loads(summary.read_text()) if summary.exists() else None
 
     while True:
-        todo = [(p["label"], Path(p["model"]), p["curves"], p.get("seeds")) for p in plan["baselines"]
-                if Path(p["model"]).exists()]
+        todo = [(p["label"], Path(p["model"]), p["curves"], p.get("seeds"), p.get("gpu_memory"))
+                for p in plan["baselines"] if Path(p["model"]).exists()]
         for arm, spec in plan["arms"].items():
             root = Path(spec["checkpoints"])
             steps = sorted(int(p.name.split("_")[-1]) for p in root.glob("global_step_*")
@@ -179,9 +180,9 @@ def heldout(plan_path: Path) -> None:
                     log(label=label, error=str(error))
                     failed.add(label)
                     continue
-                todo.append((label, model, [[spec["curve"], step]], None))
-        for label, model, point_curves, seeds in todo:
-            summary = evaluate(label, model, seeds)
+                todo.append((label, model, [[spec["curve"], step]], None, spec.get("gpu_memory")))
+        for label, model, point_curves, seeds, gpu_memory in todo:
+            summary = evaluate(label, model, seeds, gpu_memory)
             if not (summary and summary.get("complete")):
                 continue
             low, high = summary["task_bootstrap_95ci"]
