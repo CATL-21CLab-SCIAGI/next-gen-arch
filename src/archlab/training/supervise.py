@@ -13,6 +13,7 @@ usage: python -m archlab.training.supervise <arm.json> [--once]
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -35,17 +36,23 @@ def last_launch(path: Path) -> dict:
     return json.loads(lines[-1]) if lines else {}
 
 
+def base_digest(spec: dict) -> str:
+    return hashlib.sha256(Path(spec["base"]).read_bytes()).hexdigest()[:16]
+
+
 def plan_launch(spec: dict, step: int, last: dict) -> dict:
     """How to resume at `step`: a changed data snapshot (or a repeat at the same step after one) starts a fresh
     dataloader from the actor state; anything else resumes the full checkpoint with the recorded seed."""
     fresh = spec["data"] != last.get("data") or (step == last.get("step") and last.get("mode") == "fresh")
-    return {"step": step, "data": spec["data"], "source": spec["source"], "mode": "fresh" if fresh else "full",
-            "seed": 1000 + step if fresh else last["seed"]}
+    return {"step": step, "data": spec["data"], "source": spec["source"], "base": base_digest(spec),
+            "mode": "fresh" if fresh else "full", "seed": 1000 + step if fresh else last["seed"]}
 
 
 def switch_due(spec: dict, last: dict) -> bool:
-    """A running trainer must be stopped at its next checkpoint when the launch inputs changed."""
-    return bool(last) and (spec["data"] != last.get("data") or spec["source"] != last.get("source"))
+    """A running trainer must be stopped at its next checkpoint when the launch inputs changed: data, source, or
+    the base config (a systems edit such as rollout concurrency; launches recorded before digests count as equal)."""
+    return bool(last) and (spec["data"] != last.get("data") or spec["source"] != last.get("source")
+                           or last.get("base", base_digest(spec)) != base_digest(spec))
 
 
 def resolved_config(spec: dict, launch: dict, resume_from: str | None) -> Path:
@@ -82,14 +89,21 @@ class Arm:
         pods, config = self.spec["agent_pods"], dlc_jobs.site(self.spec["dlc_site"])
         record = Path(self.spec["head_dir"]) / "agent-pods-job.json"
         try:
-            state = dlc_jobs.status(json.loads(record.read_text())["JobId"], config)
+            job = json.loads(record.read_text())["JobId"]
+            current = dlc_jobs.describe(job, config)
+            state = current["status"]
         except (OSError, KeyError, ValueError) as error:
             state = f"unrecorded ({type(error).__name__})"
         except RuntimeError as error:  # the API did not answer: never double-submit on an unknown state
             log(f"agent pod status unavailable ({str(error)[:120]}); not resubmitting")
             return
         if state in LIVE_POD_STATES:
-            return
+            if current["pods"] >= pods["pods"]:
+                return
+            # Only reached between launches (no trainer running), so resizing cannot cut live sessions.
+            log(f"agent pods {job}: {current['pods']} < {pods['pods']} pods; replacing")
+            dlc_jobs.stop(job, config)
+            state = "resized"
         log(f"agent pods {state}; resubmitting {pods['pods']} x {pods['cpu']} CPU")
         body = dlc_jobs.job_body(config, name=pods["name"], pods=pods["pods"], cpu=pods["cpu"],
                                  memory_gi=pods["memory"], shared_memory_gi=16,

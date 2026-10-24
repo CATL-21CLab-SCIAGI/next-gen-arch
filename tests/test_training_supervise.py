@@ -2,7 +2,12 @@ from omegaconf import OmegaConf
 
 from archlab.training import supervise
 
-SPEC = {"arm": "a", "data": "/d/new.parquet", "source": "/s/v2", "save_freq": 5}
+import tempfile
+from pathlib import Path
+
+_BASE = Path(tempfile.mkdtemp()) / "base.yaml"
+_BASE.write_text("trainer: {}\n")
+SPEC = {"arm": "a", "data": "/d/new.parquet", "source": "/s/v2", "save_freq": 5, "base": str(_BASE)}
 
 
 def test_new_data_resumes_actor_only_with_a_fresh_seed_and_repeats_stay_fresh():
@@ -50,19 +55,27 @@ def test_agent_pods_are_resubmitted_only_when_known_dead(tmp_path, monkeypatch):
     record = tmp_path / "agent-pods-job.json"
     record.write_text(json.dumps({"JobId": "old"}))
 
-    def status(state):
+    stopped = []
+    monkeypatch.setattr(supervise.dlc_jobs, "stop", lambda job, config: stopped.append(job))
+
+    def describe(state, pods=6):
         def answer(job, config):
             if isinstance(state, Exception):
                 raise state
-            return state
+            return {"status": state, "pods": pods}
         return answer
 
-    monkeypatch.setattr(supervise.dlc_jobs, "status", status("Running"))
+    monkeypatch.setattr(supervise.dlc_jobs, "describe", describe("Running"))
     arm.ensure_agent_pods()
-    monkeypatch.setattr(supervise.dlc_jobs, "status", status(RuntimeError("API timeout")))
+    monkeypatch.setattr(supervise.dlc_jobs, "describe", describe(RuntimeError("API timeout")))
     arm.ensure_agent_pods()
-    assert created == []
-    monkeypatch.setattr(supervise.dlc_jobs, "status", status("Failed"))
+    assert created == [] and stopped == []
+    monkeypatch.setattr(supervise.dlc_jobs, "describe", describe("Running", pods=4))  # live but undersized
+    arm.ensure_agent_pods()
+    assert stopped == ["old"] and [body["pods"] for body in created] == [6]
+    created.clear()
+    record.write_text(json.dumps({"JobId": "old"}))
+    monkeypatch.setattr(supervise.dlc_jobs, "describe", describe("Failed"))
     arm.ensure_agent_pods()
     assert [body["pods"] for body in created] == [6] and json.loads(record.read_text()) == {"JobId": "new-job"}
     record.unlink()
@@ -81,3 +94,14 @@ def test_a_new_arm_starts_from_its_base_model_without_resume(tmp_path):
     config = OmegaConf.load(supervise.resolved_config(spec, launch, None))
     assert config.trainer.resume_mode == "disable" and "resume_from_path" not in config.trainer
     assert config.trainer.total_training_steps == 40 and config.data.seed == 1000
+
+
+def test_a_changed_base_config_is_a_switch_but_unrecorded_digests_are_not(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text("rollout: {max_concurrent_sessions: 256}\n")
+    spec = {**SPEC, "base": str(base)}
+    last = supervise.plan_launch(spec, 20, {"data": spec["data"], "seed": 1000, "mode": "full", "step": 10})
+    assert not supervise.switch_due(spec, last)
+    base.write_text("rollout: {max_concurrent_sessions: 384}\n")
+    assert supervise.switch_due(spec, last)
+    assert not supervise.switch_due(spec, {k: v for k, v in last.items() if k != "base"})

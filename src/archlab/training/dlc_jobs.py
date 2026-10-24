@@ -79,8 +79,17 @@ def create(body: dict, config: dict) -> str:
     return aliyun(config, "CreateJob", "--body", json.dumps(body))["JobId"]
 
 
+def describe(job_id: str, config: dict) -> dict:
+    job = aliyun(config, "GetJob", "--JobId", job_id)
+    return {"status": job["Status"], "pods": sum(int(spec.get("PodCount", 0)) for spec in job.get("JobSpecs", []))}
+
+
 def status(job_id: str, config: dict) -> str:
-    return aliyun(config, "GetJob", "--JobId", job_id)["Status"]
+    return describe(job_id, config)["status"]
+
+
+def stop(job_id: str, config: dict) -> None:
+    aliyun(config, "StopJob", "--JobId", job_id)
 
 
 def main(argv: list[str] | None = None) -> None:
