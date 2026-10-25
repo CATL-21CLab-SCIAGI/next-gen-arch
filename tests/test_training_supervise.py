@@ -105,3 +105,14 @@ def test_a_changed_base_config_is_a_switch_but_unrecorded_digests_are_not(tmp_pa
     base.write_text("rollout: {max_concurrent_sessions: 384}\n")
     assert supervise.switch_due(spec, last)
     assert not supervise.switch_due(spec, {k: v for k, v in last.items() if k != "base"})
+
+
+def test_log_rotation_never_overwrites_an_earlier_rotation(tmp_path):
+    log = tmp_path / "train.log"
+    assert supervise.rotate_log(log) is None  # nothing to keep
+    kept = []
+    for text in ("first launch", "second launch"):  # two relaunches within the same second
+        log.write_text(text)
+        kept.append(supervise.rotate_log(log))
+    assert not log.exists() and len(set(kept)) == 2
+    assert sorted(p.read_text() for p in kept) == ["first launch", "second launch"]

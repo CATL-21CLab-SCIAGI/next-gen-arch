@@ -27,6 +27,19 @@ from archlab.training import dlc_jobs
 LIVE_POD_STATES = {"Running", "Creating", "Queuing", "EnvPreparing"}
 
 
+def rotate_log(path: Path) -> Path | None:
+    """Keep a non-empty previous log under a timestamped name; never overwrite an earlier rotation."""
+    if not (path.exists() and path.stat().st_size):
+        return None
+    stem = path.with_name(f"{path.stem}-{time.strftime('%m%d-%H%M%S')}")
+    target, n = stem.with_suffix(path.suffix), 1
+    while target.exists():  # two relaunches within one second
+        n += 1
+        target = stem.with_name(f"{stem.name}-{n}").with_suffix(path.suffix)
+    path.rename(target)
+    return target
+
+
 def log(message: str) -> None:
     print(f"{time.strftime('%F %T')} {message}", flush=True)
 
@@ -137,8 +150,7 @@ class Arm:
             resume = init
         config = resolved_config(self.spec, launch, str(resume) if resume else None)
         train_log = self.dir / "train.log"
-        if train_log.exists() and train_log.stat().st_size:
-            train_log.rename(self.dir / f"train-{time.strftime('%m%d-%H%M')}.log")
+        rotate_log(train_log)
         source = self.spec["source"]
         paths = ":".join([f"{source}/src", f"{source}/third_party/verl", f"{source}/third_party/verl/third_party/uni_agent",
                           f"{source}/third_party/verl/third_party/mimoagent-osr/src", self.spec["packages"]])
