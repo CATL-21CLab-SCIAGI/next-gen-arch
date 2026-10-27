@@ -66,3 +66,40 @@ def test_actors_are_pinned_to_the_creating_node(monkeypatch):
 
     strategy, args, kwargs = pinned_to_driver_node(Actor).remote(1, key=2)
     assert (strategy.node, strategy.soft, args, kwargs) == ("gpu-head", False, (1,), {"key": 2})
+
+
+def test_transfer_queue_storage_is_packed_onto_the_creating_node(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from archlab.training import runtime
+
+    bootstrap = ModuleType("simple_storage_bootstrap")
+    bootstrap.get_placement_group = lambda n, num_cpus_per_actor=1: "spread"
+    package = ModuleType("transfer_queue.storage.bootstrap")
+    package.simple_storage_bootstrap = bootstrap
+    created = {}
+
+    def placement_group(bundles, strategy):
+        created.update(bundles=bundles, strategy=strategy)
+        return SimpleNamespace(ready=lambda: None)
+
+    ray = SimpleNamespace(get=lambda ref: None, util=SimpleNamespace(get_node_ip_address=lambda: "10.0.0.1",
+                                                                     placement_group=placement_group))
+    for name, module in (("transfer_queue", ModuleType("transfer_queue")), ("transfer_queue.storage", ModuleType("s")),
+                         ("transfer_queue.storage.bootstrap", package),
+                         ("transfer_queue.storage.bootstrap.simple_storage_bootstrap", bootstrap), ("ray", ray)):
+        monkeypatch.setitem(sys.modules, name, module)
+    runtime.pin_transfer_queue_storage()
+    bootstrap.get_placement_group(2)
+    assert created == {"bundles": [{"CPU": 1, "node:10.0.0.1": 0.001}] * 2, "strategy": "STRICT_PACK"}
+
+
+def test_only_external_heads_pin_transfer_queue(tmp_path, monkeypatch):
+    path = tmp_path / "tracking.json"
+    path.write_text('{"tracking_uri":"uri","token":"t"}')
+    monkeypatch.setenv("ARCHLAB_MLFLOW_CONFIG", str(path))
+    for address, pinned in (("auto", True), ("local", False)):
+        config = OmegaConf.create({"ray_kwargs": {"ray_init": {"address": address, "runtime_env": {"env_vars": {}}}}})
+        variables = launch_config(config).ray_kwargs.ray_init.runtime_env.env_vars
+        assert (variables.get("ARCHLAB_PIN_TRANSFER_QUEUE") == "1") == pinned

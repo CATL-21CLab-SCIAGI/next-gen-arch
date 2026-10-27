@@ -19,6 +19,32 @@ def worker_setup():
     if hook := os.environ.get("ARCHLAB_WORKER_SETUP_HOOK"):
         module, _, name = hook.rpartition(".")
         getattr(importlib.import_module(module), name)()
+    if os.environ.get("ARCHLAB_PIN_TRANSFER_QUEUE") == "1":
+        pin_transfer_queue_storage()
+
+
+def pin_transfer_queue_storage():
+    """Create TransferQueue storage units on the node of the process that creates them.
+
+    Upstream places them in a SPREAD placement group, so on an external head they land on evictable,
+    memory-limited CPU agent pods. A starved pod then stalls every batch fetch (27B 27b-rev, 2026-10-28:
+    "ZMQ recv timeout (200s) from storage unit"). The creator is the TaskRunner, which is pinned to the GPU head.
+    """
+    try:
+        from transfer_queue.storage.bootstrap import simple_storage_bootstrap
+    except ImportError:
+        return
+
+    def get_placement_group(num_ray_actors: int, num_cpus_per_actor: int = 1):
+        import ray
+
+        here = f"node:{ray.util.get_node_ip_address()}"
+        group = ray.util.placement_group([{"CPU": num_cpus_per_actor, here: 0.001} for _ in range(num_ray_actors)],
+                                         strategy="STRICT_PACK")
+        ray.get(group.ready())
+        return group
+
+    simple_storage_bootstrap.get_placement_group = get_placement_group
 
 
 def launch_config(config):
@@ -39,6 +65,8 @@ def launch_config(config):
         if hook := environment.get("worker_process_setup_hook"):
             variables["ARCHLAB_WORKER_SETUP_HOOK"] = hook
         environment.worker_process_setup_hook = "archlab.training.runtime.worker_setup"
+        if runtime.ray_kwargs.ray_init.get("address") not in (None, "local"):
+            variables["ARCHLAB_PIN_TRANSFER_QUEUE"] = "1"
         # Upstream prints Ray kwargs; only a path, never a credential, is sent.
         tracking = json.loads(Path(path).read_text())
         os.environ["MLFLOW_TRACKING_URI"] = tracking["tracking_uri"]
