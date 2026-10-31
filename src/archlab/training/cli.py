@@ -18,9 +18,10 @@ def main(argv=None):
     parser.add_argument("recipe", type=Path)
     parser.add_argument("--verl", type=Path, default=Path("third_party/verl"))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--overlay", type=Path, action="append", default=[])
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_intermixed_args(argv)
-    experiment = read_experiment(args.recipe, args.overrides)
+    experiment = read_experiment(args.recipe, args.overrides, overlays=args.overlay)
     config = compose_verl(experiment, args.verl)
     args.output.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(config, args.output / "resolved.yaml", resolve=True)
@@ -34,10 +35,9 @@ def main(argv=None):
         print("Qualification blocked; see", args.output / "qualification.json")
         return 1
     if args.action == "train":
-        # Upstream owns Ray, workers, agent-loop lifecycle, checkpoints and logs.
-        from verl.trainer.main_ppo import main as verl_main
+        from archlab.training.runtime import run
 
-        verl_main(config)
+        run(config)
     return 0
 
 

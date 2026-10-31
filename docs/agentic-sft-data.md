@@ -83,7 +83,7 @@ published and are recorded as unknown. The source success label still has not
 been independently re-executed.
 
 The immutable dataset is
-`/mnt/oss/datasets/limite-agentic-bootstrap-delivered-excerpts-32k-20261013/`;
+`/mnt/oss/datasets/tokenized/limite-agentic-bootstrap-delivered-excerpts-32k-20261013/`;
 manifest SHA-256 is
 `b3ca1d51a45791c385dfb84a83c52f38b355842b4204ba4f9eebfc9b980ca67e`.
 Its reviewed repository mapping uses pinned official SWE-smith RepoProfiles

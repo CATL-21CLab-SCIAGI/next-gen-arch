@@ -7,7 +7,7 @@ per-file SHA256 hashes. Hugging Face Git blob hashes or LFS SHA256 hashes were
 checked for every upstream file. The older unversioned snapshot is preserved.
 
 The dataset destination is
-`${DATASET_ROOT}/nemotron-math-v2-limite-violetto-4cf321846e47-text-only-v2`.
+`${DATASET_ROOT}/tokenized/nemotron-math-v2-limite-violetto-4cf321846e47-text-only-v2`.
 Source: the five Parquet files from `nv-community/Nemotron-Math-v2`, comprising
 7,085,839 source trajectories. JSONL mirrors are not ingested.
 

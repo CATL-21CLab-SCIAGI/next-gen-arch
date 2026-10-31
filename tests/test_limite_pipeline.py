@@ -42,42 +42,6 @@ def test_sealed_dataset_selection_preserves_exact_questions_and_answers():
     assert isinstance(selected, SealedDataset) and selected == [rows[1]]
 
 
-def test_native_runner_uses_remaining_context_and_resumes_without_resampling(tmp_path, monkeypatch):
-    pytest.importorskip('transformers')
-    from types import SimpleNamespace
-
-    import archlab.automodel.limite_pipeline_benchmark as worker
-
-    plan = dict(sampling=dict(temperature=.6, top_p=.95, max_new_tokens=131072, context_limit=131072,
-                              samples_per_problem=4, seed=42, eos_token_ids=[151643, 151645],
-                              budget_policy='native_context_minus_prompt'),
-                implementation_sha256='frozen', eval_pipeline=dict(upstream_revision='upstream'))
-    phase = dict(name='sft-normal-10B')
-    cases = [dict(id='aime26:0', task='aime26', question='Q', answer='4')]
-    tokenizer = SimpleNamespace(apply_chat_template=lambda *a, **k: [1] * 317)
-    pipeline = SimpleNamespace(extract_final_answer_robust=lambda text: '4', is_math_correct=lambda a, b: a == b)
-    monkeypatch.setattr(worker.torch, 'tensor', lambda value, **kwargs: value)
-    monkeypatch.setattr(worker.torch.cuda, 'max_memory_allocated', lambda: 0)
-    monkeypatch.setattr(worker, 'score_aime', lambda *a: dict(correct=True, truncated=False))
-    calls = []
-
-    def sample(model, ids, **kwargs):
-        calls.append(kwargs)
-        return dict(completion='</think>\\boxed{4}', generated_ids=[4, 151643], generated_tokens=2,
-                    finish_reason='eos', seconds=1., seed=kwargs['seed'])
-
-    monkeypatch.setattr(worker, 'sample_math', sample)
-    request = dict(messages_list=[[dict(role='user', content='Q')]], max_new_tokens=131072,
-                   temperature=.6, top_p=.95, enable_thinking=True)
-    for _ in range(2):
-        runner = worker.NativeRunner(object(), tokenizer, None, pipeline, plan, phase, cases, tmp_path)
-        assert runner.chat_generate(**request) == ['</think>\\boxed{4}']
-    assert len(calls) == 1 and calls[0]['max_new_tokens'] == 130755
-    assert calls[0]['eos_token_ids'] == (151643, 151645)
-    with pytest.raises(ValueError, match='contract'):
-        runner.chat_generate(**dict(request, top_p=.9))
-
-
 def test_report_keeps_pipeline_credit_separate_from_final_answer_accuracy(tmp_path):
     import json
 

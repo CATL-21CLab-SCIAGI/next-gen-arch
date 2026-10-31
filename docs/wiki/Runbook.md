@@ -19,13 +19,13 @@ Exclusive execution requires an explicitly available GPU allocation. Shared-GPU 
 ## Inspect before executing
 
 ```bash
-PYTHONPATH=src python -m archlab.cli verify
-PYTHONPATH=src python -m archlab.cli render \
-  --config recipes/reference/speedrun_100m.yaml#qwen_gdn \
-  --path data_root=/path/to/prepared/data
+archlab resolve recipes/rl/limite_code.yaml --output results/code-pilot
+archlab qualify recipes/rl/limite_code.yaml --output results/code-pilot
 ```
 
-Rendering prints a command. It does not launch training.
+Select the contract for the intended model and supply its documented environment bindings. `resolve` writes the composed upstream configuration; `qualify` checks admission. `train` repeats the required admission checks before launching, so a normal launch can use `resolve` followed directly by `train`.
+
+Historical AutoModel, custom math-RL and campaign commands in dated reports belong to their recorded source snapshots. They are not current launch instructions; see the [retirement boundary](Code-Map.md#retirement-boundary).
 
 ## Resume or restart
 

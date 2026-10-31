@@ -1,16 +1,9 @@
-import json
 import unittest
 
 from archlab.architectures.deepseek_v41_scratch import (
     CHANNEL_FIELDS,
     adapter_layers,
     scaled_scratch_config,
-)
-from archlab.automodel.deepseek_v41_scratch_training import (
-    build_batches,
-    canonical_contract,
-    learning_rate,
-    training_runtime,
 )
 
 
@@ -57,24 +50,8 @@ class ScratchContractTests(unittest.TestCase):
         self.assertNotIn("quantization_config", out)
         self.assertEqual(base["text_config"]["hidden_size"], 5120)
 
-    def test_learning_rate_endpoints_and_resume(self):
-        self.assertEqual(learning_rate(0, 0), 0.0001)
-        self.assertEqual(learning_rate(99, 2_000_000), 0.01)
-        self.assertAlmostEqual(learning_rate(1000, 5_000_000_000), 0.0055)
-        self.assertEqual(learning_rate(2000, 10_000_000_000), 0.001)
-        self.assertEqual(
-            learning_rate(1000, 5_000_000_000),
-            learning_rate(**json.loads('{"step":1000,"tokens":5000000000}')),
-        )
-
 
 class ScratchSerializationTests(unittest.TestCase):
-    def test_checkpoint_contract_json_round_trip(self):
-        raw = {"geometry": {"id2label": {0: "LABEL_0", 1: "LABEL_1"}}, "axes": ("fsdp", "ep")}
-        normalized = canonical_contract(raw)
-        self.assertEqual(normalized, json.loads(json.dumps(normalized)))
-        self.assertEqual(normalized["geometry"]["id2label"], {"0": "LABEL_0", "1": "LABEL_1"})
-        self.assertEqual(raw["geometry"]["id2label"], {0: "LABEL_0", 1: "LABEL_1"})
 
     def test_padding_opt_in_and_boundaries(self):
         import torch
@@ -95,36 +72,3 @@ class ScratchSerializationTests(unittest.TestCase):
                 _check_text_window(
                     None, (), {"input_ids": tokens, "attention_mask": bad}, allow_right_padding=True
                 )
-
-
-class ScratchRankContractTests(unittest.TestCase):
-    def test_uneven_shard_storage_does_not_change_contract(self):
-        rank0 = {
-            "parameters": 29055310008,
-            "local_parameter_gib": 6.7929026037454605,
-            "world_size": 8,
-        }
-        rank7 = {
-            "parameters": 29055310008,
-            "local_parameter_gib": 6.7928976863622665,
-            "world_size": 8,
-        }
-        self.assertEqual(training_runtime(rank0), training_runtime(rank7))
-        self.assertNotIn("local_parameter_gib", training_runtime(rank0))
-
-
-class ScratchMicrobatchTests(unittest.TestCase):
-    def test_microbatch_change_preserves_effective_batch(self):
-        class Data:
-            def batch(self, indices, device):
-                return list(indices)
-
-        old = [
-            i
-            for rank in range(8)
-            for group in build_batches(Data(), 640, rank, microbatch=2, accumulation=4)
-            for i in group
-        ]
-        new = [i for rank in range(8) for group in build_batches(Data(), 640, rank) for i in group]
-        self.assertEqual(sorted(old), list(range(640, 704)))
-        self.assertEqual(sorted(new), sorted(old))

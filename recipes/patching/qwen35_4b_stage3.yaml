@@ -1,0 +1,46 @@
+# OPAL-inspired Stage 3: chained from Stage-2 checkpoint, on-policy reverse-KL KL(p_student || p_teacher)
+# strictly over generated positions combined with off-policy forward-KL anchor (anchor_kl_weight=0.25),
+# two-timescale AdamW (backbone_lr_ratio=0.1; override lr=5.0e-6 for 24-layer triadic), and non-divergent
+# generation-length curriculum doubling horizon only when smoothed reverse KL stays within phase entry +5%.
+teacher: ${oc.env:ARCHLAB_TEACHER}
+init_checkpoint: ${oc.env:ARCHLAB_INIT_CHECKPOINT}
+output: ${oc.env:ARCHLAB_OUTPUT}
+variant: ${oc.env:ARCHLAB_VARIANT}
+sources:
+  - manifest: ${oc.env:ARCHLAB_LATENT_DATA}/infinibyte-reasoning/manifest.json
+    weight: 0.45
+  - manifest: ${oc.env:ARCHLAB_LATENT_DATA}/stem-sft/manifest.json
+    weight: 0.45
+  - manifest: ${oc.env:ARCHLAB_LATENT_DATA}/wiki-rewrite/manifest.json
+    weight: 0.10
+prompt_length: 256
+min_gen_tokens: 64
+max_gen_tokens: 512
+gen_batch_tokens: 4096
+tokens: 1048576
+eval_windows: 8
+lr: 0.00001
+backbone_lr_ratio: 0.1
+anchor_kl_weight: 0.25
+temperature: 1.0
+seed: 42
+init_std: 0.02
+feature_dim: 4
+backend: kernel
+window_1: null
+window_2: 64
+microbatch_prompts: 2
+heldout_fraction: 0.1
+split_seed: 42
+warmup_fraction: 0.03
+decay_fraction: 0.10
+final_lr_fraction: 0.10
+ema_alpha: 0.2
+improvement_rel: 0.02
+max_divergence_rel: 0.05
+plateau_steps: 30
+clip_norm: 1.0
+eval_every: 64
+log_every: 1
+kl_chunk_tokens: 64
+gradient_checkpointing: false

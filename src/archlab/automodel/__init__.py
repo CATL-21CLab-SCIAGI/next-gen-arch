@@ -1,1 +1,1 @@
-"""Execution integration with an externally pinned NeMo AutoModel checkout."""
+"""Numerical and loading references; historical custom execution is retired."""

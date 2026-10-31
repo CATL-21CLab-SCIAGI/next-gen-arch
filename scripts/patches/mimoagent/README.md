@@ -8,6 +8,7 @@ git -C third_party/verl/third_party/mimoagent-osr apply "$PWD/scripts/patches/mi
 git -C third_party/verl/third_party/mimoagent-osr apply "$PWD/scripts/patches/mimoagent/0002-anchor-cleanup-dependency-paths.patch"
 git -C third_party/verl/third_party/mimoagent-osr apply "$PWD/scripts/patches/mimoagent/0003-preserve-generated-python-versions.patch"
 git -C third_party/verl/third_party/mimoagent-osr apply "$PWD/scripts/patches/mimoagent/0004-preserve-file-transfer-infra-errors.patch"
+git -C third_party/verl/third_party/mimoagent-osr apply "$PWD/scripts/patches/mimoagent/0005-hide-git-history-before-the-truncation-check.patch"
 ```
 
 The OpenAI client preserves the server's finish reason outside chat payloads.
@@ -32,3 +33,8 @@ the package runner cleans up without invoking the verifier or assigning reward.
 Ordinary tool argument errors remain feedback. The actual tool, agent and runner
 chain is exercised by `tests/test_mimo_file_transfer_contract.py`; directory byte
 transfer and native editing are covered by `tests/test_training_sandbox.py`.
+
+`0005-hide-git-history-before-the-truncation-check.patch`: open-source code tasks hide the repository's git
+history beyond the task's base commit (the existing `_prevent_git_hack` lifecycle) before checking that history
+is truncated, so an agent cannot read the reference fix from later commits. It has run in every Qwen3.5 code
+RL snapshot since 2026-10-15 and is recorded here so snapshots are reproducible from the pinned checkout.

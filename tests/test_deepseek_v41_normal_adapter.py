@@ -1,14 +1,10 @@
 """Numerical, causal, initialization, and optimizer contracts for the control."""
 
 import copy
-from dataclasses import replace
-from pathlib import Path
 
 import pytest
 import torch
-import yaml
 from test_deepseek_v41_official_adapter import _official_model, _skeleton, _small_config
-from test_deepseek_v41_official_recipe import mesh_receipts as mesh_receipts
 
 from archlab.architectures.deepseek_v41_adapter import V41AdapterConfig, V41SimplicialAdapter
 from archlab.architectures.deepseek_v41_normal_adapter import (
@@ -20,7 +16,6 @@ from archlab.architectures.local_attention import (
     reference_local_attention,
 )
 from archlab.automodel.deepseek_v41_official_adapter import install_official_adapters
-from archlab.automodel.deepseek_v41_official_recipe import OfficialV41Config, admit_mesh
 
 
 def test_normal_control_shares_initial_weights_and_preserves_rng():
@@ -125,25 +120,6 @@ def test_normal_production_optimizer_covers_each_parameter_once():
     assert len(groups[0]["params"]) == 16 and groups[0]["head_dim"] == 128
     assert len(groups[1]["params"]) == 24 and groups[1]["head_dim"] is None
     assert groups[2]["weight_decay"] == 0.1 and groups[3]["weight_decay"] == 0
-
-
-def test_normal_recipe_only_changes_the_adapter_variant_and_core():
-    root = Path(__file__).parents[1] / "recipes/deepseek_v41"
-    baseline = yaml.safe_load((root / "simplicial_math_1b_official.yaml").read_text())
-    normal = yaml.safe_load((root / "normal_math_1b_official.yaml").read_text())
-    config = OfficialV41Config(**normal)
-    assert normal.pop("adapter_variant") == "normal"
-    assert normal["backend"].pop("adapter_core") == "flash-attn-deterministic-bf16-local512"
-    baseline["backend"].pop("adapter_core")
-    assert normal == baseline
-    with pytest.raises(ValueError):
-        replace(config, adapter_variant="simplicial")
-
-
-def test_normal_admission_rejects_simplicial_mesh_receipts(mesh_receipts):
-    path, hashes = mesh_receipts
-    with pytest.raises(ValueError):
-        admit_mesh(path, hashes, adapter_variant="normal")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires the B300 container")

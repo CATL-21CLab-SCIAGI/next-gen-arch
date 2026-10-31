@@ -15,7 +15,6 @@ from archlab.architectures.deepseek_v41_scratch import (
     scaling_experts_per_token,
     scratch_adapter_head_dim,
 )
-from archlab.automodel.deepseek_v41_scaling_campaign import validate_qualification_pair
 
 
 def base_config():
@@ -165,48 +164,6 @@ def qualified_pair(tmp_path):
     return pair
 
 
-def test_pair_admission_checks_all_rank_initializations(tmp_path):
-    pair = qualified_pair(tmp_path)
-    assert validate_qualification_pair(*pair)["passed"]
-    path = Path(pair[1]["qualification"]) / "rank-15-initial.json"
-    path.write_text(json.dumps({"common_sha256": "changed"}))
-    with pytest.raises(ValueError, match="initialization differs"):
-        validate_qualification_pair(*pair)
-
-
-@pytest.mark.parametrize("mutation", ["data", "budget", "parameters"])
-def test_pair_admission_rejects_confounded_controls(tmp_path, mutation):
-    pair = qualified_pair(tmp_path)
-    path = Path(pair[1]["qualification"]) / "QUALIFIED.json"
-    value = json.loads(path.read_text())
-    if mutation == "data":
-        value["contract"]["data_contract"]["source_sha256"] = "other-data"
-    elif mutation == "budget":
-        value["contract"]["target_supervised_tokens"] = 1_000_000_000
-    else:
-        value["contract"]["runtime"]["parameters"] += 1
-    path.write_text(json.dumps(value))
-    with pytest.raises(ValueError):
-        validate_qualification_pair(*pair)
-
-
-def test_two_node_batch_preserves_every_global_window_once():
-    from archlab.automodel.deepseek_v41_scratch_training import build_batches
-
-    class Data:
-        def batch(self, indices, device):
-            return list(indices)
-
-    windows = [
-        i
-        for rank in range(16)
-        for batch in build_batches(Data(), 640, rank, microbatch=4, world_size=16)
-        for i in batch
-    ]
-    assert sorted(windows) == list(range(640, 704))
-    assert len(set(windows)) == 64
-
-
 def campaign_plan(tmp_path):
     nodes = {name: {"hostname": name} for name in ("a", "b", "c", "d")}
     runs = []
@@ -231,104 +188,6 @@ def campaign_plan(tmp_path):
         "environment": {},
         "source_commit": "test",
     }
-
-
-def test_campaign_rejects_gpu_overlap_between_variants(tmp_path):
-    from archlab.automodel.deepseek_v41_scaling_campaign import validate_plan
-
-    plan = campaign_plan(tmp_path)
-    validate_plan(plan)
-    for run in plan["runs"]:
-        if run["variant"] == "simplicial":
-            run["nodes"] = ["b", "c"]
-    with pytest.raises(ValueError, match="partition"):
-        validate_plan(plan)
-
-
-def test_campaign_rejects_reusing_a_previous_phase_rendezvous_port(tmp_path):
-    from archlab.automodel.deepseek_v41_scaling_campaign import validate_plan
-
-    plan = campaign_plan(tmp_path)
-    plan["runs"][1]["master_port"] = plan["runs"][0]["master_port"] + 1
-    with pytest.raises(ValueError, match="distinct rendezvous ports"):
-        validate_plan(plan)
-
-
-def test_faster_variant_starts_every_next_width_without_peer_completion(tmp_path, monkeypatch):
-    from archlab.automodel import deepseek_v41_scaling_campaign as campaign
-
-    plan = campaign_plan(tmp_path)
-    (tmp_path / "RL_RETIRED.json").write_text('{"all_gpus_free":true}')
-    for run in plan["runs"]:
-        if run["variant"] == "simplicial":
-            qualification = Path(run["qualification"])
-            qualification.mkdir()
-            (qualification / "QUALIFIED.json").write_text("{}")
-    phases = []
-
-    def run_phase(plan, run, node, mode, environment, state_path):
-        phases.append((mode, run["width"]))
-        if mode == "qualify":
-            return
-        root = Path(run["output"])
-        root.mkdir()
-        (root / "COMPLETE.json").write_text('{"passed":true,"supervised_tokens":10000000000}')
-        checkpoints = []
-        for i in range(1, 6):
-            target = root / f"oss-{i}"
-            target.mkdir()
-            link = root / f"checkpoint-{i}"
-            link.symlink_to(target, target_is_directory=True)
-            checkpoints.append(
-                {"path": str(link), "oss_path": str(target), "milestone_tokens": i * 2_000_000_000}
-            )
-        (root / "EVAL_CHECKPOINTS.json").write_text(json.dumps({"checkpoints": checkpoints}))
-
-    monkeypatch.setattr(campaign, "run_phase", run_phase)
-    monkeypatch.setattr(campaign, "validate_qualification_pair", lambda *args: {"passed": True})
-    monkeypatch.setattr(campaign.socket, "gethostname", lambda: "a")
-    monkeypatch.setattr(campaign.subprocess, "check_output", lambda *args, **kwargs: "")
-    campaign.worker(plan, "a")
-    assert [width for mode, width in phases if mode == "train"] == [640, 128, 384, 1280]
-    assert all(
-        not Path(run["output"]).exists() for run in plan["runs"] if run["variant"] == "simplicial"
-    )
-
-
-def test_admission_resume_reuses_successful_preflight(tmp_path, monkeypatch):
-    from archlab.automodel import deepseek_v41_scaling_campaign as campaign
-
-    plan = campaign_plan(tmp_path)
-    preflight = dict(plan["runs"][0], qualification=str(tmp_path / "preflight"))
-    plan["preflight_runs"] = [preflight]
-    receipt = Path(preflight["qualification"])
-    receipt.mkdir()
-    (receipt / "QUALIFIED.json").write_text('{"passed":true}')
-    (tmp_path / "RL_RETIRED.json").write_text('{"all_gpus_free":true}')
-    (tmp_path / "STOP_REQUEST").touch()
-    monkeypatch.setattr(campaign.socket, "gethostname", lambda: "a")
-    monkeypatch.setattr(campaign.subprocess, "check_output", lambda *a, **k: "")
-    monkeypatch.setattr(campaign, "run_phase", lambda *a, **k: pytest.fail("repeated preflight"))
-    campaign.worker(plan, "a", resume=True)
-    (receipt / "QUALIFIED.json").write_text('{"passed":false}')
-    with pytest.raises(ValueError, match="failed preflight"):
-        campaign.worker(plan, "a", resume=True)
-
-
-def test_admission_resume_refuses_existing_production(tmp_path, monkeypatch):
-    from archlab.automodel import deepseek_v41_scaling_campaign as campaign
-
-    plan = campaign_plan(tmp_path)
-    output = Path(plan["runs"][0]["output"])
-    output.mkdir()
-    (output / "launcher-a.log").touch()
-    path = tmp_path / "plan.json"
-    path.write_text(json.dumps(plan))
-    monkeypatch.setattr(
-        campaign.sys, "argv", ["campaign", "--plan", str(path), "--node", "a", "--resume-admission"]
-    )
-    with pytest.raises(ValueError, match="cannot restart production"):
-        campaign.main()
 
 
 def test_fixed_engram_geometry_keeps_budget_through_width_and_depth_sweeps():

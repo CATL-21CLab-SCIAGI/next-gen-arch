@@ -29,9 +29,33 @@
       {
         "path": "scripts/patches/verl/0008-preserve-truncated-agent-status.patch",
         "sha256": "dc8afdc6c38d247947cb61742b252308822531436cccca5663e043e8a036bf42"
+      },
+      {
+        "path": "scripts/patches/verl/0009-padding-without-fa2-extension.patch",
+        "sha256": "d14992802576bcc23178d6eb6d6baac9a46a8eaf249ee2e9cb508cf81f66a317"
+      },
+      {
+        "path": "scripts/patches/verl/0010-upstream-9c764364.patch",
+        "sha256": "0e9473bd2da891cde663e052ad359db08baf66c26987e11195873540847f6d46"
+      },
+      {
+        "path": "scripts/patches/verl/0011-upstream-e2ac8f62.patch",
+        "sha256": "0a30347baad6adb7b44133bb6b816a639bae8e3fa48f6bf30e2206fff1038cb1"
+      },
+      {
+        "path": "scripts/patches/verl/0012-fsdp2-untied-lm-head-in-root-unit.patch",
+        "sha256": "dab4ac68018ece4a7c8dfbd6c08e795762e6fe915f4281345dafaa6f1c3b1709"
+      },
+      {
+        "path": "scripts/patches/verl/0013-reference-offload-only-when-requested.patch",
+        "sha256": "859392bdf69269aeeb34dec35c72e79f738c28e0fe10fd5f8543c4cc04a62d67"
+      },
+      {
+        "path": "scripts/patches/verl/0014-meta-ranks-skip-checkpoint-reads.patch",
+        "sha256": "b91f0bc5f89cb982216773b799b48ec654b8af1a539d2ad22673c0cb0431186e"
       }
     ],
-    "working_diff_sha256": "871c59f032584f896007218326566a94e56744bb8ec9d778a21637257704b02d",
+    "working_diff_sha256": "7fd3e24bba835c7ab3e5837f0e291915a76869f266f474486b30f3c49a032dcb",
     "url": "https://github.com/XiaomiMiMo/verl.git",
     "path": "third_party/verl",
     "runtime": "Primary agentic RL engine and monitoring; native Limite learner and serving integration remain under GPU qualification. Agent execution requires an authorized sandbox.",
@@ -58,9 +82,17 @@
           {
             "path": "scripts/patches/uni-agent/0005-preserve-length-finish-reason.patch",
             "sha256": "4d403ee7e5eac20d8215e5b4a85f94fadc3913c47b5d43ebf51e7b9da83318e4"
+          },
+          {
+            "path": "scripts/patches/uni-agent/0006-native-muse-codec.patch",
+            "sha256": "7a6d09d19d7fbebb9becf3b43a070d2f833441105d0f508ceecb93729ad195f6"
+          },
+          {
+            "path": "scripts/patches/uni-agent/0007-pin-framework-worker-to-driver-node.patch",
+            "sha256": "2fcaa250e4841c157a56fd0c3bba7fadffe1330a423aae4d2322e14c84507190"
           }
         ],
-        "working_diff_sha256": "2503db165894e8cbda17a94052e867ef1d950ce8b854a94433973b67ed3fd15f",
+        "working_diff_sha256": "f03a89920f8cec7a370eccd765222459f1fcae574cea50998660b764f3081d0f",
         "path": "third_party/uni_agent",
         "url": "https://github.com/XiaomiMiMo/uni-agent.git"
       },
@@ -82,9 +114,13 @@
           {
             "path": "scripts/patches/mimoagent/0004-preserve-file-transfer-infra-errors.patch",
             "sha256": "37fc803b2f87387585c7b1fc66feb99453626318512b2a2d1ad1f3964a5cdb95"
+          },
+          {
+            "path": "scripts/patches/mimoagent/0005-hide-git-history-before-the-truncation-check.patch",
+            "sha256": "96d456e44a322cb418e5b3d2ccac3caf38baefcbe72f434bdfd47e8757b882cb"
           }
         ],
-        "working_diff_sha256": "55480174be45ebe40ee302374b662fded2b863efa018f9c297540c53dd4ee695",
+        "working_diff_sha256": "210d695d190e1967bc3bdfb317b7456c8a98bff9707e86c50c52d794633c0c51",
         "path": "third_party/mimoagent-osr",
         "url": "https://github.com/XiaomiMiMo/MiMo-Agent.git"
       }

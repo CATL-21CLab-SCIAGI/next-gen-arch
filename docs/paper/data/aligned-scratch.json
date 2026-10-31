@@ -1,0 +1,491 @@
+{
+  "schema_version": 1,
+  "evidence_extracted_date": "2026-10-13",
+  "study": "Aligned DeepSeek-style scratch comparison; observed training prefixes",
+  "hardware": "NVIDIA B300",
+  "contract": {
+    "branch_sites": [
+      2,
+      4,
+      7,
+      9,
+      12,
+      14,
+      17,
+      19
+    ],
+    "query_heads": 8,
+    "kv_heads": 2,
+    "branch_head_dim": 16,
+    "normal_window": 512,
+    "simplicial_windows": [
+      512,
+      32
+    ],
+    "context": 2048,
+    "windows_per_update": 64,
+    "gpus_per_arm": 16,
+    "expert_parallel": 8,
+    "expert_fsdp": 2,
+    "engram_owners": 16,
+    "native_backbone_retained": true,
+    "optimizer": "Sinkhorn Engram / FP32-factored Adafactor for other parameters",
+    "seed": 42,
+    "data": "FineWeb-Edu, identical document stream and tokenizer within each pair",
+    "matching": "Shared data contract, source/implementation hashes, optimizer settings, and common initial tensor hash within each width; unequal added projection parameters",
+    "data_preprocessing_sha256": "fe4ed67e40358729521773198b5263ccc4e769db3f3f57a6e4936de7e87df60a"
+  },
+  "cohorts": [
+    {
+      "width": 128,
+      "depth": 20,
+      "seed": 42,
+      "normal_parameters": 569649800,
+      "simplicial_parameters": 569715464,
+      "engram_table_parameters": 153723520,
+      "routed_top_k": 2,
+      "shared_experts": 1,
+      "common_initial_sha256": "6ffe7511a88196ae4fc9f0e7e3f645b50a759c61a2f71813260440b3e51c4e31",
+      "project_commit": "cf9093c24053e870f7b62e3b7dc74df04dbe1420",
+      "upstream_commit": "f7ccd6f7902634af34c2f31b3294ac250dc97670",
+      "planned_tokens": 10000000000,
+      "completed_planned_budget": false,
+      "columns": [
+        "step",
+        "training_tokens",
+        "normal_ce",
+        "simplicial_ce"
+      ],
+      "points": [
+        [
+          0,
+          0,
+          11.790179895378113,
+          11.790179895378113
+        ],
+        [
+          1829,
+          100027437,
+          5.463592156044006,
+          5.402403151735306
+        ],
+        [
+          3651,
+          200029241,
+          4.9942986869659425,
+          4.96222860105133
+        ],
+        [
+          5436,
+          300019820,
+          4.666224495513916,
+          4.661394798538208
+        ],
+        [
+          7332,
+          400029734,
+          4.496400014198303,
+          4.535324529821396
+        ],
+        [
+          9102,
+          500051354,
+          4.381879390533447,
+          4.4128002112007145
+        ],
+        [
+          10952,
+          600032086,
+          4.322010653236389,
+          4.317971233629227
+        ],
+        [
+          12705,
+          700001579,
+          4.239354391983032,
+          4.260929024341583
+        ],
+        [
+          14524,
+          800015781,
+          4.149973565214157,
+          4.144009086015702
+        ],
+        [
+          16381,
+          900024022,
+          4.107197529647827,
+          4.098533575752258
+        ],
+        [
+          18145,
+          1000019645,
+          4.035382961849213,
+          4.037861068418503
+        ],
+        [
+          20038,
+          1100015700,
+          4.035139620353699,
+          4.0193954282417295
+        ],
+        [
+          21808,
+          1200051951,
+          4.001829852710724,
+          3.9884201978359224
+        ],
+        [
+          23650,
+          1300051460,
+          3.961902873397827,
+          3.933661246143341
+        ],
+        [
+          25463,
+          1400033367,
+          3.9378565407104493,
+          3.919594686433792
+        ],
+        [
+          27218,
+          1500040330,
+          3.8908244333705904,
+          3.8675338154296877
+        ],
+        [
+          29082,
+          1600001220,
+          3.889089907104492,
+          3.8576088508300783
+        ],
+        [
+          30849,
+          1700001999,
+          3.8623650429000853,
+          3.8338717430839537
+        ],
+        [
+          32682,
+          1800009534,
+          3.8193659020137787,
+          3.792562246734619
+        ],
+        [
+          34484,
+          1900037115,
+          3.8275545374984743,
+          3.7983281262168886
+        ],
+        [
+          36284,
+          2000044207,
+          3.787448352733612,
+          3.7612915463581085
+        ],
+        [
+          38142,
+          2100047315,
+          3.791041958492279,
+          3.7577072448539734
+        ],
+        [
+          39889,
+          2200020326,
+          3.752769661172867,
+          3.724890191673279
+        ],
+        [
+          41751,
+          2300021423,
+          3.7482898982868194,
+          3.719896239133835
+        ],
+        [
+          43544,
+          2400032992,
+          3.753921551109314,
+          3.7256474357147216
+        ],
+        [
+          45324,
+          2500026126,
+          3.713132290431976,
+          3.684360129207611
+        ],
+        [
+          47149,
+          2600056769,
+          3.7069720197410585,
+          3.6837208091831206
+        ]
+      ],
+      "last_logged_training_tokens": {
+        "normal": 4060042937,
+        "simplicial": 2619051937
+      },
+      "shared_evaluation_targets": 1000000
+    },
+    {
+      "width": 640,
+      "depth": 20,
+      "seed": 42,
+      "normal_parameters": 5185644472,
+      "simplicial_parameters": 5185972280,
+      "engram_table_parameters": 3072505856,
+      "routed_top_k": 14,
+      "shared_experts": 1,
+      "common_initial_sha256": "6f76692abeba6c37f429f81bf58cd9b34f53ad90c1152f8467f13c84292248ee",
+      "project_commit": "cf9093c24053e870f7b62e3b7dc74df04dbe1420",
+      "upstream_commit": "f7ccd6f7902634af34c2f31b3294ac250dc97670",
+      "planned_tokens": 10000000000,
+      "completed_planned_budget": false,
+      "columns": [
+        "step",
+        "training_tokens",
+        "normal_ce",
+        "simplicial_ce"
+      ],
+      "points": [
+        [
+          0,
+          0,
+          11.901956263259887,
+          11.901956263259887
+        ],
+        [
+          1829,
+          100027437,
+          4.874817249259949,
+          5.003873203834534
+        ],
+        [
+          3651,
+          200029241,
+          4.259793259075165,
+          4.316386576623916
+        ],
+        [
+          5436,
+          300019820,
+          3.9425107466983795,
+          3.937612045972824
+        ],
+        [
+          7332,
+          400029734,
+          3.8143058256492615,
+          3.8102939871292114
+        ],
+        [
+          9102,
+          500051354,
+          3.7295942525501253,
+          3.695138825557709
+        ],
+        [
+          10952,
+          600032086,
+          3.6069385280818937,
+          3.597560495346069
+        ],
+        [
+          12705,
+          700001579,
+          3.5435126439590454,
+          3.540886617454529
+        ],
+        [
+          14524,
+          800015781,
+          3.4577424145011904,
+          3.4409160695381162
+        ],
+        [
+          16381,
+          900024022,
+          3.4197083997535707,
+          3.4104353951301576
+        ],
+        [
+          18145,
+          1000019645,
+          3.3731854003238677,
+          3.358951176858902
+        ],
+        [
+          20038,
+          1100015700,
+          3.3420306242103575,
+          3.331714169855118
+        ],
+        [
+          21808,
+          1200051951,
+          3.318041490440369,
+          3.3088228877334593
+        ],
+        [
+          23650,
+          1300051460,
+          3.27317383367157,
+          3.2671044671115874
+        ],
+        [
+          25463,
+          1400033367,
+          3.262008920902252,
+          3.248472875524521
+        ],
+        [
+          27218,
+          1500040330,
+          3.217861168182373,
+          3.2030560358028413
+        ],
+        [
+          29082,
+          1600001220,
+          3.2085819518432617,
+          3.1939253132858276
+        ],
+        [
+          30849,
+          1700001999,
+          3.189705642211914,
+          3.179716011003494
+        ],
+        [
+          32682,
+          1800009534,
+          3.15881094616127,
+          3.1487652799186705
+        ],
+        [
+          34484,
+          1900037115,
+          3.1604491842918394,
+          3.148544987455368
+        ],
+        [
+          36284,
+          2000044207,
+          3.1322433294486998,
+          3.12006937387085
+        ],
+        [
+          38142,
+          2100047315,
+          3.128743096200943,
+          3.119605241727829
+        ],
+        [
+          39889,
+          2200020326,
+          3.1036832153396605,
+          3.0955054961090087
+        ],
+        [
+          41751,
+          2300021423,
+          3.0964736949386595,
+          3.086271266439438
+        ]
+      ],
+      "last_logged_training_tokens": {
+        "normal": 3402770428,
+        "simplicial": 2365877576
+      },
+      "shared_evaluation_targets": 1000000
+    }
+  ],
+  "limitations": [
+    "One training seed per arm; no seed uncertainty estimate.",
+    "Training prefixes only; neither pair completed the planned 10B targets in the inspected records.",
+    "Widths change active experts and Engram storage; not a pure dense-width or equal-compute scaling comparison.",
+    "Earlier original 29.06B-parameter scratch lineage is a different contract.",
+    "Periodic validation observations are correlated and do not constitute independent replications."
+  ],
+  "sources": [
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d128-normal/RUN_CONTRACT.json",
+      "bytes": 25692,
+      "sha256": "188075cc9f44fa8537490d618f89eb601b4290f916be1077e98c7b1b853ba79a"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d128-normal/rank-00-initial.json",
+      "bytes": 123,
+      "sha256": "17ffadbd5d2d00af753a6a7f8ffc0bd709b4a9560c04c19aa83154936fc70131"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d128-normal/train-metrics.jsonl",
+      "bytes": 111960325,
+      "sha256": "aada196b859574f140cd6590c51f229925fe30eb6a8ebcb4f414b1311392e883"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d128-normal/validation.jsonl",
+      "bytes": 4261,
+      "sha256": "13e4ebab6fe08540478d04161620fca84c80b82829fc16d4caf61379f16ad196"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d128-simplicial/RUN_CONTRACT.json",
+      "bytes": 25700,
+      "sha256": "6afffd672e0bcf5faa40614c9ae2f804412a9bfa87529e402ebc02f0d78bbb15"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d128-simplicial/rank-00-initial.json",
+      "bytes": 123,
+      "sha256": "17ffadbd5d2d00af753a6a7f8ffc0bd709b4a9560c04c19aa83154936fc70131"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d128-simplicial/train-metrics.jsonl",
+      "bytes": 71809800,
+      "sha256": "8dbeeccae6937b2085c7c85ff4865dbfa4fe5b5204dbc29670185751ba35c508"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d128-simplicial/validation.jsonl",
+      "bytes": 2798,
+      "sha256": "18e5a51c3e56fac691ce8b3ad930824b04a0e314cc304c8c1724a0095a98f821"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d640-normal/RUN_CONTRACT.json",
+      "bytes": 25701,
+      "sha256": "1a154abaac34e6123bb9d241acc1b2363c34762e644ac865649f17ecf20231d7"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d640-normal/rank-00-initial.json",
+      "bytes": 123,
+      "sha256": "1f18d695e5393365f698b9ca7ead3f2546895f31478c1878e9b24b157d0e2730"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d640-normal/train-metrics.jsonl",
+      "bytes": 92400846,
+      "sha256": "80140549903c6c6c6f3df6e5f5ca0af995a35158e668943dbe002228f2de9f58"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d640-normal/validation.jsonl",
+      "bytes": 3642,
+      "sha256": "96dd82ad60ae529817b63662c47477c67ec1707d4b69c33d46e31719314231d7"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d640-simplicial/RUN_CONTRACT.json",
+      "bytes": 25709,
+      "sha256": "99a5f00afdfc6a37e75161531694912a142bea19a828ada493bbf14ddae5ea11"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d640-simplicial/rank-00-initial.json",
+      "bytes": 123,
+      "sha256": "1f18d695e5393365f698b9ca7ead3f2546895f31478c1878e9b24b157d0e2730"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d640-simplicial/train-metrics.jsonl",
+      "bytes": 64358876,
+      "sha256": "67c6b38d8628814c3007affb8be383c4961e9ea20f46091b6c2e8e2d8d1d6519"
+    },
+    {
+      "path": "results/deepseek-v41-aligned-scaling-20260927/production-d640-simplicial/validation.jsonl",
+      "bytes": 2486,
+      "sha256": "eac8f0fbd6c4f6296c1689f05cf0f9e89d4a1c3a3b150958b8829c283be7a0ab"
+    }
+  ]
+}

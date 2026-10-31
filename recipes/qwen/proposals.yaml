@@ -1,3 +1,5 @@
+# Historical scientific contract: retired AutoModel entrypoints require the recorded source snapshot.
+# See docs/wiki/Code-Map.md#retirement-boundary; current RL uses recipes/rl and verl.
 # Versioned scientific contracts; select catalog entries with FILE.yaml#PROFILE.
 profiles:
   next_width_scaled:

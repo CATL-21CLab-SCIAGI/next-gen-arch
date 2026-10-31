@@ -1,0 +1,36 @@
+# OPAL-inspired Stage 2: end-to-end off-policy forward-KL distillation KL(p_teacher || p_student).
+# Unfreezes the retained student backbone at 0.1x of the replacement mixers' learning rate.
+# Default lr=1.5e-4 suits 8-layer simplicial switches; override lr=3.0e-5 for 24-layer triadic switches.
+teacher: ${oc.env:ARCHLAB_TEACHER}
+stage1_checkpoint: ${oc.env:ARCHLAB_STAGE1_CHECKPOINT}
+output: ${oc.env:ARCHLAB_OUTPUT}
+variant: ${oc.env:ARCHLAB_VARIANT}
+sources:
+  - manifest: ${oc.env:ARCHLAB_LATENT_DATA}/wiki-rewrite/manifest.json
+    weight: 0.6
+  - manifest: ${oc.env:ARCHLAB_LATENT_DATA}/infinibyte-reasoning/manifest.json
+    weight: 0.2
+  - manifest: ${oc.env:ARCHLAB_LATENT_DATA}/stem-sft/manifest.json
+    weight: 0.2
+sequence_length: 2048
+batch_tokens: 32768
+tokens: 25001984  # 763 complete updates at L2048
+eval_windows: 16
+lr: 0.00015
+backbone_lr_ratio: 0.1
+seed: 42
+init_std: 0.02
+feature_dim: 4
+backend: kernel
+window_1: null
+window_2: 64
+microbatch_windows: 1
+heldout_fraction: 0.1
+split_seed: 42
+warmup_fraction: 0.03
+final_lr_fraction: 0.1
+clip_norm: 1.0
+eval_every: 200
+log_every: 1
+kl_chunk_tokens: 128
+gradient_checkpointing: false

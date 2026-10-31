@@ -1,0 +1,220 @@
+diff --git a/uni_agent/gateway/session/codec.py b/uni_agent/gateway/session/codec.py
+--- a/uni_agent/gateway/session/codec.py
++++ b/uni_agent/gateway/session/codec.py
+@@ -191,6 +191,26 @@
+     except Exception:
+         return False
+     return "<|im_start|>developer" in rendered or "developer:" in rendered
++
++
++def _requires_nested_function_tool_calls(processing_class) -> bool:
++    """Detect templates requiring OpenAI's nested function-call history."""
++    name, body = "__uni_agent_function_probe__", "__uni_agent_argument_probe__"
++    function = {"name": name, "arguments": {"command": body}}
++    for nested in (False, True):
++        call = {"id": "call_probe", "type": "function", "function": function} if nested else function
++        try:
++            rendered = processing_class.apply_chat_template(
++                [{"role": "user", "content": "probe"},
++                 {"role": "assistant", "content": "", "tool_calls": [call]}],
++                tokenize=False,
++                add_generation_prompt=False,
++            )
++        except Exception:
++            continue
++        if name in rendered and body in rendered:
++            return nested
++    return False
+ 
+ 
+ def _parser_tool_view(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+@@ -290,6 +310,7 @@
+     tools: list[dict[str, Any]] | None,
+     *,
+     freeform_tool_calls: bool,
++    nested_function_tool_calls: bool = False,
+ ) -> dict[str, Any]:
+     """Convert stored Chat-style tool calls into the active Jinja contract."""
+     normalized = dict(message)
+@@ -336,6 +357,12 @@
+                 rendered_calls.append(
+                     {"name": name, "arguments": {"arguments": _freeform_call_input(arguments)}}
+                 )
++        if nested_function_tool_calls:
++            function = rendered_calls.pop()
++            rendered = {"type": "function", "function": function}
++            if tool_call.get("id"):
++                rendered["id"] = tool_call["id"]
++            rendered_calls.append(rendered)
+     if rendered_calls:
+         normalized["tool_calls"] = rendered_calls
+     else:
+@@ -349,13 +376,17 @@
+     *,
+     freeform_tool_calls: bool = False,
+     supports_developer: bool = True,
++    nested_function_tool_calls: bool = False,
+ ) -> list[dict[str, Any]]:
+     """Project semantic messages onto the active Jinja message contract."""
+     projected: list[dict[str, Any]] = []
+     changed = False
+     for message in messages:
+         if message.get("role") == "assistant":
+-            view = _assistant_history_message(message, tools, freeform_tool_calls=freeform_tool_calls)
++            view = _assistant_history_message(
++                message, tools, freeform_tool_calls=freeform_tool_calls,
++                nested_function_tool_calls=nested_function_tool_calls,
++            )
+             changed = changed or view != message
+         else:
+             view = message
+@@ -509,6 +540,7 @@
+         self._apply_chat_template_kwargs = dict(apply_chat_template_kwargs or {})
+         processing_class = self._processor if self._processor is not None else tokenizer
+         self._freeform_tool_calls = _supports_freeform_tool_calls(processing_class)
++        self._nested_function_tool_calls = _requires_nested_function_tool_calls(processing_class)
+         self._supports_developer = _supports_developer_role(processing_class)
+         self._generation_prompt = initialize_generation_prompt(
+             processing_class,
+@@ -644,6 +676,7 @@
+             tools,
+             freeform_tool_calls=self._freeform_tool_calls,
+             supports_developer=self._supports_developer,
++            nested_function_tool_calls=self._nested_function_tool_calls,
+         )
+ 
+     def _encode_prompt_text(
+@@ -687,6 +720,7 @@
+                 tools,
+                 freeform_tool_calls=self._freeform_tool_calls,
+                 supports_developer=self._supports_developer,
++                nested_function_tool_calls=self._nested_function_tool_calls,
+             ),
+             tools=_prompt_tool_view(tools, freeform_tool_calls=self._freeform_tool_calls),
+             add_generation_prompt=True,
+@@ -704,10 +738,29 @@
+         messages: list[dict[str, Any]],
+         image_data: list[Any] | None = None,
+         video_data: list[Any] | None = None,
++        history_messages: list[dict[str, Any]] | None = None,
+     ) -> list[int]:
+         """Encode continuation messages using a dummy-user anchored delta."""
+         if not messages:
+             return []
++
++        if self._nested_function_tool_calls:
++            names = {
++                call["id"]: call["function"]["name"]
++                for message in history_messages or messages
++                for call in message.get("tool_calls") or []
++                if isinstance(call, dict) and call.get("id")
++                and isinstance(call.get("function"), dict) and call["function"].get("name")
++            }
++            named_messages = []
++            for message in messages:
++                if message.get("role") == "tool" and not message.get("name"):
++                    name = names.get(message.get("tool_call_id"))
++                    if not name:
++                        raise ValueError("Native tool observation has no matching function in history")
++                    message = {**message, "name": name}
++                named_messages.append(message)
++            messages = named_messages
+ 
+         processing_class = self._processor if self._processor is not None else self._tokenizer
+         anchor_content = [{"type": "text", "text": ""}] if self._processor is not None else ""
+@@ -733,6 +786,7 @@
+                 None,
+                 freeform_tool_calls=self._freeform_tool_calls,
+                 supports_developer=self._supports_developer,
++                nested_function_tool_calls=self._nested_function_tool_calls,
+             ),
+             tools=None,
+             add_generation_prompt=True,
+@@ -921,10 +975,12 @@
+             if self._enable_tool_parser_cache:
+                 self._tool_parser_cache[cache_key] = parser
+ 
+-        request = SimpleNamespace(tools=vllm_tools, tool_choice="auto", skip_special_tokens=True)
++        request = SimpleNamespace(
++            tools=vllm_tools, tool_choice="auto", skip_special_tokens=parser_name != "muse_glimmer",
++        )
+         parsed = parser.extract_tool_calls(text, request)
+         if not parsed.tools_called:
+-            return text, []
++            return (parsed.content or "", []) if parser_name == "muse_glimmer" else (text, [])
+         return parsed.content or "", [tool_call.function for tool_call in parsed.tool_calls]
+ 
+     async def _process_tool_calls_verl(
+@@ -1056,6 +1112,12 @@
+         """Decode model output tokens into an assistant message and finish reason."""
+         finish_reason = _FINISH_REASON_MAP.get(stop_reason, stop_reason) if stop_reason else "stop"
+         parser_tools = parser_tools or tools
++        if self._tool_parser_name == "muse_glimmer":
++            if self._rollout_backend != "vllm":
++                raise ValueError("Muse native decoding requires the installed vLLM Muse parsers")
++            return await self._decode_muse_response(
++                response_ids, tools=parser_tools or [], finish_reason=finish_reason,
++            )
+         if self._tool_parser_name and parser_tools:
+             content, function_calls = await self._extract_tool_calls(
+                 response_ids,
+@@ -1099,6 +1161,36 @@
+             message["reasoning_content"] = reasoning
+         return message, finish_reason
+ 
++    async def _decode_muse_response(
++        self, response_ids: list[int], *, tools: list[dict[str, Any]], finish_reason: str,
++    ) -> tuple[dict[str, Any], str]:
++        """Use vLLM's stock channel-aware Muse parsers; retain raw tokens upstream."""
++        from vllm.reasoning import ReasoningParserManager
++
++        text = self._tokenizer.decode(response_ids, skip_special_tokens=False)
++        parser = ReasoningParserManager.get_reasoning_parser("muse_glimmer")(self._tokenizer)
++        reasoning, _ = parser.extract_reasoning(text, SimpleNamespace())
++        content, calls = await self._extract_tool_calls(response_ids, tools, "muse_glimmer")
++        # A real tool channel containing an incomplete invoke is a policy format
++        # error, not an apparently successful final answer. Let the stock harness
++        # return its ordinary unknown-tool feedback; a length cap still executes
++        # nothing. The upstream parser owns channel detection, including quotes.
++        if not calls and parser.is_reasoning_end(response_ids):
++            calls = [self._malformed_tool_call("", text)]
++        message: dict[str, Any] = {
++            "role": "assistant", "content": self._strip_trailing_stop_token(content or ""),
++        }
++        if reasoning:
++            message["reasoning_content"] = reasoning
++        if calls:
++            message["tool_calls"] = [
++                {"id": f"call_{uuid4().hex[:8]}", "type": "function",
++                 "function": {"name": call.name, "arguments": call.arguments}}
++                for call in calls
++            ]
++            return message, "length" if finish_reason == "length" else "tool_calls"
++        return message, finish_reason
++
+     def _strip_trailing_stop_token(self, content: str) -> str:
+         """Drop the EOS / stop token text that closes a tool-call generation.
+ 
+diff --git a/uni_agent/gateway/session/session.py b/uni_agent/gateway/session/session.py
+--- a/uni_agent/gateway/session/session.py
++++ b/uni_agent/gateway/session/session.py
+@@ -548,6 +548,7 @@
+                     incremental_messages,
+                     image_data=new_image_data,
+                     video_data=new_video_data,
++                    history_messages=messages,
+                 )
+                 capacity_exhausted = (
+                     self._trajectory_capacity is not None
+diff --git a/tests/uni_agent/gateway/test_session_multiple_chains_on_cpu.py b/tests/uni_agent/gateway/test_session_multiple_chains_on_cpu.py
+--- a/tests/uni_agent/gateway/test_session_multiple_chains_on_cpu.py
++++ b/tests/uni_agent/gateway/test_session_multiple_chains_on_cpu.py
+@@ -572,7 +572,7 @@
+             super().__init__(FakeTokenizer())
+             self._turn_separator = _ids("\n")
+ 
+-        def encode_incremental(self, messages, image_data=None, video_data=None):
++        def encode_incremental(self, messages, image_data=None, video_data=None, history_messages=None):
+             return self.turn_separator + self._tokenizer.apply_chat_template(
+                 messages,
+                 tokenize=True,

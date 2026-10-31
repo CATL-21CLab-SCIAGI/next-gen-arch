@@ -1,0 +1,30 @@
+--- a/verl/workers/engine/fsdp/transformer_impl.py
++++ b/verl/workers/engine/fsdp/transformer_impl.py
+@@ -250,12 +250,21 @@
+             if self.model_config.model_type == "language_model":
+                 auto_class = get_hf_auto_model_class(hf_config=self.model_config.hf_config)
+ 
+-                module = auto_class.from_pretrained(
+-                    pretrained_model_name_or_path=self.model_config.local_path,
+-                    torch_dtype=torch_dtype,
+-                    config=self.model_config.hf_config,
+-                    trust_remote_code=self.model_config.trust_remote_code,
+-                )
++                if getattr(init_context, "__name__", "") == "init_empty_weights":
++                    # Ranks that receive weights by broadcast need no checkpoint reads: from_pretrained still reads
++                    # every shard under init_empty_weights and discards it (Qwen3.8-27B: tens of GB per rank at once).
++                    module = auto_class.from_config(
++                        self.model_config.hf_config,
++                        torch_dtype=torch_dtype,
++                        trust_remote_code=self.model_config.trust_remote_code,
++                    )
++                else:
++                    module = auto_class.from_pretrained(
++                        pretrained_model_name_or_path=self.model_config.local_path,
++                        torch_dtype=torch_dtype,
++                        config=self.model_config.hf_config,
++                        trust_remote_code=self.model_config.trust_remote_code,
++                    )
+ 
+                 # Strip sub-modules listed in _verl_strip_modules (e.g.
+                 # talker / code2wav for Qwen3-Omni Thinker-only training).

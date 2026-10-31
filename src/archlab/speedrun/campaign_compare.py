@@ -14,7 +14,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from archlab.speedrun.campaigns import TEN_M_SEEDS, TEN_M_VARIANTS_BY_NAME
+from archlab.campaigns import TEN_M_SEEDS, TEN_M_VARIANTS_BY_NAME
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 _SOURCE_REFERENCE = REPOSITORY_ROOT / "results" / "speedrun-10m-reference.csv"

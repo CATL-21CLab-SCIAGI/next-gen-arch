@@ -58,6 +58,11 @@ def test_historical_formatting_receipts_only_admit_unchanged_sources():
     assert records
     for relative, record in records.items():
         path = root/relative
+        if not path.exists():
+            # Historical receipts do not admit a source retired from the current tree.
+            with pytest.raises(FileNotFoundError):
+                formatting_predecessor(relative, path, record["after_sha256"])
+            continue
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         previous, proof = formatting_predecessor(relative, path, actual)
         if actual == record['after_sha256']:

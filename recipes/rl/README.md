@@ -1,4 +1,19 @@
-# Agentic RL candidates
+# Agentic RL contracts
+
+The current Qwen3.5-4B configuration is `qwen35_code.yaml` plus exactly one
+placement overlay: `qwen35_code_local.yaml` (v3c) or
+`qwen35_code_efficiency.yaml` (v4e). They replace the sequential Python config
+builders. Use `archlab resolve ... --overlay ... --output ...`; deployment paths
+remain environment bindings. The efficiency arm also changes batch size and
+selects an 80-task curriculum, so it is not a pure systems comparison.
+
+Both migrated configurations reproduce their live resolved values exactly.
+Production still runs immutable snapshots: the new Qwen qualification gate
+remains pending until model/cache, optimizer/restart, real verifier and throughput
+checks execute on the deployment. See [Training](../../docs/TRAINING.md).
+
+The Limite and Muse contracts below remain historical candidates; they do not
+describe the current Qwen jobs.
 
 `limite_conversion_code.yaml` is the explicit original-base attention replacement
 experiment after full-weight agentic SFT. Set `ARCHLAB_POLICY` to the finalized

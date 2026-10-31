@@ -42,7 +42,6 @@ LEGACY_WRITER_POLICIES = [
     ("archlab.tracking.mlflow_checkpoints", False),
     ("archlab.tracking.rl_mlflow", False),
     ("archlab.storage.checkpoint_retention", True),
-    ("archlab.tracking.v41_matched_checkpoint_watch", True),
 ]
 
 

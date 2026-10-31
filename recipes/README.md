@@ -3,6 +3,11 @@
 Start with the model family or study. A study contract may describe multiple
 matched arms; a catalog keeps related model, scale or launch profiles together.
 
+The maintained RL entry points are `resolve`, `qualify` and `train`, backed by verl.
+Historical AutoModel/SFT/scratch contracts below retain their scientific settings;
+their custom executors were [retired](../docs/wiki/Code-Map.md#retirement-boundary).
+Reproducing those runs requires their recorded immutable source, not the current CLI.
+
 | Directory / file | Contents |
 | --- | --- |
 | [`rl/`](rl/) | New package-backed agentic RL phases and bounded code-data contracts |

@@ -23,21 +23,6 @@ REFERENCE_DIGESTS = {
 }
 
 
-def implementation_hashes() -> dict[str, str]:
-    """Bind qualification receipts to the actual model/data/update implementation."""
-    from archlab.artifacts import sha256_file
-
-    root = Path(__file__).parents[1]
-    owners = [
-        "architectures/deepseek_v41_adapter.py", "architectures/deepseek_v41_math.py",
-        "architectures/deepseek_v41_torch.py", "architectures/simplicial_attention.py",
-        "architectures/simplicial_kernels.py", "optimizers/headwise_muon.py",
-        *[f"automodel/deepseek_v41_{name}.py" for name in
-          ("autograd", "data", "execution", "loading", "parallel", "pytorch", "loss", "training", "runtime", "native_quantization")],
-    ]
-    return {name: sha256_file(root / name) for name in owners}
-
-
 def select_container_kernel_packages(package_root: Path) -> dict:
     root = package_root.resolve(strict=True)
     if any(name in sys.modules for name in ("tilelang", "tvm", "tvm_ffi")):

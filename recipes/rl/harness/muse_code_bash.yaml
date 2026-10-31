@@ -1,0 +1,21 @@
+# Native Muse ATEM rendering and reasoning strength come from the RL recipe.
+# Tools use the stock MiMo bash-only agent and executable task verifier.
+use_dataset_env: true
+agent:
+  type: bashonly-agent
+  step_limit: 500
+  max_observation_length: 12000
+environment:
+  environment_class: archlab.training.sandbox.E2BEnvironment
+  timeout: 300
+  sandbox_timeout: 7200
+  anti_hack_cleanup: true
+  git_leak_prevention: none
+model:
+  model_name: policy
+  protocol: chat
+  model_kwargs:
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    max_tokens: 8192

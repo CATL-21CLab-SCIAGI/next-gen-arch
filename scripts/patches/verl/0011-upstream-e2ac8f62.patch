@@ -1,0 +1,156 @@
+From e2ac8f6222801d5e8ce50447b0c3c2d9237e4770 Mon Sep 17 00:00:00 2001
+From: lxb007981 <lxb007981@hotmail.com>
+Date: Fri, 18 Sep 2026 09:51:07 +0800
+Subject: [PATCH] [vllm] fix: prevent scheduler resume race during async weight
+ sync (#7846)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+### What does this PR do?
+
+Fully async weight synchronization can deadlock when a duplicate
+scheduler resume overlaps with the start of a new DP request wave.
+
+Restoring the KV cache implicitly resumes vllm scheduling, and the
+subsequent resume_generation() call resumes it again. In the current
+vLLM version, resume_scheduler() branches on the rank-local
+[`engines_running`](https://github.com/vllm-project/vllm/blob/dbf49dad11e30ec5d464be74b715a9a9e31c2c5a/vllm/v1/engine/core.py#L2110)
+flag. A new request wave can cause some ranks to skip the resume
+collective while others enter it, leaving EngineCores and model workers
+waiting on each other until Gloo times out.
+
+Split replica resume into two ordered phases:
+- Keep request admission closed while the head server resumes all DP
+EngineCores and waits for the resume RPC to complete.
+- Open submission gates on all servers only after engine resume returns.
+
+This prevents waiting generation tasks from starting a new DP wave while
+the duplicate resume is still in progress. Also order the server-level
+resume_generation() wrapper to resume engines before opening its gate.
+
+Keep the explicit resume because it is still required when KV-cache
+restoration is skipped.
+
+<details>
+    <summary>See here for detailed walkthrough about the race</summary>
+
+There is a race that triggers a deadlock during weight synchronization
+in fully async mode. Some ranks are blocked inside
+`DPEngineCoreProc.resume_scheduler()`, while some ranks are waiting
+inside model execution until they both timeout. The root cause is the
+race between **duplicate scheduler resume and the start of a new DP
+request wave**.
+
+During each weight update, verl calls the same vLLM
+`DPEngineCoreProc.resume_scheduler()` method twice:
+
+1. **Implicitly**, when
+[`wake_up(tags=["kv_cache"])`](https://github.com/verl-project/verl/blob/9e0252efba42a5442bbe52f7d0d2ac68e514581e/verl/workers/rollout/vllm_rollout/vllm_async_server.py#L892)
+restores the remaining memory and resumes scheduling.
+2. **Explicitly**, through the subsequent
+[`resume_generation()`](https://github.com/verl-project/verl/blob/9e0252efba42a5442bbe52f7d0d2ac68e514581e/verl/workers/rollout/vllm_rollout/vllm_async_server.py#L995)
+call.
+
+The affected vLLM implementation is not idempotent: a duplicate resume
+can enter a collective even though scheduling is already unpaused. It
+branches on the rank-local
+[`engines_running`](https://github.com/vllm-project/vllm/blob/dbf49dad11e30ec5d464be74b715a9a9e31c2c5a/vllm/v1/engine/core.py#L2110)
+flag. Since request-wave notifications and resume RPCs arrive
+independently, one rank can see `True` and return immediately, while
+another sees `False` and enters the resume barrier. That creates a
+circular wait:
+
+- B’s EngineCore waits for A’s EngineCore to join the resume collective.
+- A’s workers wait for B’s workers to join the model collective.
+- B’s EngineCore cannot dispatch work to its workers while blocked in
+the resume collective.
+
+This deadlock eventually reported as Gloo timeouts.
+</details>
+
+[vLLM PR #55229](https://github.com/vllm-project/vllm/pull/55229),
+currently a draft, addresses this vllm issue by recognizing duplicate
+resumes using scheduler pause state and the wave gate. Already-unpaused
+ranks skip synchronization consistently, while genuine resumes retain
+the barrier.
+
+Related PRs: #7511
+
+### Checklist Before Starting
+
+- [x] Search for similar PRs. Paste at least one query link here: ...
+- [x] Format the PR title as `[{modules}] {type}: {description}` (This
+will be checked by the CI)
+- `{modules}` include `fsdp`, `megatron`, `veomni`, `sglang`, `vllm`,
+`rollout`, `trainer`, `ci`, `training_utils`, `recipe`, `hardware`,
+`deployment`, `ray`, `worker`, `single_controller`, `misc`, `perf`,
+`model`, `algo`, `env`, `tool`, `ckpt`, `doc`, `data`, `cfg`, `reward`,
+`fully_async`, `one_step_off`
+- If this PR involves multiple modules, separate them with `,` like
+`[megatron, fsdp, doc]`
+  - `{type}` is in `feat`, `fix`, `refactor`, `chore`, `test`
+- If this PR breaks any API (CLI arguments, config, function signature,
+etc.), add `[BREAKING]` to the beginning of the title.
+  - Example: `[BREAKING][fsdp, megatron] feat: dynamic batching`
+
+### Test
+
+Verified under `verl.experimental.fully_async_policy.fully_async_main` x
+`fully_async_ppo_megatron_trainer.yaml` presets, fully async training on
+GLM-5.2.
+
+### API and Usage Example
+
+No APIs changed.
+---
+ .../rollout/vllm_rollout/vllm_async_server.py | 27 ++++++++++++-------
+ 1 file changed, 18 insertions(+), 9 deletions(-)
+
+diff --git a/verl/workers/rollout/vllm_rollout/vllm_async_server.py b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+index c015737c..14b67369 100644
+--- a/verl/workers/rollout/vllm_rollout/vllm_async_server.py
++++ b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+@@ -930,15 +930,20 @@ class vLLMHttpServer:
+             logger.error(f"Error aborting requests: {e}")
+             return {"aborted_count": 0, "request_ids": [], "error": str(e)}
+ 
+-    async def resume_generation(self):
+-        """Resume generation after abort_all_requests (pause_generation)."""
+-        # Before the node_rank guard: every server in the replica closed the gate, so every
+-        # server must reopen it.
++    async def resume_engine_generation(self):
++        """Resume the DP engines while request admission remains closed."""
++        if self.node_rank == 0:
++            await self.engine.resume_generation()
++
++    async def open_submission_gate(self):
++        """Admit requests after the replica has finished resuming its engines."""
+         self._submission_paused = False
+         self._resume_event.set()
+-        if self.node_rank != 0:
+-            return
+-        await self.engine.resume_generation()
++
++    async def resume_generation(self):
++        """Resume generation after abort_all_requests (pause_generation)."""
++        await self.resume_engine_generation()
++        await self.open_submission_gate()
+ 
+     async def abort_request(self, request_id: str, reset_prefix_cache: bool = True) -> dict[str, Any]:
+         """Abort a specific generation request.
+@@ -1267,8 +1272,12 @@ class vLLMReplica(RolloutReplica):
+         }
+ 
+     async def resume_generation(self):
+-        """Resume generation on all servers after abort_all_requests."""
+-        await asyncio.gather(*[server.resume_generation.remote() for server in self.servers])
++        """Resume the DP engines before admitting requests on any server."""
++        # KV-cache wake-up may already have resumed scheduling. Keep admission
++        # closed during this resume too: new requests could otherwise start a
++        # DP wave while only some ranks are still in the resume collective.
++        await self.servers[0].resume_engine_generation.remote()
++        await asyncio.gather(*[server.open_submission_gate.remote() for server in self.servers])
+ 
+     async def abort_request(self, request_id: str) -> dict[str, Any]:
+         """Abort a specific request. Tries all servers since we don't know which one has it.

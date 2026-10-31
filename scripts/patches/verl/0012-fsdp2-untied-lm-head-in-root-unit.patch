@@ -1,0 +1,14 @@
+diff --git a/verl/utils/fsdp_utils.py b/verl/utils/fsdp_utils.py
+--- a/verl/utils/fsdp_utils.py
++++ b/verl/utils/fsdp_utils.py
+@@ -544,7 +544,9 @@
+     must not be wrapped separately.
+     """
+     _tie = getattr(model.config, "tie_word_embeddings", False)
+-    _wrap_by_name = set() if _tie else {"embed_tokens", "lm_head"}
++    # lm_head stays in the root unit (archlab 2026-10-20): fused-kernel log-prob reads lm_head.weight without calling
++    # lm_head.forward, so a separately wrapped untied lm_head is never all-gathered and FSDP2's post-backward fails.
++    _wrap_by_name = set() if _tie else {"embed_tokens"}
+ 
+     modules = []
+     for name, module in model.named_modules():

@@ -195,7 +195,7 @@ def test_validate_request_accepts_direct_flash_next_launcher_with_oss_output(
     payload = _payload(root, "a" * 40, launcher=FLASH_NEXT_FULL_LAUNCHER)
     environment = payload["environment"]
     assert isinstance(environment, dict)
-    environment["NGA_OUTPUT_ROOT"] = "/mnt/oss/evergreen/next-gen-arch/generation-1"
+    environment["NGA_OUTPUT_ROOT"] = "/mnt/oss/evergreen/runs/arch/next-gen-arch--generation-1"
     environment["NGA_GLOBAL_BATCH_SIZE"] = "4096"
     environment["NGA_TARGET_TRAIN_TOKENS"] = "100000595968"
     environment["NGA_CHECKPOINT_INTERVAL_TOKENS"] = "100000595968"
@@ -203,7 +203,24 @@ def test_validate_request_accepts_direct_flash_next_launcher_with_oss_output(
     request = validate_request(payload, allowed_repo_root=tmp_path / "repos")
 
     assert request.payload["launcher"] == FLASH_NEXT_FULL_LAUNCHER
-    environment["NGA_OUTPUT_ROOT"] = "/mnt/nas/evergreen/wrong-root"
+    for output_root in (
+        "/mnt/nas/evergreen/wrong-root",
+        "/mnt/oss/evergreen/next-gen-arch/generation-1",
+        "/mnt/oss/evergreen/runs/arch/unrelated-run",
+        "/mnt/oss/evergreen/runs/arch/next-gen-arch--",
+    ):
+        environment["NGA_OUTPUT_ROOT"] = output_root
+        with pytest.raises(ValueError, match="NGA_OUTPUT_ROOT"):
+            validate_request(payload, allowed_repo_root=tmp_path / "repos")
+
+
+def test_quarter_output_supports_canonical_oss_and_rejects_retired_alias(tmp_path: Path) -> None:
+    payload = _payload(tmp_path / "repos" / "next-gen-arch", "a" * 40)
+    environment = payload["environment"]
+    assert isinstance(environment, dict)
+    environment["NGA_OUTPUT_ROOT"] = "/mnt/oss/evergreen/runs/arch/next-gen-arch--quarter-generation-1"
+    validate_request(payload, allowed_repo_root=tmp_path / "repos")
+    environment["NGA_OUTPUT_ROOT"] = "/mnt/nas/evergreen/next-gen-arch/quarter-generation-1"
     with pytest.raises(ValueError, match="NGA_OUTPUT_ROOT"):
         validate_request(payload, allowed_repo_root=tmp_path / "repos")
 

@@ -217,3 +217,99 @@ def test_replacement_overrides_cannot_bypass_cache_lineage_or_health_contract(co
     with pytest.raises((ValueError, OmegaConfBaseException)):
         compose_verl(read_experiment(Path("recipes/rl/limite_conversion_code.yaml"), [override]),
                      Path("third_party/verl"))
+
+
+@pytest.fixture
+def muse_deployment(monkeypatch):
+    for name in ("PARENT_CHECKPOINT", "CODE_DATA", "OUTPUT", "MODEL_MANIFEST"):
+        monkeypatch.setenv("ARCHLAB_" + name, "/fixture/" + name.lower())
+    monkeypatch.setenv("ARCHLAB_HARNESS_SPEC", str(Path("recipes/rl/harness/muse_single_bash.yaml").resolve()))
+    for name in ("E2B_DOMAIN", "ARCHLAB_E2B_KEY_FILE", "ARCHLAB_E2B_TEMPLATE_MAP"):
+        monkeypatch.setenv(name, "/fixture/" + name.lower())
+
+
+def test_muse_native_control_composes_standard_fsdp_and_explicit_mimo_tasks(muse_deployment):
+    import yaml
+
+    from archlab.training.config import compose_verl
+
+    experiment = read_experiment(Path("recipes/rl/muse_code.yaml"))
+    config = compose_verl(experiment, Path("third_party/verl"))
+    actor, rollout = config.actor_rollout_ref.actor, config.actor_rollout_ref.rollout
+    assert experiment.parent_stage == "published_checkpoint" and experiment.parent_tokens is None
+    assert experiment.publisher_manifest == "/fixture/model_manifest"
+    assert experiment.intervention == "none" and experiment.variant == "normal"
+    assert config.actor_rollout_ref.model.path == experiment.parent_checkpoint
+    assert config.model_engine == "dp" and actor.strategy == actor.fsdp_config.strategy == "fsdp2"
+    assert "megatron" not in actor
+    assert actor.fsdp_config.model_dtype == "fp32" and actor.fsdp_config.dtype == "bfloat16"
+    assert actor.optim.optimizer == "Adam" and actor.optim.lr == 1e-6
+    assert list(actor.optim.betas) == [.9, .95]
+    assert not config.actor_rollout_ref.model.external_lib
+    assert dict(config.actor_rollout_ref.model.override_config) == {"attn_implementation": "flash_attention_4"}
+    assert not config.actor_rollout_ref.model.use_remove_padding
+    assert not config.actor_rollout_ref.model.use_fused_kernels
+    assert actor.ppo_micro_batch_size_per_gpu == 1
+    assert config.data.custom_cls.name == "MimoAgentSWEDataset"
+    assert config.reward.custom_reward_function.path == "pkg://recipes.code.reward"
+    assert rollout.agent.agent_loop_manager_class == "uni_agent.framework.entry.AgentFrameworkRolloutAdapter"
+    assert rollout.multi_turn.format == "muse_glimmer"
+    assert dict(config.data.apply_chat_template_kwargs) == {"reasoning_strength": "high"}
+    assert rollout.max_model_len == rollout.prompt_length + rollout.response_length == 131072
+    assert dict(rollout.engine_kwargs.vllm) == {
+        "model_impl": "vllm", "limit_mm_per_prompt": {"image": 0, "video": 0}}
+    assert rollout.enforce_eager and rollout.quantization is None
+    assert rollout.custom.agent_framework.mask_unfinished_episode
+    assert config.data.train_batch_size == actor.ppo_mini_batch_size == 2 and rollout.n == 4
+    assert config.trainer.v1.sampler.max_off_policy_threshold == 1
+    assert config.algorithm.rollout_correction.rollout_is_threshold == 2.
+    assert config.trainer.resume_mode == "disable"
+    assert config.trainer.total_training_steps == 20
+    assert config.trainer.save_freq == config.trainer.test_freq == 5
+    assert config.trainer.max_actor_ckpt_to_keep == 2
+    assert config.trainer.project_name == "Muse — RL"
+    spec = yaml.safe_load(Path("recipes/rl/harness/muse_single_bash.yaml").read_text())
+    harness = yaml.safe_load((Path("recipes/rl/harness") / spec["harnesses"][0]["config"]).read_text())
+    assert harness["agent"]["type"] == "bashonly-agent"
+    assert harness["agent"]["step_limit"] == experiment.pilot.step_limit == 500
+    assert harness["model"]["model_kwargs"]["max_tokens"] == experiment.pilot.max_turn_tokens == 8192
+    assert {key: harness["model"]["model_kwargs"][key] for key in ("temperature", "top_p", "top_k")} == {
+        key: rollout[key] for key in ("temperature", "top_p", "top_k")}
+
+
+@pytest.mark.parametrize("override", [
+    "engine=megatron", "attention=tilelang", "variant=simplicial", "intervention=replace_attention",
+    "parent_stage=adapter_sft", "parent_tokens=2000158720", "publisher_manifest=null",
+    "settings.actor_rollout_ref.model.path=/different-checkpoint",
+    "settings.actor_rollout_ref.model.custom_chat_template=non-native",
+    "settings.actor_rollout_ref.model.override_config={}",
+    "settings.actor_rollout_ref.model.override_config={attn_implementation: sdpa}",
+    "settings.actor_rollout_ref.model.override_config={attn_implementation: flash_attention_4, hidden_size: 128}",
+    "settings.actor_rollout_ref.actor.strategy=fsdp",
+    "settings.actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16",
+    "settings.actor_rollout_ref.actor.optim.betas=[0.9,0.999]",
+    "settings.actor_rollout_ref.model.use_remove_padding=true",
+    "settings.actor_rollout_ref.model.lora.rank=8",
+    "settings.actor_rollout_ref.model.use_fused_kernels=true",
+    "settings.actor_rollout_ref.rollout.enforce_eager=false",
+    "settings.actor_rollout_ref.rollout.ignore_eos=true",
+    "settings.actor_rollout_ref.rollout.quantization=fp8",
+    "settings.actor_rollout_ref.rollout.engine_kwargs.vllm={model_impl: transformers}",
+    "settings.actor_rollout_ref.rollout.multi_turn.format=hermes",
+    "settings.data.apply_chat_template_kwargs={reasoning_strength: low}",
+    "settings.actor_rollout_ref.rollout.top_p=0.95",
+    "settings.actor_rollout_ref.rollout.val_kwargs.do_sample=false",
+    "settings.actor_rollout_ref.rollout.n=2",
+    "settings.actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode=false",
+    "settings.trainer.v1.sampler.max_off_policy_threshold=2",
+    "settings.trainer.resume_mode=auto",
+    "pilot.max_turn_tokens=131072", "pilot.minimum_reward_contrast_groups=0",
+])
+def test_muse_control_rejects_unqualified_lineage_runtime_or_algorithm_changes(muse_deployment, override):
+    from omegaconf.errors import OmegaConfBaseException
+
+    from archlab.training.config import compose_verl
+
+    with pytest.raises((ValueError, OmegaConfBaseException)):
+        compose_verl(read_experiment(Path("recipes/rl/muse_code.yaml"), [override]),
+                     Path("third_party/verl"))

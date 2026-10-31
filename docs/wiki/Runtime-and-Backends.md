@@ -1,34 +1,25 @@
 # Runtime and Backends
 
-Current package-backed RL workflow: [training guide](../TRAINING.md). The [Miles experiment](../MILES_BASELINE.md) is a retired historical integration.
+The current RL interface is the [package-backed training workflow](../TRAINING.md). verl owns training, rollout scheduling, checkpoints and monitoring.
 
-## Supported roles
-
-| Path | Role | Qualification boundary |
+| Component | Role | Required evidence |
 | --- | --- | --- |
-| Speedrun | Cold small-model screens and historical regression oracle | Frozen arguments, packing, optimizer and data order |
-| Megatron Core | Distributed pretraining and scaling | Model, optimizer grouping, topology, checkpoint and numerical tests |
-| NeMo AutoModel | Pretrained Qwen/DeepSeek integration and post-training | Pinned upstream source, complete weight loading, FSDP/EP behavior |
-| SGLang integration | Serving/export experiments | Checkpoint coverage, model plugin, cache behavior and inference parity |
+| verl | RL execution and serving coordination | Data, reward, rollout identity, policy lag and optimizer/restart checks |
+| Megatron Core / Transformer Engine | Distributed training and retained pretraining | Model construction, optimizer grouping, topology, checkpoint and numerical checks |
+| TileLang attention | Architecture-specific attention kernels | Forward/backward parity and end-to-end throughput for the model geometry |
+| Speedrun | Frozen small-model reference | Historical arguments, packing, optimizer and data order |
+| AutoModel references | Historical model loading and numerical implementations | Model-specific reference tests; no current custom RL executor |
 
-The CLI backend registry covers speedrun and Megatron. AutoModel and serving use dedicated entries.
+Megatron and TileLang are not competing scheduler backends: the former distributes training, while the latter implements kernels. A configuration name or successful import does not qualify a model/backend combination.
 
-## Runtime contract
-
-Use the validated container's interpreter and installed PyTorch, CUDA, NCCL, Transformer Engine, and Megatron packages. Record the container identity, imported paths, resolved versions, and upstream revision.
-
-A support table or successful import is insufficient evidence for a new model/topology.
+Use the validated container's PyTorch, CUDA, NCCL, Transformer Engine and Megatron packages. Record the container identity, imported paths, resolved versions and upstream revision. Production runs use immutable qualified source snapshots.
 
 ## Parallelism
 
-DP replicates data lanes; TP splits tensors; PP splits layers; CP splits context; EP partitions experts. FSDP shards model state across its owner group.
+DP replicates data lanes; TP splits tensors; PP splits layers; CP splits context; EP partitions experts. FSDP shards model state across its owner group. Record the actual groups and measure throughput: more parallelism may save memory while slowing execution.
 
-Record actual DP, TP, PP, CP, EP, expert-FSDP and table-owner groups. Expert count is an architecture choice; EP size is an execution choice.
-
-More model parallelism can save memory while reducing speed. Choose topology from measured capacity and throughput.
-
-## Historical backend evidence
+## Historical evidence
 
 The matched 10M study found architecture-delta correlation 0.971361 and matching directions for 13/15 variants. The backends were not numerically interchangeable. Speedrun retained a cold-start advantage; Megatron improved steady-state throughput in its qualified configuration.
 
-See [Results](Results.md) and the versioned `docs/BACKEND_COMPARISON.md` report.
+Legacy AutoModel execution, Miles RL and SGLang prototype launch paths are retired. See [Code Map](Code-Map.md) for the archive boundary and [Results](Results.md) for dated evidence.
