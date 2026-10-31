@@ -115,7 +115,10 @@ def test_chunked_forward_kl_matches_unchunked_autograd_and_preserves_teacher(tie
     assert abs(res_a["train_kl"] - float(loss.detach())) < 1e-6
     assert abs(res_a["grad_norm"] - float(norm_b)) < 1e-5
     for pa, pb in zip(params_a, params_b, strict=True):
-        torch.testing.assert_close(pa, pb, atol=1e-6, rtol=1e-5)
+        assert pa.grad is not None and pb.grad is not None
+        torch.testing.assert_close(pa.grad, pb.grad, atol=1e-6, rtol=1e-5)
+        # Adam's first step is ~lr*sign(g), so near-zero gradients amplify summation-order noise.
+        torch.testing.assert_close(pa, pb, atol=1e-5, rtol=1e-5)
     for k, v in teacher.state_dict().items():
         assert torch.equal(v, teacher_before[k])
 

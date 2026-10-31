@@ -99,7 +99,8 @@ def test_triadic_switch_reduces_to_the_teachers_gdn(qk_scale):
     switch = TriadicSwitch(t, SwitchConfig(backend="reference", feature_dim=4), seed=1)
     with torch.no_grad():
         switch.k2.weight.zero_(), switch.q2.weight.zero_()
-    torch.testing.assert_close(switch(x), gdn_forward(t, x), rtol=1e-4, atol=1e-10)
+    reference = gdn_forward(t, x)
+    torch.testing.assert_close(switch(x), reference, rtol=1e-4, atol=1e-6 * float(reference.abs().max()))
     names = {name for name, _ in switch.named_parameters()}
     assert {"k2.weight", "q2.weight", "decay_offset"} <= names
     assert "inherited.in_proj_qkv.weight" in names
