@@ -1,0 +1,33 @@
+# OPAL-inspired stage 1: frozen teacher inputs/targets, all replacement mixer parameters train.
+# This is a Qwen3.5 adaptation, not the article's Qwen3 -> GDN reproduction.
+# simplicial: replace the 8 full-attention layers with full causal determinant attention.
+# triadic: replace the 24 GDN layers with E=4 triadic GDN. Retained layers stay unchanged.
+teacher: ${oc.env:ARCHLAB_TEACHER}
+output: ${oc.env:ARCHLAB_OUTPUT}
+variant: ${oc.env:ARCHLAB_VARIANT}
+sources:
+  - manifest: ${oc.env:ARCHLAB_LATENT_DATA}/wiki-rewrite/manifest.json
+    weight: 0.6
+  - manifest: ${oc.env:ARCHLAB_LATENT_DATA}/infinibyte-reasoning/manifest.json
+    weight: 0.2
+  - manifest: ${oc.env:ARCHLAB_LATENT_DATA}/stem-sft/manifest.json
+    weight: 0.2
+sequence_length: 512
+batch_tokens: 32768
+tokens: 25001984  # 763 complete updates; processed tokens, sampled with replacement
+eval_windows: 32
+lr: 0.003
+seed: 42
+init_std: 0.02
+feature_dim: 4
+backend: kernel
+loss: mse  # sum of per-layer MSE; normalize batch/tokens/hidden width within each layer
+microbatch_windows: 1
+heldout_fraction: 0.1
+split_seed: 42
+warmup_fraction: 0.03
+final_lr_fraction: 0.1
+clip_norm: 1.0
+eval_every: 100
+log_every: 1
+eval_chunk_tokens: 128

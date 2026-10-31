@@ -113,7 +113,7 @@ return so every server reopens.
  1 file changed, 47 insertions(+), 3 deletions(-)
 
 diff --git a/verl/workers/rollout/vllm_rollout/vllm_async_server.py b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
-index 5c4b613a..629152b2 100644
+index 730bc606..c015737c 100644
 --- a/verl/workers/rollout/vllm_rollout/vllm_async_server.py
 +++ b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
 @@ -17,6 +17,7 @@ import inspect
@@ -122,9 +122,9 @@ index 5c4b613a..629152b2 100644
  import os
 +import time
  import uuid
- from collections.abc import Mapping
  from pprint import pprint
-@@ -72,6 +73,9 @@ from verl.workers.rollout.vllm_rollout.utils import (
+ from typing import Any, Callable, Optional
+@@ -66,6 +67,9 @@ from verl.workers.rollout.vllm_rollout.utils import (
  
  _VLLM_VERSION = version.parse(vllm.__version__)
  
@@ -134,7 +134,7 @@ index 5c4b613a..629152b2 100644
  if os.getenv("VERL_USE_GPT_OSS", "0") == "1":
      get_encoding()
  
-@@ -162,6 +166,13 @@ class vLLMHttpServer:
+@@ -156,6 +160,13 @@ class vLLMHttpServer:
          self.global_steps = None
          self._warned_missing_spec_decode_stats = False
  
@@ -145,10 +145,10 @@ index 5c4b613a..629152b2 100644
 +        self._resume_event = asyncio.Event()
 +        self._resume_event.set()
 +
-         # used for http server
-         self._server_address = ray.util.get_node_ip_address().strip("[]")
-         self._server_port = None
-@@ -637,6 +648,13 @@ class vLLMHttpServer:
+         if self.rollout_mode != RolloutMode.HYBRID and self.config.load_format == "dummy":
+             logger.warning(f"rollout mode is {self.rollout_mode}, load_format is dummy, set to auto")
+             self.config.load_format = "auto"
+@@ -612,6 +623,13 @@ class vLLMHttpServer:
                      lora_name=VLLM_LORA_NAME, lora_int_id=VLLM_LORA_INT_ID, lora_path=VLLM_LORA_PATH
                  )
  
@@ -162,7 +162,7 @@ index 5c4b613a..629152b2 100644
          with RLInsightLogger.trace_state("vllm_generate", state_lane_id=f"replica_{self.replica_rank}"):
              generator = self.engine.generate(
                  prompt=prompt,
-@@ -648,8 +666,16 @@ class vLLMHttpServer:
+@@ -623,8 +641,16 @@ class vLLMHttpServer:
  
              # Get final response
              final_res: Optional[RequestOutput] = None
@@ -181,7 +181,7 @@ index 5c4b613a..629152b2 100644
              assert final_res is not None
  
          extra_fields = {"global_steps": self.global_steps}
-@@ -910,11 +936,25 @@ class vLLMHttpServer:
+@@ -865,11 +891,25 @@ class vLLMHttpServer:
                  - request_ids: List of aborted request IDs
          """
          try:
@@ -208,7 +208,7 @@ index 5c4b613a..629152b2 100644
              # 2. Abort all in-flight requests
              # 3. Wait for requests to drain
              # 4. Clear prefix and mm caches if clear_cache=True.
-@@ -939,6 +979,10 @@ class vLLMHttpServer:
+@@ -892,6 +932,10 @@ class vLLMHttpServer:
  
      async def resume_generation(self):
          """Resume generation after abort_all_requests (pause_generation)."""
@@ -219,6 +219,3 @@ index 5c4b613a..629152b2 100644
          if self.node_rank != 0:
              return
          await self.engine.resume_generation()
--- 
-2.43.0
-

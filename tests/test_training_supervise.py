@@ -1,9 +1,10 @@
+import subprocess
+import tempfile
+from pathlib import Path
+
 from omegaconf import OmegaConf
 
 from archlab.training import supervise
-
-import tempfile
-from pathlib import Path
 
 _BASE = Path(tempfile.mkdtemp()) / "base.yaml"
 _BASE.write_text("trainer: {}\n")
@@ -116,3 +117,62 @@ def test_log_rotation_never_overwrites_an_earlier_rotation(tmp_path):
         kept.append(supervise.rotate_log(log))
     assert not log.exists() and len(set(kept)) == 2
     assert sorted(p.read_text() for p in kept) == ["first launch", "second launch"]
+
+
+
+def test_trainer_pids_matches_only_canonical_arm_directory(tmp_path, monkeypatch):
+    wave7 = tmp_path / "wave7"
+    wave8 = tmp_path / "wave8"
+    wave7.mkdir()
+    wave8.mkdir()
+    arm = supervise.Arm({**SPEC, "arm": "9b", "dir": str(wave8), "checkpoints": str(wave8), "node": "n"})
+    ps_output = "\n".join([
+        "  PID COMMAND",
+        f"101 /opt/venv/bin/python -u -m archlab.training.runtime {wave7}/resolved-9b-s20.yaml",
+        f"102 /opt/venv/bin/python -u -m archlab.training.runtime {wave8}/resolved-9b-extra-s20.yaml",
+        f"103 /opt/venv/bin/python -u -m archlab.training.runtime {wave8.resolve()}/resolved-9b-s20.yaml",
+    ])
+    monkeypatch.setattr(arm, "ssh", lambda command, check=False: ps_output)
+    assert arm.trainer_pids() == ["103"]
+
+
+def test_ssh_failure_and_busy_gpus_never_double_launch(tmp_path, monkeypatch):
+    base = tmp_path / "base.yaml"
+    base.write_text("trainer: {}\n")
+    spec = {
+        **SPEC,
+        "base": str(base),
+        "dir": str(tmp_path),
+        "checkpoints": str(tmp_path / "ckpts"),
+        "head_dir": str(tmp_path),
+        "node": "n",
+        "total_steps": 40,
+        "packages": "/pkg",
+        "mlflow_config": "/mlflow.json",
+    }
+    arm = supervise.Arm(spec)
+    launched = []
+    monkeypatch.setattr(supervise.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(arm, "ensure_agent_pods", lambda: None)
+    monkeypatch.setattr(arm, "launch", lambda last: launched.append(last))
+
+    # Case 1: transient SSH exit 255 on ps probe must abort recovery without launching.
+    def failing_ssh(command, check=False):
+        if check:
+            raise subprocess.CalledProcessError(255, ["ssh", "n", command])
+        return ""
+
+    monkeypatch.setattr(arm, "ssh", failing_ssh)
+    assert arm.run(once=True) == 1
+    assert launched == []
+
+    # Case 2: GPUs stay occupied (>= 8000 MiB) across all wait polls -> refuse launch.
+    def busy_gpu_ssh(command, check=False):
+        if "ps -eo" in command:
+            return "  PID COMMAND\n"
+        return "220000\n"
+
+    monkeypatch.setattr(arm, "ssh", busy_gpu_ssh)
+    assert not arm.wait_for_free_gpus()
+    assert arm.run(once=True) == 1
+    assert launched == []

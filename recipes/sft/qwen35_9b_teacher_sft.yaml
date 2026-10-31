@@ -1,0 +1,56 @@
+# Candidate experiment: qualify construction, update, distributed execution and
+# checkpoint/resume on the actual prepared data before a production launch.
+# Invoke pinned verl.trainer.sft_trainer with this absolute --config-path.
+defaults:
+  - sft_trainer_engine
+  - _self_
+hydra:
+  searchpath:
+    - pkg://verl.trainer.config
+model:
+  path: ${oc.env:ARCHLAB_TEACHER_SFT_STUDENT}
+  trust_remote_code: false
+  enable_gradient_checkpointing: true
+  use_remove_padding: false
+  use_fused_kernels: true
+  override_config:
+    attn_implementation: flash_attention_2
+engine:
+  strategy: fsdp2
+  fsdp_size: 8
+  dtype: bfloat16
+  use_torch_compile: false
+optim:
+  lr: 5.0e-6
+  lr_warmup_steps_ratio: 0.03
+  weight_decay: 0.01
+  clip_grad: 1.0
+data:
+  train_files: ["${oc.env:ARCHLAB_TEACHER_SFT_DATA}/train.parquet"]
+  val_files: ["${oc.env:ARCHLAB_TEACHER_SFT_DATA}/validation.parquet"]
+  custom_cls:
+    path: pkg://archlab.data.teacher_trajectories
+    name: TeacherTrajectoryDataset
+  max_length: 262144
+  max_token_len_per_gpu: 262144
+  truncation: error
+  pad_mode: no_padding
+  train_batch_size: 8
+  micro_batch_size_per_gpu: 1
+  use_dynamic_bsz: false
+  num_workers: 0
+checkpoint:
+  save_contents: [model, optimizer, extra, hf_model]
+  load_contents: [model, optimizer, extra]
+trainer:
+  project_name: qwen-27b-to-9b-teacher-sft
+  experiment_name: native9b-successful27b-one-pass
+  default_local_dir: ${oc.env:ARCHLAB_TEACHER_SFT_OUTPUT}/checkpoints
+  total_epochs: 1
+  seed: 42
+  nnodes: 1
+  n_gpus_per_node: 8
+  save_freq: 20
+  test_freq: 20
+  resume_mode: disable
+  logger: [console]

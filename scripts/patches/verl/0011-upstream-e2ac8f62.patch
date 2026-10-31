@@ -108,12 +108,12 @@ No APIs changed.
  1 file changed, 18 insertions(+), 9 deletions(-)
 
 diff --git a/verl/workers/rollout/vllm_rollout/vllm_async_server.py b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
-index 92cb6937..e464b775 100644
+index c015737c..14b67369 100644
 --- a/verl/workers/rollout/vllm_rollout/vllm_async_server.py
 +++ b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
-@@ -992,15 +992,20 @@ class vLLMHttpServer:
-             logger.exception("Error aborting requests")
-             raise
+@@ -930,15 +930,20 @@ class vLLMHttpServer:
+             logger.error(f"Error aborting requests: {e}")
+             return {"aborted_count": 0, "request_ids": [], "error": str(e)}
  
 -    async def resume_generation(self):
 -        """Resume generation after abort_all_requests (pause_generation)."""
@@ -139,7 +139,7 @@ index 92cb6937..e464b775 100644
  
      async def abort_request(self, request_id: str, reset_prefix_cache: bool = True) -> dict[str, Any]:
          """Abort a specific generation request.
-@@ -1400,8 +1405,12 @@ class vLLMReplica(RolloutReplica):
+@@ -1267,8 +1272,12 @@ class vLLMReplica(RolloutReplica):
          }
  
      async def resume_generation(self):
@@ -154,6 +154,3 @@ index 92cb6937..e464b775 100644
  
      async def abort_request(self, request_id: str) -> dict[str, Any]:
          """Abort a specific request. Tries all servers since we don't know which one has it.
--- 
-2.43.0
-

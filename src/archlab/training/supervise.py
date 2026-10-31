@@ -80,6 +80,22 @@ def resolved_config(spec: dict, launch: dict, resume_from: str | None) -> Path:
     return path
 
 
+def matches_resolved_config(args: str, directory: Path, arm: str) -> bool:
+    """Match only a trainer argument referencing `<directory>/resolved-<arm>-s<step>.yaml`."""
+    prefixes = {
+        str(directory / f"resolved-{arm}-s"),
+        str(directory.resolve() / f"resolved-{arm}-s"),
+    }
+    for token in args.split():
+        cleaned = token.strip("'\"")
+        for prefix in prefixes:
+            if cleaned.startswith(prefix) and cleaned.endswith(".yaml"):
+                step_tail = cleaned[len(prefix) : -len(".yaml")]
+                if step_tail.isdigit():
+                    return True
+    return False
+
+
 class Arm:
     def __init__(self, spec: dict):
         self.spec, self.dir = spec, Path(spec["dir"])
@@ -94,9 +110,18 @@ class Arm:
         return int(path.read_text()) if path.exists() else 0  # 0: a new arm starts from its base model
 
     def trainer_pids(self) -> list[str]:
-        pattern = f"resolved-{self.spec['arm']}-s"
-        return self.ssh(f"ps -eo pid,args | awk '/{pattern}/ && /archlab.training.runtime|launch.py/ && !/awk/ "
-                        "{print $1}'").split()
+        output = self.ssh("ps -eo pid,args", check=True)
+        pids: list[str] = []
+        for line in output.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) != 2 or not parts[0].isdigit():
+                continue
+            pid, args = parts
+            if ("archlab.training.runtime" in args or "launch.py" in args) and matches_resolved_config(
+                args, self.dir, self.spec["arm"]
+            ):
+                pids.append(pid)
+        return pids
 
     def ensure_agent_pods(self) -> None:
         pods, config = self.spec["agent_pods"], dlc_jobs.site(self.spec["dlc_site"])
@@ -128,12 +153,17 @@ class Arm:
                 break
             time.sleep(15)
 
-    def wait_for_free_gpus(self) -> None:
+    def wait_for_free_gpus(self) -> bool:
+        probe = "nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk '{s+=$1} END {print s}'"
         for _ in range(60):
-            used = self.ssh("nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk '{s+=$1} END {print s}'")
-            if used.strip() and int(used) < 8000:
-                return
+            try:
+                used = self.ssh(probe, check=True).strip()
+            except subprocess.SubprocessError:
+                used = ""
+            if used.isdigit() and int(used) < 8000:
+                return True
             time.sleep(10)
+        return False
 
     def launch(self, last: dict) -> None:
         step = self.latest()
@@ -160,13 +190,21 @@ class Arm:
             f"{Path(launch['data']).name}, {Path(source).name})")
         self.ssh(f"cd /tmp && (PYTHONPATH={paths} ARCHLAB_MLFLOW_CONFIG={self.spec['mlflow_config']} NO_PROXY='*' "
                  f"no_proxy='*' setsid nohup /opt/venv/bin/python -u -m archlab.training.runtime {config} "
-                 f"> {train_log} 2>&1 < /dev/null &)")
+                 f"> {train_log} 2>&1 < /dev/null &)", check=True)
 
     def run(self, once: bool = False) -> int:
         stalls, switch_from = 0, None
         while True:
             last = last_launch(self.launches)
-            if self.trainer_pids():
+            try:
+                pids = self.trainer_pids()
+            except subprocess.SubprocessError as error:
+                log(f"trainer probe failed ({error}); skipping recovery cycle")
+                if once:
+                    return 1
+                time.sleep(120)
+                continue
+            if pids:
                 if switch_due(self.spec, last):
                     step = self.latest()
                     if switch_from is None:
@@ -174,9 +212,17 @@ class Arm:
                         log(f"switch to {Path(self.spec['data']).name} / {Path(self.spec['source']).name} pending: "
                             f"after checkpoint {step}")
                     elif step > switch_from:
-                        pids = " ".join(self.trainer_pids())
-                        log(f"checkpoint {step} saved; stopping trainer {pids} for the switch")
-                        self.ssh(f"kill {pids}")
+                        try:
+                            live_pids = self.trainer_pids()
+                        except subprocess.SubprocessError as error:
+                            log(f"trainer revalidation failed before stop ({error}); deferring switch")
+                            live_pids = []
+                        if live_pids:
+                            pid_arg = " ".join(live_pids)
+                            log(f"checkpoint {step} saved; stopping trainer {pid_arg} for the switch")
+                            self.ssh(f"kill {pid_arg}")
+                if once:
+                    return 0
                 time.sleep(120)
                 continue
             step = self.latest()
@@ -188,7 +234,12 @@ class Arm:
                 log(f"3 launches without a new checkpoint (latest {step}); giving up")
                 return 1
             self.ensure_agent_pods()
-            self.wait_for_free_gpus()
+            if not self.wait_for_free_gpus():
+                log("GPUs remained occupied across wait timeout; refusing duplicate launch")
+                if once:
+                    return 1
+                time.sleep(120)
+                continue
             self.launch(last)
             switch_from = None
             if once:

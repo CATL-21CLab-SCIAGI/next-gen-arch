@@ -1,5 +1,31 @@
 # Native agentic bootstrap
 
+`qwen35_9b_teacher_sft.yaml` is a separate, **unqualified** one-pass native-9B
+experiment composed directly with pinned verl's FSDP2 SFT trainer. It consumes
+successful native-27B trajectories from `archlab.data.teacher_trajectories`.
+Set `ARCHLAB_TEACHER_SFT_STUDENT`, `ARCHLAB_TEACHER_SFT_DATA`, and
+`ARCHLAB_TEACHER_SFT_OUTPUT` explicitly. The 262,144-token cap preserves complete
+episodes; preparation rejects longer episodes and never trains a silent prefix.
+Actual-model long-sequence optimizer/distributed/resume admission is required
+before production. Held-out 43-task paired evaluation and TB2.1 gate the later
+short RL experiment; offline training loss does not qualify it.
+
+The exporter requires a complete collection grid, an executable successful
+verifier receipt, unambiguous task/seed session identity, and no capped turns.
+It retains exact recorded token IDs and generated-token masks, with observations
+as context and no invented stop tokens. Teacher-only audio special IDs fail
+validation even if numerically inside the student's embedding table. Task IDs
+determine the train/validation split before success selection, and all held-out
+evaluation tasks are excluded. Manifests record selected membership and hashes.
+
+```bash
+python -m archlab.data.teacher_trajectories \
+  --collection "$ARCHLAB_TEACHER_COLLECTION" \
+  --student "$ARCHLAB_TEACHER_SFT_STUDENT" \
+  --heldout "$ARCHLAB_HELDOUT_MANIFEST" \
+  --output "$ARCHLAB_TEACHER_SFT_DATA" --max-length 262144
+```
+
 `limite_agentic_bootstrap.yaml` starts a new full-weight assistant-only CE
 experiment from an immutable exported checkpoint. It composes pinned verl's
 `sft_trainer_engine` configuration with Megatron, then delegates directly to

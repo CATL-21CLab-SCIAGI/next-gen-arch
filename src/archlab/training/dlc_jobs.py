@@ -17,7 +17,14 @@ import subprocess
 from pathlib import Path
 
 IMAGES = "/mnt/nas/evergreen/sandbox-images/mimo-v2.6-rl-oss"
-EXPORT_MIRROR = "<private-registry>/pai-sandbox-tasks/mimo-v2.6-rl-oss:{}"
+
+
+def export_mirror(config: dict, tag: str) -> str:
+    """Format a task-image mirror reference from private site configuration (`export_mirror`)."""
+    template = config.get("export_mirror")
+    if not template:
+        raise RuntimeError("DLC site settings missing 'export_mirror' template")
+    return template.format(tag)
 
 
 def site(path: str | os.PathLike | None = None) -> dict:

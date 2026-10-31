@@ -20,7 +20,10 @@ from typing import Literal
 import torch
 from torch import nn
 
-from archlab.architectures.local_attention import deterministic_local_attention, reference_local_attention
+from archlab.architectures.local_attention import (
+    deterministic_local_attention,
+    reference_local_attention,
+)
 from archlab.architectures.qwen38_flash_next_full import GroupRMSNorm
 from archlab.architectures.simplicial_adapter import SimplicialAdapterConfig, partial_rope
 from archlab.architectures.simplicial_attention import reference_simplicial, simplicial_attention
@@ -98,7 +101,7 @@ class InsertedBranch(nn.Module):
         kvshape = (batch, length, config.kv_heads, config.head_dim)
         q = partial_rope(self.q_norm(self.q(x).reshape(qshape)), position_ids, self.rope_config)
         keys = [partial_rope(norm(k(x).reshape(kvshape)), position_ids, self.rope_config)
-                for k, norm in zip(self.keys, self.k_norms)]
+                for k, norm in zip(self.keys, self.k_norms, strict=True)]
         values = [v(x).reshape(kvshape) for v in self.values]
         if config.mechanism == "simplicial":
             core = simplicial_attention if self.backend == "kernel" else reference_simplicial

@@ -38,3 +38,12 @@ def test_site_settings_must_be_named(tmp_path, monkeypatch):
     assert dlc_jobs.site(path) == SITE
     monkeypatch.setenv("ARCHLAB_DLC_SITE", str(path))
     assert dlc_jobs.site() == SITE
+
+
+def test_export_mirror_uses_private_site_config():
+    import pytest
+
+    with pytest.raises(RuntimeError, match="export_mirror"):
+        dlc_jobs.export_mirror(SITE, "img1")
+    cfg = {**SITE, "export_mirror": "registry.example.invalid/tasks:{}"}
+    assert dlc_jobs.export_mirror(cfg, "sha256-ab") == "registry.example.invalid/tasks:sha256-ab"

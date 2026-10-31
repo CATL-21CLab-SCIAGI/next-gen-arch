@@ -132,13 +132,33 @@ class Curves:
         return True
 
 
+MAX_EXPORT_FAILURES = 3
+
+
+def ready_arm_steps(root: Path, every: int) -> list[int]:
+    """Return committed checkpoint steps (`<= latest_checkpointed_iteration.txt`) divisible by `every`."""
+    latest_file = root / "latest_checkpointed_iteration.txt"
+    if not root.exists() or not latest_file.exists():
+        return []
+    try:
+        committed = int(latest_file.read_text().strip())
+    except ValueError:
+        return []
+    steps = sorted(
+        int(p.name.split("_")[-1])
+        for p in root.glob("global_step_*")
+        if p.name.split("_")[-1].isdigit() and (p / "actor/huggingface").exists()
+    )
+    return [s for s in steps if s <= committed and s % every == 0]
+
+
 def heldout(plan_path: Path) -> None:
     """Export and evaluate every `every`-th checkpoint of each arm on the fixed held-out set, after the baselines."""
     plan = json.loads(plan_path.read_text())
     runs, exports, logs = Path(plan["runs"]), Path(plan["exports"]), Path(plan["logs"])
     logs.mkdir(parents=True, exist_ok=True)
     curves, protocol = Curves(plan["mlflow"]), plan["eval"]
-    failed: set[str] = set()
+    failures: dict[str, int] = {}
     attempted: set[str] = set()  # one evaluation attempt per point per process; an incomplete run is reported
 
     def running(label: str) -> bool:  # adopt an evaluation already in flight (e.g. across a tracker restart)
@@ -171,19 +191,19 @@ def heldout(plan_path: Path) -> None:
                 for p in plan["baselines"] if Path(p["model"]).exists()]
         for arm, spec in plan["arms"].items():
             root = Path(spec["checkpoints"])
-            steps = sorted(int(p.name.split("_")[-1]) for p in root.glob("global_step_*")
-                           if (p / "actor/huggingface").exists()) if root.exists() else []
-            for step in (s for s in steps if s % spec["every"] == 0):
+            for step in ready_arm_steps(root, spec["every"]):
                 label = f"{arm}-step{step}"
-                if label in failed:
+                if failures.get(label, 0) >= MAX_EXPORT_FAILURES:
                     continue
                 try:
                     model = export_checkpoint(root / f"global_step_{step}/actor", exports / label,
                                               logs / f"export-{label}.log")
                 except RuntimeError as error:
-                    log(label=label, error=str(error))
-                    failed.add(label)
+                    attempts = failures.get(label, 0) + 1
+                    failures[label] = attempts
+                    log(label=label, export_attempt=attempts, error=str(error))
                     continue
+                failures.pop(label, None)
                 todo.append((label, model, [[spec["curve"], step]], None, spec.get("gpu_memory")))
         for label, model, point_curves, seeds, gpu_memory in todo:
             summary = evaluate(label, model, seeds, gpu_memory)

@@ -235,8 +235,9 @@ class PreparedAgenticSFTDataset:
             if (not ids or len(ids) > self.max_length or len(ids) != len(mask)
                     or mask[0] != 0 or not any(mask) or set(mask) - {0, 1}):
                 raise ValueError("Invalid prepared SFT token/mask contract")
-            if not any(token == self.eos_token_id and target
-                       for token, target in zip(ids, mask, strict=True)):
+            if config.get("require_supervised_eos", True) and not any(
+                token == self.eos_token_id and target for token, target in zip(ids, mask, strict=True)
+            ):
                 raise ValueError("Prepared trajectory has no supervised native EOS")
             if row["attention_mask"] != [1] * len(ids):
                 raise ValueError("Prepared trajectory contains padding")

@@ -65,3 +65,15 @@ def test_a_curve_opened_by_another_ladder_is_reused_by_name(tmp_path, monkeypatc
     curves = ladder.Curves({"secrets": str(secrets), "ledger": str(tmp_path / "l.json"), "experiment": "e"})
     assert curves.log("shared", "p", 0, {"m": 1.0}) and curves.log("fresh", "p", 0, {"m": 2.0})
     assert [entry[0] for entry in logged] == ["found-shared", "new-fresh"]
+
+
+
+def test_ready_arm_steps_requires_committed_latest_iteration_marker(tmp_path):
+    for step in (10, 20, 30):
+        (tmp_path / f"global_step_{step}" / "actor" / "huggingface").mkdir(parents=True)
+    # Without latest_checkpointed_iteration.txt, an in-progress checkpoint directory is never exported.
+    assert ladder.ready_arm_steps(tmp_path, every=10) == []
+    (tmp_path / "latest_checkpointed_iteration.txt").write_text("20\n")
+    assert ladder.ready_arm_steps(tmp_path, every=10) == [10, 20]
+    (tmp_path / "latest_checkpointed_iteration.txt").write_text("30\n")
+    assert ladder.ready_arm_steps(tmp_path, every=10) == [10, 20, 30]
