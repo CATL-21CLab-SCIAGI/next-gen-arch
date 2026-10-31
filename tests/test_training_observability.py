@@ -140,9 +140,15 @@ def test_variable_length_flops_uses_native_geometry():
     lengths = [17, 40]
     expected = sum(baseline_flops(config, n).per_token * n for n in lengths)
     assert estimate_limite_flops(config, 57, lengths, 2.) == expected / 2e12
-    config.adapter["variant"] = "simplicial"
-    with pytest.raises(ValueError, match="normal"):
-        estimate_limite_flops(config, 57, lengths, 2.)
+    config.adapter = {}
+    uninserted = sum(baseline_flops(config, n, preludes=False).per_token * n for n in lengths)
+    assert estimate_limite_flops(config, 57, lengths, 2.) == uninserted / 2e12
+    assert 0 < uninserted < expected
+    for adapter in ({"variant": "simplicial"}, {"variant": "gdn"}, {"variant": "normal", "compensation": 64}):
+        config.adapter = adapter
+        assert estimate_limite_flops(config, 57, lengths, 2.) == 0
+    with pytest.raises(ValueError, match="trainable mode"):
+        baseline_flops(config, 17, "adapter", preludes=False)
 
 
 def test_upstream_mfu_dispatch_uses_explicit_b300_peak(monkeypatch):

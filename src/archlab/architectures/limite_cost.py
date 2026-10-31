@@ -75,15 +75,17 @@ def converted_flops(config, sequence_length: int) -> BaselineFlops:
     )
 
 
-def baseline_flops(config, sequence_length: int, trainable_mode: str = "full") -> BaselineFlops:
+def baseline_flops(config, sequence_length: int, trainable_mode: str = "full", *,
+                   preludes: bool = True) -> BaselineFlops:
     """Analytical ledger for one native attention prelude per native block.
 
     Frozen backbone matrices still calculate activation gradients between
     trainable preludes, but omit their weight-gradient GEMM (4 rather than 6
     FLOPs per coefficient). Attention activations require all three products
     in either training scope. The publisher calls each MUDD site twice.
+    ``preludes=False`` counts the uninserted publisher alone.
     """
-    if trainable_mode not in ("full", "adapter"):
+    if trainable_mode not in ("full", "adapter") or (trainable_mode == "adapter" and not preludes):
         raise ValueError("unsupported trainable mode")
     if getattr(config, "mlp_type", "swiglu") != "swiglu":
         raise ValueError("ledger requires native SwiGLU")
@@ -117,7 +119,7 @@ def baseline_flops(config, sequence_length: int, trainable_mode: str = "full") -
     backbone_matrices = (
         attention_matrices + gates + ve_gates + mlp_matrices + head_matrix + mudd_matrices
     )
-    linear = 6 * adapter_matrices + (6 if trainable_mode == "full" else 4) * backbone_matrices
+    linear = (6 * adapter_matrices if preludes else 0) + (6 if trainable_mode == "full" else 4) * backbone_matrices
     global_pairs = causal_pairs(length)
     # Publisher configs normalize the serialized inclusive look-back distance
     # to an actual key span. Portable serialized configs still store distance.
@@ -127,8 +129,9 @@ def baseline_flops(config, sequence_length: int, trainable_mode: str = "full") -
         else config.sliding_window + 1
     )
     local_pairs = causal_pairs(length, local_span)
-    # Two attention stacks; QK and PV each cost 2*D per valid pair, and
-    # their backward matmuls cost twice their forward matmuls.
-    pair_count = 2 * (len(globals_) * global_pairs + (layers - len(globals_)) * local_pairs)
+    # One attention stack per prelude and one per block; QK and PV each cost 2*D
+    # per valid pair, and their backward matmuls cost twice their forward matmuls.
+    stacks = 2 if preludes else 1
+    pair_count = stacks * (len(globals_) * global_pairs + (layers - len(globals_)) * local_pairs)
     attention = 12 * heads * head_dim * pair_count / length
     return BaselineFlops(linear, attention, length)

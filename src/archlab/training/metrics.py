@@ -10,15 +10,23 @@ B300_DENSE_BF16_FLOPS = 2.25e15
 
 
 def estimate_limite_flops(config, tokens_sum, batch_seqlens, delta_time):
+    """Useful TFLOP/s where the analytical Limite ledger is qualified, otherwise 0.
+
+    The ledger covers the uninserted publisher, one uncompensated native normal
+    prelude per block, and the 2-simplicial conversion. Other preludes and
+    compensation SwiGLUs have no qualified ledger; they return upstream's
+    unknown-model value (MFU 0) and their throughput is reported in tokens/s.
+    """
     conversion = getattr(config, "conversion", {})
-    if not conversion and config.adapter.get("variant") != "normal":
-        raise ValueError("Limite FLOP ledger is qualified only for native normal preludes")
+    adapter = config.adapter or {}
+    if not conversion and adapter and (adapter.get("variant") != "normal" or adapter.get("compensation")):
+        return 0
     if (not math.isfinite(delta_time) or delta_time <= 0 or tokens_sum != sum(batch_seqlens)
             or any(n < 0 or int(n) != n for n in batch_seqlens)):
         raise ValueError("invalid FLOP measurement")
     def ledger(n):
         return (converted_flops(config, n) if conversion
-                else baseline_flops(config, n, config.trainable_mode))
+                else baseline_flops(config, n, config.trainable_mode, preludes=bool(adapter)))
     total = sum(ledger(int(n)).per_token * n
                 for n in batch_seqlens if n > 0)
     return total / delta_time / 1e12
