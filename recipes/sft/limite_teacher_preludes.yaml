@@ -1,0 +1,63 @@
+# Adapter phase of recipes/limite/higher_order_preludes_math.yaml. Each arm overrides
+# insertion (its exported prelude geometry) and settings.trainer.seed; the parent is
+# that arm's immutable zero-output export and the data are the verified RL142 solutions.
+name: limite-higher-order-preludes-math-v1
+variant: normal
+trainable_mode: adapter
+objective: assistant_ce
+native_context: 131072
+generation_eos_token_id: 151643
+supervised_tokens: 400000000
+evaluations: 8
+parent_checkpoint: ${oc.env:ARCHLAB_BOOTSTRAP_MODEL}
+data_manifest: ${oc.env:ARCHLAB_BOOTSTRAP_DATA}/manifest.json
+settings:
+  checkpoint.save_contents: [hf_model]
+  checkpoint.load_contents: [hf_model]
+  model.path: ${oc.env:ARCHLAB_BOOTSTRAP_MODEL}
+  model.external_lib: archlab.training.megatron
+  model.trust_remote_code: false
+  model.use_remove_padding: false
+  model.use_fused_kernels: false
+  model.enable_gradient_checkpointing: true
+  engine.dtype: bfloat16
+  engine.tensor_model_parallel_size: 1
+  engine.pipeline_model_parallel_size: 1
+  engine.context_parallel_size: 1
+  engine.expert_model_parallel_size: 1
+  engine.sequence_parallel: false
+  engine.use_distributed_optimizer: true
+  engine.use_remove_padding: false
+  engine.pad_bshd_to_minibatch_max: false
+  engine.patch_recomputation_backward: false
+  engine.override_ddp_config:
+    grad_reduce_in_fp32: true
+    overlap_grad_reduce: false
+  optim.lr: 1.0e-4
+  optim.lr_warmup_steps: 100
+  optim.lr_decay_style: cosine
+  optim.min_lr: 1.0e-5
+  optim.override_optimizer_config:
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+  optim.weight_decay: 0.0
+  optim.clip_grad: 1.0
+  data.train_files: ["${oc.env:ARCHLAB_BOOTSTRAP_DATA}/train.parquet"]
+  data.val_files: ["${oc.env:ARCHLAB_BOOTSTRAP_DATA}/validation.parquet"]
+  data.custom_cls.path: pkg://archlab.data.agentic_sft
+  data.custom_cls.name: PreparedAgenticSFTDataset
+  data.pad_mode: no_padding
+  data.truncation: error
+  data.max_length: 36864
+  data.max_token_len_per_gpu: 36864
+  data.train_batch_size: 32
+  data.micro_batch_size_per_gpu: 1
+  data.use_dynamic_bsz: false
+  data.num_workers: 0
+  trainer.nnodes: 1
+  trainer.n_gpus_per_node: 8
+  trainer.seed: 42
+  trainer.resume_mode: disable
+  trainer.project_name: Limite — Higher-order preludes
+  trainer.default_local_dir: ${oc.env:ARCHLAB_BOOTSTRAP_CHECKPOINTS}
+  trainer.logger: [console, mlflow]

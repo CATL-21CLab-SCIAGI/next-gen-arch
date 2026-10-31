@@ -127,7 +127,7 @@ class V41TriadicAttentionAdapter(nn.Module):
         with torch.autocast(
             streams.device.type,
             dtype=torch.bfloat16,
-            enabled=streams.is_cuda and streams.dtype == torch.bfloat16,
+            enabled=streams.dtype == torch.bfloat16,
         ):
             return self._forward(streams, cu_seqlens=cu_seqlens)
 

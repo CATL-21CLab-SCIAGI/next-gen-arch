@@ -59,7 +59,9 @@ def test_provider_rejects_unimplemented_execution_contract(tmp_path, native, fie
 def test_bridge_maps_all_native_parameters_without_geometry_conversion(tmp_path, native):
     expected = policy(native)
     provider = provider_for(expected, tmp_path)
-    registry = NativeLimiteBridge().mapping_registry()
+    bridge = NativeLimiteBridge()
+    bridge.hf_config = LimiteConfig.from_pretrained(tmp_path / "native-export")
+    registry = bridge.mapping_registry()
     actual = provider.provide()
     for name, _ in actual.named_parameters():
         mapping = registry.megatron_to_hf_lookup(name)
@@ -68,6 +70,17 @@ def test_bridge_maps_all_native_parameters_without_geometry_conversion(tmp_path,
             expected_name = "policy.lm_head.weight"
         assert mapping.hf_param == expected_name
     assert NativeLimiteBridge.megatron_to_hf_config(provider) == provider.native_config
+
+
+@pytest.mark.parametrize("variant", ["normal", "simplicial"])
+def test_provider_runs_tilelang_preludes_at_runtime_sequence_lengths(tmp_path, native, variant):
+    from archlab.architectures.limite_adapter import LimiteAdapterConfig, install_adapters
+
+    model = install_adapters(native, LimiteAdapterConfig(variant=variant, attention_backend="tilelang"))
+    actual = provider_for(model, tmp_path).provide()
+    preludes = actual.policy.policy.model.adapters
+    assert len(preludes) == 4
+    assert all(prelude.native._archlab_dynamic_attention for prelude in preludes)
 
 
 def test_provider_rejects_optimizer_with_broken_mixed_dtype_checkpointing(tmp_path, native):

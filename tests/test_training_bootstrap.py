@@ -199,6 +199,126 @@ def test_bootstrap_admission_rejects_mismatched_assets(prepared_assets, changed)
         bootstrap.validate_assets(experiment, config)
 
 
+INSERTION = ["variant=normal", "trainable_mode=adapter", "insertion={variant: gdn, heads: 5}",
+             "generation_eos_token_id=151643"]
+
+
+@pytest.fixture
+def inserted_assets(prepared_assets):
+    model, data, publisher = prepared_assets
+    adapter = {"variant": "gdn", "heads": 5, "feature_dim": 1, "compensation": 184,
+               "attention_backend": "official", "native_shape": {"width": 1280}}
+    config = json.loads((model / "config.json").read_text())
+    config.update(conversion={}, adapter=adapter, trainable_mode="adapter")
+    (model / "config.json").write_text(json.dumps(config))
+    receipt = {"insertion": {"format": "archlab-limite-insertion-v1",
+                             "intervention": "insert_residual_prelude",
+                             "config": {k: v for k, v in adapter.items() if k != "native_shape"},
+                             "layers": [0, 1], "trainable_mode": "adapter", "output_state": "zero"},
+               "chat_template": {"repo": "paradigma-inc/limite-1b-violetto", "revision": "pinned"}}
+    (model / "EXPORT.json").write_text(json.dumps(receipt))
+    manifest = json.loads((data / "manifest.json").read_text())
+    manifest["tokenization"]["generation_eos_token_id"] = 151643
+    (data / "manifest.json").write_text(json.dumps(manifest))
+    return model, data
+
+
+def test_bootstrap_admits_fresh_insertion_with_declared_supervised_eos(inserted_assets):
+    experiment = read_bootstrap(RECIPE, INSERTION)
+    config = compose_sft(experiment, UPSTREAM)
+    assert config.data.generation_eos_token_id == 151643
+    result = bootstrap.validate_assets(experiment, config)
+    assert result["insertion"]["config"]["heads"] == 5 and result["conversion"] is None
+    assert result["chat_template"]["repo"] == "paradigma-inc/limite-1b-violetto"
+
+
+@pytest.mark.parametrize("defect", ["geometry", "scope", "trained", "eos", "layers"])
+def test_bootstrap_insertion_rejects_mismatched_parent(inserted_assets, defect):
+    model, data = inserted_assets
+    overrides = list(INSERTION)
+    receipt = json.loads((model / "EXPORT.json").read_text())
+    if defect == "geometry":
+        overrides[2] = "insertion={variant: gdn, heads: 4}"
+    elif defect == "scope":
+        overrides[1] = "trainable_mode=full"
+    elif defect == "trained":
+        receipt["insertion"]["output_state"] = "trained"
+    elif defect == "eos":
+        overrides[3] = "generation_eos_token_id=151645"
+    else:
+        receipt["insertion"]["layers"] = [0]
+    (model / "EXPORT.json").write_text(json.dumps(receipt))
+    experiment = read_bootstrap(RECIPE, overrides)
+    with pytest.raises(ValueError):
+        bootstrap.validate_assets(experiment, compose_sft(experiment, UPSTREAM))
+
+
+@pytest.mark.parametrize("overrides", [
+    ["trainable_mode=adapter"],
+    ["insertion={variant: gdn}"],
+    ["variant=normal", "trainable_mode=partial", "insertion={variant: gdn}"],
+    ["generation_eos_token_id=42"],
+])
+def test_bootstrap_rejects_inconsistent_insertion_contract(deployment, overrides):
+    with pytest.raises(ValueError):
+        read_bootstrap(RECIPE, overrides)
+
+
+def _upstream_step_targets(rows, *, batch_size, data_parallel, epochs):
+    """Assistant targets per global step, drawn exactly as verl's SFT trainer draws rows."""
+    import torch
+    from torch.utils.data import DataLoader, DistributedSampler
+
+    totals = []
+    for epoch in range(epochs):
+        loaders = []
+        for rank in range(data_parallel):
+            sampler = DistributedSampler(rows, shuffle=True, num_replicas=data_parallel, rank=rank,
+                                         drop_last=True)
+            sampler.set_epoch(epoch)
+            loaders.append(DataLoader(rows, batch_size=batch_size // data_parallel,
+                                      sampler=sampler, drop_last=True,
+                                      collate_fn=lambda batch: sum(sum(mask) for mask in batch)))
+        totals.extend(sum(int(torch.tensor(step).sum()) for step in steps)
+                      for steps in zip(*loaders, strict=True))
+    return totals
+
+
+def test_token_budget_follows_upstream_sampler_across_epochs(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    masks = [[0] * (index % 3) + [1] * (1 + (7 * index) % 23) for index in range(37)]
+    path = tmp_path / "train.parquet"
+    pq.write_table(pa.Table.from_pylist([{"loss_mask": mask} for mask in masks]), path)
+    upstream = _upstream_step_targets(masks, batch_size=8, data_parallel=4, epochs=3)
+    budget = sum(upstream[:6]) + 1
+    schedule = bootstrap.supervised_schedule(path, batch_size=8, data_parallel=4,
+                                             budget=budget, evaluations=3)
+    assert schedule["steps_per_epoch"] == 4 and schedule["epochs"] == 2
+    assert schedule["steps"] == 7 and schedule["frequency"] == 2
+    assert schedule["supervised_tokens"] == sum(upstream[:7]) >= budget
+    assert schedule["evaluations"] == {step: sum(upstream[:step]) for step in (2, 4, 6, 7)}
+    with pytest.raises(ValueError, match="epoch limit"):
+        bootstrap.supervised_schedule(path, batch_size=8, data_parallel=4,
+                                      budget=sum(upstream) * 10, evaluations=1, max_epochs=3)
+
+
+def test_bootstrap_token_budget_sets_upstream_steps(deployment):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    (deployment / "data").mkdir()
+    pq.write_table(pa.Table.from_pylist([{"loss_mask": [0] + [1] * 10}] * 64),
+                   deployment / "data/train.parquet")
+    experiment = read_bootstrap(RECIPE, ["supervised_tokens=1000", "evaluations=4"])
+    config = compose_sft(experiment, UPSTREAM)
+    assert config.trainer.total_training_steps == 13 and config.trainer.total_epochs == 2
+    assert config.trainer.test_freq == config.trainer.save_freq == 3
+    with pytest.raises(ValueError, match="evaluations"):
+        read_bootstrap(RECIPE, ["supervised_tokens=1000"])
+
+
 def test_bootstrap_rejects_unknown_parent_stage(deployment):
     with pytest.raises(ValidationError):
         read_bootstrap(RECIPE, ["parent_stage=rl_resume"])

@@ -1,0 +1,93 @@
+# Versioned scientific contract. New experiment: it does not change the historical
+# normal/2-simplicial comparison (full_finetune_math.yaml) or its recorded results.
+name: limite-higher-order-preludes-math-v1
+question: >-
+  Starting from the same Limite-1B base and the same verified RL-teacher solutions,
+  which inserted residual attention prelude learns the teacher's mathematical
+  reasoning best, and does any beat the uninserted full-finetuning baseline?
+parent:
+  model: paradigma-inc/limite-1b-base
+  revision: cc612bafcd4acd8445936201694c8c41aea8e479
+  snapshot: env:LIMITE_BASE_MODEL
+teacher:
+  name: violetto-native-rl142
+  publisher: paradigma-inc/limite-1b-violetto
+  publisher_revision: 4cf321846e479e78d9ec35dbd39fee2e260cbad6
+  checkpoint: env:LIMITE_RL142_CHECKPOINT
+  export: env:LIMITE_RL142_EXPORT
+  recorded_aime26_pass_at_1: 0.833  # 120 draws, 131072-token context (sft-curve report)
+  target: reach the teacher's AIME26 pass@1 and RL-heldout pass@1 under the same evaluation
+data:
+  prompts: sealed Nemotron-RL-Math-v2 split used to train the teacher (5898 train / 128 heldout)
+  split_sha256: 73d3e170b5a10aea286cc79e786fab301f7dabecae3385cc022c7b8fc692e15b
+  rendering: teacher chat template (system prompt with step-by-step and boxed-answer instruction);
+    token-identical to the teacher's RL training prompts
+  sampler: archlab.preprocessing.limite_teacher_traces generate
+  samples_per_problem: 8
+  sampling: {temperature: 0.6, top_p: 0.95, top_k: -1, max_tokens: 32768, seed: 20261101}
+  # RL142 ends responses with <|endoftext|> (151643), never <|im_end|>; it is supervised.
+  selection: symbolically correct (shared math_reward); closed reasoning; natural <|endoftext|>
+  objective: assistant-only next-token cross entropy on complete teacher responses
+  truncation: none; rows longer than 36864 tokens are excluded and counted
+  train_rows: teacher train-split samples only
+  validation_rows: teacher heldout-split samples only; never trained
+  identical_rows_and_order_for_every_arm: true
+arms:
+  # Every prelude is inserted before each of the 48 native blocks with a zero-initialized
+  # output projection, so each arm starts exactly at the parent's function.
+  placement: before_each_of_48_native_blocks
+  parameter_matching:
+    rule: core plus a parallel SwiGLU with zero-initialized down projection
+    target_per_prelude: simplicial_w16 core + SwiGLU intermediate 64
+    alignment: 8
+    maximum_relative_error: 0.005
+  baseline:
+    none: {intervention: none, phases: [full]}
+  softmax:  # publisher attention module; native local/global schedule, RoPE/NoPE, XSA, gates
+    normal: {mechanism: pairwise softmax attention}
+    simplicial_w16: {mechanism: joint-softmax 2-simplicial, short_window: 16}
+  delta:    # official cute-triadic-gdn kernels; equal Q/K/V heads, head_dim 128
+    gdn: {mechanism: gated delta rule, heads: 5, feature_dim: 1}
+    triadic_e4: {mechanism: joint-key triadic gated delta rule, heads: 5, feature_dim: 4}
+  generalizations:
+    simplicial_w4: {family: softmax, short_window: 4}  # same parameters as w16
+    triadic_e16: {family: delta, heads: 5, feature_dim: 16}
+  deferred:
+    simplicial_w64: qualified TileLang and Triton joint kernels tile at most 16 short keys
+    linear_rf_and_linsimp: reference kernels materialize per-position prefix states; long traces need a chunked kernel
+    determinant_simplicial: no qualified long-context kernel
+  parents: all arms carry Violetto's chat template and FlashAttention-2 backbone attention
+phases:
+  adapter:
+    arms: [normal, simplicial_w16, gdn, triadic_e4, simplicial_w4, triadic_e16]
+    trainable: preludes only; backbone frozen
+    supervised_tokens: 400000000
+    # verl validates and checkpoints at a fixed step interval: 8 equal intervals of the
+    # step budget (about every 50M tokens), with exact token counts in the launch receipt.
+    evaluations: 8
+    global_batch_rows: 32
+    optimizer: {name: AdamW, lr: 1.0e-4, betas: [0.9, 0.95], weight_decay: 0, clip: 1.0,
+                warmup_steps: 100, schedule: cosine, final_lr: 1.0e-5}
+    seeds: {normal: [42, 43], others: [42]}
+  full:
+    arms: [none, normal, best_softmax, best_delta]
+    trainable: all weights
+    initialization: each prelude arm from its own adapter endpoint; none from the parent
+    supervised_tokens: decided from the adapter-phase learning curves before launch
+execution:
+  entry: archlab.training.bootstrap via pinned verl SFT on the native Megatron provider
+  recipe: recipes/sft/limite_teacher_preludes.yaml
+  data_parallel: 8
+  microbatch: one unpacked sequence
+  hardware: NVIDIA B300
+  restart: an interrupted arm restarts from its parent (bootstrap admits no resume)
+evaluation:
+  primary: assistant CE on held-out teacher solutions at every listed token count
+  secondary:  # softmax arms and the baseline; delta preludes have no qualified cached decode
+    - heldout-128 pass@1, 4 seeded draws, temperature 0.6, top-p 0.95, 32768 new tokens
+    - endpoint AIME26 per eval_aime26_pipeline_v3.yaml (4 draws, 131072-token context)
+  also_report: [truncation_rate, natural_eos_rate, completion_tokens, parameters, training_FLOPs,
+                tokens_per_second]
+  claim_rule: >-
+    An arm beats a control only if its held-out CE gap exceeds twice the normal seed
+    spread and its paired problem-clustered bootstrap pass@1 interval excludes zero.

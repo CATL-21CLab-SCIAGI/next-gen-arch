@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from hydra import compose, initialize_config_dir
-from omegaconf import MISSING, DictConfig, OmegaConf
+from omegaconf import MISSING, DictConfig, OmegaConf, open_dict
 
 from archlab.artifacts import sha256_file
 
@@ -36,8 +36,16 @@ class BootstrapExperiment:
     data_manifest: str = MISSING
     parent_stage: BootstrapParentStage = BootstrapParentStage.original_base
     variant: str = "simplicial"
+    # Expected prelude geometry of an inserted parent (a subset of its adapter config).
+    insertion: dict[str, Any] = field(default_factory=dict)
+    trainable_mode: str = "full"
+    generation_eos_token_id: int = 151645
     objective: str = "assistant_ce"
     native_context: int = 131072
+    # Assistant target tokens to train on; 0 leaves steps and epochs to settings.
+    supervised_tokens: int = 0
+    # Equally spaced validation and checkpoint steps over the token budget.
+    evaluations: int = 0
     settings: dict[str, Any] = field(default_factory=dict)
 
 
@@ -57,9 +65,65 @@ def read_bootstrap(path: Path, overrides: list[str] = ()) -> BootstrapExperiment
         raise ValueError("bootstrap requires assistant-only cross entropy")
     if experiment.variant not in {"normal", "simplicial"}:
         raise ValueError("bootstrap requires a native normal or simplicial export")
+    if experiment.insertion and experiment.variant != "normal":
+        raise ValueError("prelude insertion keeps the native attention of the parent")
+    if experiment.trainable_mode not in {"full", "adapter"} or (
+            experiment.trainable_mode == "adapter" and not experiment.insertion):
+        raise ValueError("bootstrap trains all weights or the preludes of an inserted parent")
+    if experiment.generation_eos_token_id not in {151645, 151643}:
+        raise ValueError("supervised EOS must be a native Limite stop token")
     if experiment.native_context <= 0:
         raise ValueError("native_context must be positive")
+    if experiment.supervised_tokens < 0 or bool(experiment.supervised_tokens) != (experiment.evaluations > 0):
+        raise ValueError("a supervised token budget requires a positive number of evaluations")
     return experiment
+
+
+def supervised_schedule(train_file, *, batch_size, data_parallel, budget, evaluations,
+                        max_epochs=100) -> dict:
+    """Steps of verl's SFT sampler that first reach ``budget`` assistant target tokens.
+
+    verl draws each epoch from ``DistributedSampler(seed=0, drop_last=True)`` and gives
+    every rank ``batch_size // data_parallel`` consecutive rows of its slice, so the rows
+    and target tokens of every global step depend only on the prepared rows and geometry.
+    """
+    import numpy as np
+    from torch.utils.data import DistributedSampler
+
+    from archlab.data.agentic_sft import list_column_batches
+
+    rows = []
+    for mask, lengths in list_column_batches([train_file], "loss_mask"):
+        targets, ends = np.concatenate(([0], np.cumsum(mask, dtype=np.int64))), np.cumsum(lengths)
+        rows.append(targets[ends] - targets[ends - lengths])
+    rows = np.concatenate(rows)
+    per_rank = batch_size // data_parallel
+    totals = []
+    for epoch in range(max_epochs):
+        slices = []
+        for rank in range(data_parallel):
+            sampler = DistributedSampler(range(len(rows)), num_replicas=data_parallel, rank=rank,
+                                         shuffle=True, drop_last=True)
+            sampler.set_epoch(epoch)
+            slices.append(list(sampler))
+        steps = len(slices[0]) // per_rank
+        if steps == 0:
+            raise ValueError("prepared rows cannot fill one global batch")
+        order = np.asarray(slices)[:, :steps * per_rank].reshape(data_parallel, steps, per_rank)
+        totals.extend(rows[order].sum(axis=(0, 2)).tolist())
+        cumulative = np.cumsum(totals)
+        if cumulative[-1] >= budget:
+            break
+    else:
+        raise ValueError("token budget exceeds the epoch limit")
+    total = int(np.searchsorted(cumulative, budget) + 1)
+    frequency = total // evaluations
+    if frequency == 0:
+        raise ValueError("more evaluations than training steps")
+    marks = sorted({*range(frequency, total + 1, frequency), total})
+    return dict(steps=total, epochs=epoch + 1, steps_per_epoch=steps, frequency=frequency,
+                supervised_tokens=int(cumulative[total - 1]), rows=len(rows),
+                evaluations={step: int(cumulative[step - 1]) for step in marks})
 
 
 def compose_sft(experiment: BootstrapExperiment, upstream: Path) -> DictConfig:
@@ -73,10 +137,25 @@ def compose_sft(experiment: BootstrapExperiment, upstream: Path) -> DictConfig:
     for key, value in experiment.settings.items():
         OmegaConf.update(config, key, value, merge=False)
     config.trainer.experiment_name = experiment.name
+    with open_dict(config.data):
+        # Read by PreparedAgenticSFTDataset; upstream verl has no such key.
+        config.data.generation_eos_token_id = experiment.generation_eos_token_id
     OmegaConf.resolve(config)
     OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
     validate_sft(experiment, config)
+    if experiment.supervised_tokens:
+        schedule = schedule_for(experiment, config)
+        config.trainer.total_training_steps = schedule["steps"]
+        config.trainer.total_epochs = schedule["epochs"]
+        config.trainer.test_freq = config.trainer.save_freq = schedule["frequency"]
     return config
+
+
+def schedule_for(experiment: BootstrapExperiment, config: DictConfig) -> dict:
+    return supervised_schedule(
+        config.data.train_files[0], batch_size=config.data.train_batch_size,
+        data_parallel=config.trainer.nnodes * config.trainer.n_gpus_per_node,
+        budget=experiment.supervised_tokens, evaluations=experiment.evaluations)
 
 
 def validate_sft(experiment: BootstrapExperiment, config: DictConfig) -> None:
@@ -127,8 +206,14 @@ def validate_assets(experiment: BootstrapExperiment, config: DictConfig) -> dict
     converted = bool(exported.get("conversion"))
     if converted != (experiment.variant == "simplicial"):
         raise ValueError("export conversion variant differs from bootstrap contract")
-    if exported.get("trainable_mode") != "full" or (converted and exported.get("adapter")):
-        raise ValueError("bootstrap requires a full-weight native export")
+    inserted = exported.get("adapter") or {}
+    if converted and inserted:
+        raise ValueError("conversion and insertion are distinct experiments")
+    if bool(inserted) != bool(experiment.insertion) or any(
+            inserted.get(key) != value for key, value in experiment.insertion.items()):
+        raise ValueError("export prelude insertion differs from bootstrap contract")
+    if exported.get("trainable_mode") != experiment.trainable_mode:
+        raise ValueError("export trainable scope differs from bootstrap contract")
     generation = json.loads((root / "generation_config.json").read_text())
     if (exported.get("eos_token_id") != 151645 or generation.get("eos_token_id") != 151645
             or generation.get("pad_token_id") != 151643):
@@ -148,7 +233,7 @@ def validate_assets(experiment: BootstrapExperiment, config: DictConfig) -> dict
     if manifest.get("format") != "archlab.prepared-agentic-sft.v1":
         raise ValueError("bootstrap requires a prepared agentic SFT manifest")
     tokenization = manifest["tokenization"]
-    if (tokenization.get("generation_eos_token_id") != 151645
+    if (tokenization.get("generation_eos_token_id") != experiment.generation_eos_token_id
             or tokenization.get("tokenizer_eos_token_id") != 151643
             or tokenization.get("loss_mask_alignment") != "unshifted-target-token"
             or tokenization.get("max_length") != config.data.max_length):
@@ -214,12 +299,25 @@ def validate_assets(experiment: BootstrapExperiment, config: DictConfig) -> dict
         elif (conversion.get("weights_state") != "trained_by_assistant_ce"
               or conversion.get("initialization")):
             raise ValueError("package SFT parent lacks explicit trained conversion metadata")
+    if inserted:
+        insertion = receipt.get("insertion", {})
+        if (experiment.parent_stage != BootstrapParentStage.original_base
+                or insertion.get("format") != "archlab-limite-insertion-v1"
+                or insertion.get("intervention") != "insert_residual_prelude"
+                or not insertion.get("config")
+                or any(inserted.get(key) != value for key, value in insertion["config"].items())
+                or insertion.get("layers") != list(range(exported["num_hidden_layers"]))
+                or insertion.get("trainable_mode") != experiment.trainable_mode
+                or insertion.get("output_state") != "zero"):
+            raise ValueError("insertion receipt does not establish fresh zero-output preludes")
     result = {
         "export_receipt_sha256": sha256_file(root / "EXPORT.json"),
         "publisher_receipt_sha256": sha256_file(source_path),
         "publisher_repo": source["repo"], "publisher_revision": source["revision"],
         "data_manifest_sha256": sha256_file(manifest_path),
         "conversion": receipt.get("conversion"),
+        "insertion": receipt.get("insertion"),
+        "chat_template": receipt.get("chat_template"),
         "parent_stage": experiment.parent_stage.value,
     }
     if experiment.parent_stage == BootstrapParentStage.package_sft:
@@ -277,7 +375,8 @@ def main(argv=None):
     launch = None
     if args.action == "train":
         launch = {"format": "archlab-bootstrap-launch-v1", "assets": validate_assets(experiment, config),
-                  "source": source_snapshot(args.verl, args.recipe)}
+                  "source": source_snapshot(args.verl, args.recipe),
+                  "schedule": schedule_for(experiment, config) if experiment.supervised_tokens else None}
     if int(os.environ.get("RANK", "0")) == 0:
         args.output.mkdir(parents=True, exist_ok=True)
         _write_once(args.output / "resolved.yaml", OmegaConf.to_yaml(config, resolve=True, sort_keys=True))

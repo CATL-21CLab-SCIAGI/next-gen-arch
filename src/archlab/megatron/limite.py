@@ -16,6 +16,7 @@ from megatron.bridge.models.transformer_config import TransformerConfig
 from megatron.core.enums import ModelType
 from megatron.core.transformer.module import MegatronModule
 
+from archlab.architectures.limite_adapter import enable_runtime_sequence_attention
 from archlab.training.limite import LimiteConfig, LimiteForCausalLM
 
 
@@ -27,6 +28,10 @@ class NativeLimiteModule(MegatronModule):
     def __init__(self, config):
         super().__init__(config=config)
         self.policy = LimiteForCausalLM(LimiteConfig.from_dict(config.native_config))
+        if (self.policy.config.adapter or {}).get("attention_backend") == "tilelang":
+            # Engine batches hold rows of every length; static specializations
+            # would compile one prelude kernel per distinct row length.
+            enable_runtime_sequence_attention(self.policy.policy)
         self.pre_process = self.post_process = True
         self.model_type = ModelType.encoder_or_decoder
         self.share_embeddings_and_output_weights = (
@@ -132,7 +137,7 @@ class NativeLimiteBridge(MegatronModelBridge):
     def mapping_registry(self):
         # The extra prefix belongs only to this engine wrapper. No QKV fusion,
         # transposition, padding, cast or architecture reinterpretation occurs.
-        backbone = "model" if self.hf_config.conversion else "model.base"
+        backbone = "model.base" if self.hf_config.adapter else "model"
         return MegatronMappingRegistry(
             # safetensors stores the tied pair once under lm_head, while
             # named_parameters visits the embedding alias first.

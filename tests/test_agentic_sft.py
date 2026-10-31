@@ -242,6 +242,36 @@ def test_prepared_dataset_preserves_unshifted_eos_mask(tmp_path):
     assert dataset[0]["loss_mask"].tolist() == [0, 1, 1]
 
 
+def multi_row(length):
+    return {"input_ids": [151643] + [7] * (length - 2) + [151645], "attention_mask": [1] * length,
+            "loss_mask": [0] * (length - 1) + [1], "position_ids": list(range(length))}
+
+
+def test_prepared_dataset_rows_span_files_and_row_boundaries(tmp_path):
+    rows = [multi_row(length) for length in (2, 5, 3, 4)]
+    paths = [tmp_path / "a.parquet", tmp_path / "b.parquet"]
+    pq.write_table(pa.Table.from_pylist(rows[:1]), paths[0])
+    pq.write_table(pa.Table.from_pylist(rows[1:]), paths[1])
+    dataset = PreparedAgenticSFTDataset([str(path) for path in paths], None, {"max_length": 5})
+    assert [{key: value.tolist() for key, value in dataset[i].items()} for i in range(len(dataset))] == rows
+    assert len(PreparedAgenticSFTDataset([str(path) for path in paths], None, {}, max_samples=3)) == 3
+
+
+@pytest.mark.parametrize("updates,match", [
+    ({"position_ids": [4, 5, 6]}, "contiguous"),
+    ({"position_ids": [0, 2, 3]}, "contiguous"),
+    ({"attention_mask": [1, 1, 0]}, "padding"),
+    ({"loss_mask": [1, 0, 1]}, "token/mask"),
+    ({"loss_mask": [0, 0, 0]}, "token/mask"),
+    ({"input_ids": [151643, 7, 8]}, "no supervised native EOS"),
+])
+def test_prepared_dataset_checks_every_row(tmp_path, updates, match):
+    path = tmp_path / "rows.parquet"
+    pq.write_table(pa.Table.from_pylist([multi_row(4), multi_row(3) | updates, multi_row(2)]), path)
+    with pytest.raises(ValueError, match=match):
+        PreparedAgenticSFTDataset(str(path), None, {})
+
+
 @pytest.mark.parametrize("updates,config,match", [
     ({"loss_mask": [1, 1, 1]}, {}, "token/mask"),
     ({"loss_mask": [0, 1, 0]}, {}, "no supervised native EOS"),

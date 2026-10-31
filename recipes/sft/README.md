@@ -77,3 +77,22 @@ before shifting. User, system and tool observations remain context. The upstream
 loss performs the one-token shift and averages over supervised tokens. Sequences
 over the explicit maximum fail instead of truncating. This is supervised CE;
 success in an executable agent harness remains the acceptance criterion before RL.
+
+## Higher-order prelude transplants
+
+`limite_teacher_preludes.yaml` executes the adapter phase of
+`recipes/limite/higher_order_preludes_math.yaml`: each arm trains only the
+zero-output preludes inserted into its own base export (`trainable_mode=adapter`)
+on verified RL142 solutions prepared by `archlab.preprocessing.limite_teacher_traces`.
+Override `insertion={...}` with the arm's exported prelude geometry and
+`settings.trainer.seed`; `trainable_mode=full insertion={}` selects the
+uninserted baseline. RL142 supervision ends with its native `<|endoftext|>`
+(`generation_eos_token_id=151643`).
+
+`supervised_tokens` and `evaluations` make the token budget part of the contract.
+verl draws rows with `DistributedSampler(seed=0, drop_last=True)`, so composition
+replays that order over the prepared `loss_mask` column and sets the step count,
+epochs and the validation/checkpoint interval; the launch receipt records the
+exact supervised tokens at every evaluation. Checkpoints keep HF weights only,
+because bootstrap starts fresh rather than resuming. Inserted TileLang preludes
+run at runtime sequence lengths under the Megatron provider.

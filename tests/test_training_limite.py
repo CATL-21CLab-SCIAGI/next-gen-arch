@@ -108,6 +108,60 @@ def test_lossless_auto_model_roundtrip_and_global_cast_preserves_dtypes(tmp_path
     assert actual.get_input_embeddings().weight is actual.get_output_embeddings().weight
 
 
+def test_uninserted_publisher_export_is_lossless_and_full_weight(tmp_path, native):
+    native.train()
+    root = tmp_path / "export"
+    limite.export_model(native, SNAPSHOT, root)
+    config = AutoConfig.from_pretrained(root)
+    assert config.adapter == {} and config.conversion == {} and config.trainable_mode == "full"
+    actual = AutoModelForCausalLM.from_pretrained(root).train()
+    assert not hasattr(actual.policy.model, "adapters")
+    ids = torch.tensor([[1, 4, 8, 5, 2], [1, 3, 9, 6, 2]])
+    want = native(input_ids=ids, use_cache=False, labels=ids)
+    got = actual(input_ids=ids, use_cache=False, labels=ids)
+    torch.testing.assert_close(got.logits, want.logits, rtol=0, atol=0)
+    got.loss.backward()
+    assert all(parameter.grad is not None for parameter in actual.parameters())
+    with pytest.raises(ValueError, match="uninserted"):
+        limite.LimiteForCausalLM(type(config)(**{**config.to_dict(), "trainable_mode": "adapter"}))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="FlashAttention-2 models construct only with CUDA")
+def test_export_records_requested_backbone_attention_without_loading_it(tmp_path, native):
+    root = tmp_path / "export"
+    receipt = limite.export_model(native, SNAPSHOT, root, backbone_attention="flash_attention_2")
+    assert AutoConfig.from_pretrained(root).backbone_attention == "flash_attention_2"
+    actual = AutoModelForCausalLM.from_pretrained(root)
+    assert actual.policy.config._attn_implementation == "flash_attention_2"
+    assert limite._state_digest(actual.policy.state_dict()) == receipt["state_sha256"]
+
+
+@pytest.mark.parametrize("adapter", [
+    LimiteAdapterConfig(variant="gdn", heads=1, attention_backend="reference", compensation=8),
+    LimiteAdapterConfig(variant="triadic", heads=1, feature_dim=4, attention_backend="reference"),
+])
+def test_fresh_delta_insertion_export_starts_at_publisher_with_teacher_template(tmp_path, native, adapter):
+    template = Path("/mnt/oss/models/limite-1b-violetto-4cf321846e47")
+    if not template.exists():
+        pytest.skip("verified teacher publisher unavailable")
+    ids = torch.tensor([[1, 4, 8, 5, 2], [1, 3, 9, 6, 2]])
+    want = deepcopy(native).eval()(input_ids=ids, use_cache=False).logits
+    root = tmp_path / "export"
+    receipt = limite.export_model(install_adapters(native, adapter), SNAPSHOT, root, chat_template=template)
+    assert receipt["insertion"]["output_state"] == "zero"
+    assert receipt["insertion"]["trainable_mode"] == "adapter"
+    assert receipt["chat_template"]["repo"] == "paradigma-inc/limite-1b-violetto"
+    assert sha256_file(root / "chat_template.jinja") == sha256_file(template / "chat_template.jinja")
+    assert sha256_file(root / "tokenizer.json") == sha256_file(SNAPSHOT / "tokenizer.json")
+    actual = AutoModelForCausalLM.from_pretrained(root).train()
+    got = actual(input_ids=ids, use_cache=False, labels=ids)
+    torch.testing.assert_close(got.logits, want, rtol=0, atol=0)
+    got.loss.backward()
+    trainable = {name: p for name, p in actual.named_parameters() if p.requires_grad}
+    assert trainable and all(".adapters." in name and p.grad is not None for name, p in trainable.items())
+    assert any(p.grad.count_nonzero() for p in trainable.values())
+
+
 @pytest.mark.parametrize("checkpoint_layers", [False, True])
 def test_native_forward_backward_survives_auto_model_export(tmp_path, native, checkpoint_layers):
     expected = policy(native).train()
@@ -214,7 +268,8 @@ def test_legacy_conversion_validates_source_payloads_and_preserves_backbone(
         limite.load_legacy_checkpoint(SNAPSHOT, root)
 
 
-def test_normal_serving_has_distinct_cache_slots_and_preserves_prefill_decode_and_logits(native):
+@pytest.mark.parametrize("inserted", [True, False])
+def test_normal_serving_has_distinct_cache_slots_and_preserves_prefill_decode_and_logits(native, inserted):
     from types import SimpleNamespace
 
     from torch import nn
@@ -223,8 +278,8 @@ def test_normal_serving_has_distinct_cache_slots_and_preserves_prefill_decode_an
     from archlab.training.serving import VLLMLimiteForCausalLM, bind_normal_attention
 
     native_copy = deepcopy(native)
-    expected = policy(native).eval()
-    actual = policy(native_copy)
+    expected = (policy(native) if inserted else native).eval()
+    actual = policy(native_copy) if inserted else native_copy
     actual.load_state_dict(expected.state_dict(), strict=True)
     actual.eval()
     slots = {}
@@ -257,7 +312,7 @@ def test_normal_serving_has_distinct_cache_slots_and_preserves_prefill_decode_an
         return slots[prefix]
 
     attached = bind_normal_attention(actual, factory)
-    assert len(attached) == len(slots) == 8
+    assert len(attached) == len(slots) == (8 if inserted else 4)
     serving = VLLMLimiteForCausalLM.__new__(VLLMLimiteForCausalLM)
     nn.Module.__init__(serving)
     serving.policy = actual

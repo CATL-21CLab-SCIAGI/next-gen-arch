@@ -113,14 +113,21 @@ def bind_normal_attention(policy, attention_factory, *, prefix=""):
     Normal: every prelude and backbone attention uses one package cache and the package reduction.
     Simplicial: each prelude owns a long cache (native window) and a short cache (K1/V1 window) and
     uses the batched paged joint reduction; backbone attentions stay normal.
+    An uninserted publisher binds only its N backbone attentions.
     """
-    variant = policy.model.adapter_config["variant"]
-    if variant not in ("normal", "simplicial"):
-        raise ValueError("unknown Limite adapter variant: " + str(variant))
     backbone = policy.model
+    inserted = getattr(backbone, "adapter_config", None)
+    variant = inserted["variant"] if inserted else None
+    if inserted and variant not in ("normal", "simplicial"):
+        raise ValueError("unknown Limite adapter variant: " + str(variant))
+    if inserted:
+        sites = [(("prelude", adapter.native), ("backbone", layer.self_attn))
+                 for adapter, layer in zip(backbone.adapters, backbone.base.layers, strict=True)]
+    else:
+        sites = [(("backbone", layer.self_attn),) for layer in backbone.layers]
     attentions = []
-    for index, (adapter, layer) in enumerate(zip(backbone.adapters, backbone.base.layers, strict=True)):
-        for kind, attention in (("prelude", adapter.native), ("backbone", layer.self_attn)):
+    for index, site in enumerate(sites):
+        for kind, attention in site:
             if kind == "prelude" and variant == "simplicial":
                 # Allocation margin only; the kernel enforces the exact windows.
                 long_capacity = None if attention.is_global else attention.window_span + 16
@@ -144,10 +151,12 @@ def bind_normal_attention(policy, attention_factory, *, prefix=""):
             attentions.append(attention)
     # Paged Attention owns masks and cached K/V. Avoid constructing dense masks
     # for a packed stream of independent requests; positions come from vLLM.
-    backbone._masks = MethodType(
-        lambda self, hidden, positions, mask, cache: dict(full_attention=None, sliding_attention=None),
-        backbone,
-    )
+    # An uninserted publisher receives the same empty mapping from forward().
+    if inserted:
+        backbone._masks = MethodType(
+            lambda self, hidden, positions, mask, cache: dict(full_attention=None, sliding_attention=None),
+            backbone,
+        )
     return tuple(attentions)
 
 
@@ -211,8 +220,8 @@ class VLLMLimiteForCausalLM(nn.Module):
             raise ValueError("native Limite requires token IDs for its value embeddings")
         if input_ids.ndim != 1 or positions.ndim != 1:
             raise ValueError("vLLM must supply flat token IDs and positions")
-        converted = getattr(self.policy.model, "conversion_config", None)
-        masks = dict(full_attention=None, sliding_attention=None) if converted else None
+        inserted = getattr(self.policy.model, "adapter_config", None)
+        masks = None if inserted else dict(full_attention=None, sliding_attention=None)
         output = self.policy.model(input_ids=input_ids[None], position_ids=positions[None],
                                    attention_mask=masks,
                                    use_cache=False, return_dict=True)

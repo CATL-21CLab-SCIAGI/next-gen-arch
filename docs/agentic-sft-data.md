@@ -48,7 +48,9 @@ The Parquet schema has four variable-length `list<int64>` columns:
 `PreparedAgenticSFTDataset(parquet_files, tokenizer, config, processor=None,
 max_samples=-1)` reads this format and returns four `torch.int64` tensors. It
 validates lengths, padding, positions, nonempty assistant loss, and supervised
-native EOS. Set upstream `data.custom_cls.path=pkg://archlab.data.agentic_sft`
+native EOS. Every data-parallel rank holds the split as flat token IDs, a
+boolean loss mask and row offsets; validated attention masks and positions are
+regenerated per row rather than stored. Set upstream `data.custom_cls.path=pkg://archlab.data.agentic_sft`
 and `data.custom_cls.name=PreparedAgenticSFTDataset`. Use upstream
 `data.pad_mode=no_padding` with context limits admitted against the manifest;
 the dataset never shifts the loss mask itself.

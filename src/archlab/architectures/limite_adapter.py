@@ -3,6 +3,10 @@
 The normal branch calls the unchanged publisher attention. The simplicial
 branch substitutes only its attention reduction, keeping native QKV/O, scaling,
 QK normalization, RoPE/NoPE, value embeddings, XSA and attention gates.
+The GDN (E=1) and Triadic (E>1) branches are the single-stream gated delta-rule
+mixers of ``deepseek_v41_triadic_adapter``; they are teacher-forced only.
+Any prelude may add a parallel SwiGLU with a zero down projection, used only
+to match parameter budgets across mechanisms.
 """
 
 from __future__ import annotations
@@ -23,6 +27,9 @@ from archlab.architectures.limite_context import (
     native_training_context_key,
 )
 
+SOFTMAX_VARIANTS = ("normal", "simplicial")
+DELTA_VARIANTS = ("gdn", "triadic")
+
 
 @dataclass(frozen=True)
 class LimiteAdapterConfig:
@@ -30,12 +37,29 @@ class LimiteAdapterConfig:
     short_window: int = 16
     seed: int = 42
     attention_backend: str = "native"
+    heads: int = 0
+    feature_dim: int = 1
+    compensation: int = 0
 
     def __post_init__(self):
-        if self.variant not in ("normal", "simplicial") or self.short_window < 1:
+        if self.variant not in SOFTMAX_VARIANTS + DELTA_VARIANTS or self.short_window < 1:
             raise ValueError("invalid adapter variant/window")
-        if self.attention_backend not in ("native", "tilelang"):
-            raise ValueError("invalid adapter attention backend")
+        if self.compensation < 0:
+            raise ValueError("compensation width must be nonnegative")
+        if self.variant in SOFTMAX_VARIANTS:
+            if self.attention_backend not in ("native", "tilelang"):
+                raise ValueError("invalid adapter attention backend")
+            if self.heads or self.feature_dim != 1:
+                raise ValueError("softmax preludes inherit the native attention geometry")
+        else:
+            from archlab.architectures.triadic_attention import SUPPORTED_FEATURE_DIMS
+
+            if self.attention_backend not in ("official", "reference"):
+                raise ValueError("delta preludes use the official or reference Triadic backend")
+            if self.heads < 1 or (self.variant == "gdn") != (self.feature_dim == 1):
+                raise ValueError("GDN has one feature slice; Triadic has more than one")
+            if self.feature_dim not in SUPPORTED_FEATURE_DIMS:
+                raise ValueError("unsupported Triadic feature dimension")
 
 
 class _AdapterInterface:
@@ -135,6 +159,11 @@ def enable_runtime_sequence_attention(model):
         adapter.native._archlab_dynamic_attention = True
 
 
+def _attention_preludes(model):
+    # Delta preludes have no softmax reduction to select.
+    return [adapter for adapter in model.model.adapters if hasattr(adapter, "native")]
+
+
 def set_normal_attention_kernel(model, kernel):
     """Select execution kernels without changing saved adapter geometry."""
     if kernel not in ("shared", "gqa"):
@@ -146,7 +175,7 @@ def set_normal_attention_kernel(model, kernel):
         config["variant"] != "normal" or config["attention_backend"] != "tilelang"
     ):
         raise ValueError("gqa kernels require the normal TileLang variant")
-    for adapter in model.model.adapters:
+    for adapter in _attention_preludes(model):
         adapter.native._archlab_gqa_kernel = kernel
     model.model.normal_kernel = kernel
     model.archlab_normal_attention_kernel = kernel
@@ -169,10 +198,35 @@ def set_normal_attention_backward(model, backward):
         model.archlab_normal_attention_backward_contract = fa4_runtime_contract()
     else:
         model.archlab_normal_attention_backward_contract = {"backend": "tilelang"}
-    for adapter in backbone.adapters:
+    for adapter in _attention_preludes(model):
         adapter.native._archlab_normal_backward = backward
     backbone.normal_backward = backward
     model.archlab_normal_attention_backward = backward
+
+
+class _Compensation(nn.Module):
+    """Parallel SwiGLU on the prelude input; zero output preserves the parent."""
+
+    def __init__(self, width, intermediate, seed):
+        super().__init__()
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(seed + 32452843)
+            self.gate = nn.Linear(width, intermediate, bias=False)
+            self.up = nn.Linear(width, intermediate, bias=False)
+            self.down = nn.Linear(intermediate, width, bias=False)
+            nn.init.normal_(self.gate.weight, std=0.02)
+            nn.init.normal_(self.up.weight, std=0.02)
+            nn.init.zeros_(self.down.weight)
+
+    def forward(self, x):
+        gate, up, down = (m.weight.to(x.dtype) for m in (self.gate, self.up, self.down))
+        return F.linear(F.silu(F.linear(x, gate)) * F.linear(x, up), down)
+
+
+def _compensation(prelude, width, config, index):
+    prelude.compensation = (
+        _Compensation(width, config.compensation, config.seed + index) if config.compensation else None
+    )
 
 
 class AttentionPrelude(nn.Module):
@@ -190,6 +244,7 @@ class AttentionPrelude(nn.Module):
             # Same RNG stream for both variants; the control omits only K1/V1.
             short = nn.Linear(native_config.hidden_size, 2 * self.native.kv_size, bias=False)
             nn.init.normal_(short.weight, std=0.02)
+        _compensation(self, native_config.hidden_size, config, index)
         if self.native.attention_dropout != 0:
             raise ValueError("comparison requires native zero dropout")
         if config.variant == "simplicial":
@@ -266,15 +321,98 @@ class AttentionPrelude(nn.Module):
             n._short_values = (k1, v1)
         mask = context["masks"]["full_attention" if n.is_global else "sliding_attention"]
         delta, _ = n(x, context["values"], cosine, sine, mask, cache, cache is not None, False)
+        if self.compensation is not None:
+            delta = delta.float() + self.compensation(x).float()
         return (hidden.float() + delta.float()).to(hidden.dtype)
+
+
+def _delta_geometry(width, config):
+    from archlab.architectures.deepseek_v41_adapter import V41AdapterConfig
+
+    return V41AdapterConfig(width=width, streams=1, query_heads=config.heads, kv_heads=config.heads,
+                            head_dim=128, short_window=1, long_window=1)
+
+
+class DeltaPrelude(nn.Module):
+    """Single-stream GDN/Triadic mixer, without RoPE, masks or a decode cache."""
+
+    def __init__(self, native_layer, config, index):
+        super().__init__()
+        from archlab.architectures.deepseek_v41_triadic_adapter import V41TriadicAttentionAdapter
+
+        self.config, self.index = config, index
+        width = native_layer.config.hidden_size
+        self.upstream = sys.modules[type(native_layer).__module__]
+        self.core = V41TriadicAttentionAdapter(
+            _delta_geometry(width, config), feature_dim=config.feature_dim, seed=config.seed + index,
+            backend=config.attention_backend,
+        )
+        _compensation(self, width, config, index)
+
+    def forward(self, hidden, context):
+        if context["cache"] is not None:
+            raise ValueError("delta preludes have no qualified cached decode")
+        batch, length, width = hidden.shape
+        packed = hidden.reshape(1, batch * length, 1, width)
+        offsets = torch.arange(0, (batch + 1) * length, length, device=hidden.device, dtype=torch.int32)
+        mixed = self.core(packed, cu_seqlens=offsets).reshape(batch, length, width)
+        if self.compensation is None:
+            return mixed
+        x = self.upstream.rms_norm(hidden)
+        return (mixed.float() + self.compensation(x).float()).to(hidden.dtype)
+
+
+def prelude_parameters(native_layer, config):
+    """Parameters of the prelude inserted before ``native_layer``'s block.
+
+    Softmax preludes construct the publisher attention of that same layer.
+    """
+    width = native_layer.config.hidden_size
+    if config.variant in DELTA_VARIANTS:
+        from archlab.architectures.deepseek_v41_triadic_adapter import (
+            triadic_adapter_parameter_count,
+        )
+
+        core = triadic_adapter_parameter_count(_delta_geometry(width, config),
+                                               feature_dim=config.feature_dim)
+    else:
+        core = sum(parameter.numel() for parameter in native_layer.parameters())
+        if config.variant == "simplicial":
+            core += width * 2 * native_layer.kv_size
+    return core + 3 * width * config.compensation
+
+
+def matched_compensation(native_layers, configs, *, anchor=64, alignment=8):
+    """One SwiGLU width per arm matching all preludes of 2-simplicial(w=16) + SwiGLU(anchor).
+
+    Returns ``{name: (intermediate, total_parameters, relative_error)}`` over all layers.
+    """
+    from dataclasses import replace
+
+    layers = list(native_layers)
+    width = layers[0].config.hidden_size
+
+    def total(config):
+        return sum(prelude_parameters(layer, config) for layer in layers)
+
+    target = total(LimiteAdapterConfig(variant="simplicial", short_window=16, compensation=anchor))
+    unit = 3 * width * alignment * len(layers)
+    result = {}
+    for name, config in configs.items():
+        core = total(replace(config, compensation=0))
+        intermediate = max(0, round((target - core) / unit)) * alignment
+        matched = total(replace(config, compensation=intermediate))
+        result[name] = (intermediate, matched, abs(matched - target) / target)
+    return result
 
 
 class PreludeBackbone(nn.Module):
     def __init__(self, base, config):
         super().__init__()
         self.base = base
+        prelude = DeltaPrelude if config.variant in DELTA_VARIANTS else AttentionPrelude
         self.adapters = nn.ModuleList(
-            [AttentionPrelude(layer.self_attn, config, i) for i, layer in enumerate(base.layers)]
+            [prelude(layer.self_attn, config, i) for i, layer in enumerate(base.layers)]
         )
         self.adapter_config = dict(
             **asdict(config),
@@ -493,6 +631,33 @@ class PreludeBackbone(nn.Module):
             # keeps the publisher's original unpadded-cache classification.
             kwargs = dict(kwargs, attention_mask=masks, position_ids=positions)
         return self.base(*args, **kwargs)
+
+
+_MECHANISMS = dict(normal="pairwise-softmax", simplicial="joint-softmax-2-simplicial",
+                   gdn="gated-delta-rule", triadic="joint-key-triadic-gated-delta-rule")
+
+
+def _output_weights(prelude):
+    yield prelude.core.output.weight if isinstance(prelude, DeltaPrelude) else prelude.native.o_proj.weight
+    if prelude.compensation is not None:
+        yield prelude.compensation.down.weight
+
+
+def insertion_metadata(model):
+    """Serializable prelude inventory, without asserting source provenance."""
+    backbone = model.model
+    zero = all(not weight.count_nonzero() for prelude in backbone.adapters
+               for weight in _output_weights(prelude))
+    return {
+        "format": "archlab-limite-insertion-v1",
+        "intervention": "insert_residual_prelude",
+        "mechanism": _MECHANISMS[backbone.adapter_config["variant"]],
+        "config": {key: backbone.adapter_config[key] for key in asdict(LimiteAdapterConfig())},
+        "layers": list(range(len(backbone.adapters))),
+        "parameters": sum(p.numel() for p in backbone.adapters.parameters()),
+        "trainable_mode": backbone.trainable_mode,
+        "output_state": "zero" if zero else "trained",
+    }
 
 
 def install_adapters(model, config):

@@ -217,38 +217,95 @@ def encode_assistant_targets(tokenizer, codec, messages: list[dict], tools: list
 
 
 class PreparedAgenticSFTDataset:
-    """Small pretokenized Parquet adapter for upstream verl's SFT trainer."""
+    """Pretokenized Parquet adapter for upstream verl's SFT trainer.
+
+    Every data-parallel rank loads the whole split, so columns are streamed in
+    row batches into flat token IDs and a boolean loss mask with row offsets.
+    Validated all-ones attention masks and contiguous positions are checked per
+    batch and regenerated per row rather than stored.
+    """
 
     def __init__(self, parquet_files, tokenizer, config, processor=None, max_samples=-1):
-        import pyarrow.parquet as pq
+        import numpy as np
 
         if processor is not None:
             raise ValueError("Prepared agentic SFT is text-only")
         files = [parquet_files] if isinstance(parquet_files, str) else list(parquet_files)
-        self.rows = [row for path in files for row in pq.read_table(path).to_pylist()]
-        if max_samples > 0:
-            self.rows = self.rows[:max_samples]
         self.max_length = int(config.get("max_length", 131072))
         self.eos_token_id = int(config.get("generation_eos_token_id", 151645))
-        for row in self.rows:
-            ids, mask = row["input_ids"], row["loss_mask"]
-            if (not ids or len(ids) > self.max_length or len(ids) != len(mask)
-                    or mask[0] != 0 or not any(mask) or set(mask) - {0, 1}):
-                raise ValueError("Invalid prepared SFT token/mask contract")
-            if config.get("require_supervised_eos", True) and not any(
-                token == self.eos_token_id and target for token, target in zip(ids, mask, strict=True)
-            ):
-                raise ValueError("Prepared trajectory has no supervised native EOS")
-            if row["attention_mask"] != [1] * len(ids):
+        contract = "Invalid prepared SFT token/mask contract"
+
+        ids, lengths = [], []
+        for values, batch_lengths in list_column_batches(files, "input_ids", max_samples):
+            ids.append(values.astype(np.int64, copy=False))
+            lengths.append(batch_lengths)
+        lengths = np.concatenate(lengths) if lengths else np.zeros(0, dtype=np.int64)
+        self.input_ids = np.concatenate(ids) if ids else np.zeros(0, dtype=np.int64)
+        del ids
+        self.offsets = np.concatenate(([0], np.cumsum(lengths, dtype=np.int64)))
+        begins = self.offsets[:-1]
+        if (lengths <= 0).any() or (lengths > self.max_length).any():
+            raise ValueError(contract)
+
+        def aligned(key, error):
+            row = 0
+            for values, batch_lengths in list_column_batches(files, key, max_samples):
+                if not np.array_equal(batch_lengths, lengths[row:row + len(batch_lengths)]):
+                    raise ValueError(error)
+                row += len(batch_lengths)
+                yield values, batch_lengths
+
+        masks = []
+        for values, _ in aligned("loss_mask", contract):
+            if ((values != 0) & (values != 1)).any():
+                raise ValueError(contract)
+            masks.append(values.astype(bool))
+        self.loss_mask = np.concatenate(masks) if masks else np.zeros(0, dtype=bool)
+        del masks
+        if len(begins) and (self.loss_mask[begins].any()
+                            or not np.logical_or.reduceat(self.loss_mask, begins).all()):
+            raise ValueError(contract)
+        if config.get("require_supervised_eos", True) and len(begins) and not np.logical_or.reduceat(
+                (self.input_ids == self.eos_token_id) & self.loss_mask, begins).all():
+            raise ValueError("Prepared trajectory has no supervised native EOS")
+        for values, _ in aligned("attention_mask", "Prepared trajectory contains padding"):
+            if (values != 1).any():
                 raise ValueError("Prepared trajectory contains padding")
-            if row["position_ids"] != list(range(len(ids))):
+        for values, batch_lengths in aligned("position_ids", "Prepared position IDs must be contiguous"):
+            starts = np.cumsum(batch_lengths) - batch_lengths
+            steps = np.diff(values)
+            steps[starts[1:] - 1] = 1
+            if (values[starts] != 0).any() or (steps != 1).any():
                 raise ValueError("Prepared position IDs must be contiguous")
 
     def __len__(self):
-        return len(self.rows)
+        return len(self.offsets) - 1
 
     def __getitem__(self, index):
         import torch
 
-        return {key: torch.tensor(self.rows[index][key], dtype=torch.int64)
-                for key in ("input_ids", "attention_mask", "loss_mask", "position_ids")}
+        begin, end = int(self.offsets[index]), int(self.offsets[index + 1])
+        return {"input_ids": torch.from_numpy(self.input_ids[begin:end].copy()),
+                "attention_mask": torch.ones(end - begin, dtype=torch.int64),
+                "loss_mask": torch.from_numpy(self.loss_mask[begin:end].astype("int64")),
+                "position_ids": torch.arange(end - begin, dtype=torch.int64)}
+
+
+def list_column_batches(files, key, max_samples=-1, batch_rows=256):
+    """Yield (flat values, row lengths) of a Parquet list column a few hundred rows at a time."""
+    import numpy as np
+    import pyarrow.parquet as pq
+
+    remaining = max_samples if max_samples > 0 else -1
+    for path in files:
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=batch_rows, columns=[key]):
+            if remaining == 0:
+                return
+            column = batch.column(0)
+            if remaining > 0:
+                column = column.slice(0, remaining)
+                remaining -= len(column)
+            if column.null_count or column.values.null_count:
+                raise ValueError("Invalid prepared SFT token/mask contract")
+            offsets = column.offsets.to_numpy()
+            yield column.values.to_numpy()[offsets[0]:offsets[-1]], np.diff(offsets)
