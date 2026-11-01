@@ -1,0 +1,104 @@
+# Versioned scientific contract. Successor question to higher_order_preludes_math.yaml,
+# whose 400M-token backbone-frozen adapter phase was stopped on 2026-11-01: frozen-backbone
+# leads (simplicial-w16 0.7303 vs normal 0.7416 held-out CE at 100M tokens; the historical
+# 2B-token warmup) need not survive training every weight, which is what must beat the
+# uninserted baseline. Its data, parents' geometry and evaluation rows are reused unchanged.
+name: limite-variant-scaling-ladders-v1
+question: >-
+  When every weight trains from the same base on the same verified RL-teacher solutions,
+  which inserted residual prelude mechanism lowers held-out CE relative to the
+  parameter-matched pairwise-softmax prelude and to the uninserted baseline, and does that
+  gap grow, persist or vanish as supervised tokens increase?
+parent:
+  model: paradigma-inc/limite-1b-base
+  revision: cc612bafcd4acd8445936201694c8c41aea8e479
+  snapshot: env:LIMITE_BASE_MODEL
+data:
+  contract: recipes/limite/higher_order_preludes_math.yaml#data
+  prepared: rl142-verified-solutions-v1
+  selection_sha256: b48621d3d2c485fed67d3bf4834f2e5fe597464e7101a8eec49e7fedae41919b
+  train: {rows: 12385, supervised_tokens: 178201190}
+  validation: {rows: 240, supervised_tokens: 3638319}
+  # verl draws rows with DistributedSampler(seed=0, drop_last=True): every run sees the same
+  # order, so a rung of D tokens trains on a prefix of the next rung's data.
+  order: identical for every run; rungs are nested prefixes
+arms:
+  placement: before_each_of_48_native_blocks; zero-initialized output, so every arm starts at the base function
+  parameter_matching: {rule: recipes/limite/higher_order_preludes_math.yaml#arms.parameter_matching,
+                       total_prelude_parameters: about 232M, maximum_relative_error: 0.005}
+  baseline: none          # uninserted base, every weight trains
+  control: normal         # pairwise softmax prelude, publisher module and local/global schedule
+  axes:
+    linear_vs_full: [gdn, normal]    # linear-time gated delta rule vs full pairwise softmax
+    higher_order_style: [triadic_e4, simplicial_w16]
+    # The second key of 2-simplicial attention is a full head_dim key over a short window w;
+    # the triadic second key has a fixed feature dimension e (e=1 is the gated delta rule).
+    second_key_size:
+      triadic_e: [1, 2, 4, 8, 16]    # gdn, triadic_e2 .. triadic_e16 (kernel-supported sizes)
+      simplicial_w: [4, 8, 16]       # qualified kernels tile at most 16 short keys
+regime:
+  primary: full           # every weight trainable from a fresh full-scope insertion export
+  contrast: {regime: adapter, arms: [normal, simplicial_w16, gdn, triadic_e4], rung: 50M,
+             lr: 1.0e-4}  # the stopped phase's recipe, for the frozen-vs-full figure
+schedule:
+  global_batch_rows: 32
+  optimizer: {name: AdamW, betas: [0.9, 0.95], weight_decay: 0, clip: 1.0}
+  # Each rung is its own run with a complete schedule; nothing is read off an unannealed curve.
+  lr_schedule: {warmup: 10% of steps (ceil), decay: cosine, final_lr: 0.1 x peak}
+  rungs_supervised_tokens: [25000000, 50000000, 100000000, 200000000]  # 200M = 1.12 epochs
+  evaluations_per_run: 2  # midpoint and end
+learning_rate:
+  # One LR for all weights (verl's single Megatron optimizer). The 50M grid runs are also
+  # the 50M ladder points of the selected LR.
+  grid: [1.0e-5, 3.0e-5, 1.0e-4]
+  grid_rung: 50M
+  tuned_arms: [none, normal, gdn, triadic_e4, simplicial_w16]
+  inherit: {triadic_e2: triadic_e4, triadic_e8: triadic_e4, triadic_e16: triadic_e4,
+            simplicial_w4: simplicial_w16, simplicial_w8: simplicial_w16}
+  selection: lowest final held-out CE; a minimum at a grid edge adds the next half-decade
+seeds:
+  # verl's sampler fixes the data order (seed 0), so a seed replicate is a different prelude
+  # initialization; the uninserted arm has no random state and is repeated once at 50M to
+  # measure run-to-run kernel nondeterminism.
+  prelude_initialization: {normal: [42, 43], others: [42]}
+  none_repeat: 50M
+order:  # queue priority; each run launches as soon as a node is free and its inputs exist
+  - full-scope parents and 4-step full-training qualification of every arm
+  - LR grid at 50M (fast arms first)
+  - core ladder (none, normal, gdn, triadic_e4, simplicial_w16) at 25M and 100M
+  - second-key ablations at 50M, then 25M and 100M
+  - normal seed 43 at 25M, 50M and 100M; the none repeat at 50M
+  - frozen-regime contrast at 50M
+  - 200M rung for none, normal and the two lowest-CE inserted arms at 100M
+    (100M is the selection rung; 200M is reported for every selected arm)
+evaluation:
+  primary: assistant CE on the 240 held-out teacher solutions at the end of every run
+  also_report: [midpoint_CE, tokens_per_second, GPU_hours, prelude_parameters]
+  fit: per arm, L(D) = E + A * D^-alpha over the rungs (reported only with all four rungs)
+  claim_rule: >-
+    An arm beats a control at a rung only if its CE gap exceeds twice the normal seed
+    spread at that rung (and the none repeat's difference). It scales relative to the control only if
+    the gap has the same sign at every rung from 50M and does not shrink toward zero
+    with tokens.
+  figures:
+    - CE vs supervised tokens (log-log), every full-regime arm, the normal seed band
+    - CE gap to normal and to none vs tokens, with the claim threshold
+    - CE vs second-key size (triadic e, simplicial w) at 50M and 100M
+    - CE vs GPU-hours (same runs): the cost of each mechanism's kernels
+    - frozen vs full regime gap at 50M
+gate:
+  longer_data: recipes/limite/teacher_data_long_proposal.yaml launches only for arms meeting
+    the scaling claim, with none and normal
+deferred:
+  prelude_lr_multiplier: >-
+    the historical full fine-tune gave preludes 10x the backbone LR; needs a pinned verl
+    patch passing an MCore ParamKey max_lr/min_lr override, and its own qualification
+  prelude_width_axis: matched budgets of 0.5x and 2x the current prelude parameters
+  pass_at_1: softmax arms and none at the top rung through limite_heldout admit/summarize
+execution:
+  entry: archlab.training.bootstrap via pinned verl SFT on the native Megatron provider
+  recipe: recipes/sft/limite_teacher_preludes.yaml with per-run overrides
+  data_parallel: 8
+  hardware: NVIDIA B300
+  nodes: [dlc-fcq-transplant, dlc-fcq-embryo]
+  restart: an interrupted run restarts from its parent (bootstrap admits no resume)

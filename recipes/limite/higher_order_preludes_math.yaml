@@ -1,5 +1,7 @@
 # Versioned scientific contract. New experiment: it does not change the historical
 # normal/2-simplicial comparison (full_finetune_math.yaml) or its recorded results.
+# Stopped 2026-11-01 after the normal adapter arm (simplicial-w16 preserved at 100M tokens):
+# superseded by variant_scaling_ladders.yaml, which trains every weight.
 name: limite-higher-order-preludes-math-v1
 question: >-
   Starting from the same Limite-1B base and the same verified RL-teacher solutions,

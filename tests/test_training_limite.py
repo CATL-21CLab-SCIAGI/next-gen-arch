@@ -209,6 +209,21 @@ def test_export_checksum_rejects_changed_weights_before_loading(tmp_path, native
         AutoModelForCausalLM.from_pretrained(root)
 
 
+@pytest.mark.parametrize("mode", ["adapter", "full"])
+def test_fresh_insertion_export_records_its_training_scope(tmp_path, native, monkeypatch, mode):
+    monkeypatch.setattr(limite, "load_model", lambda snapshot, **kwargs: deepcopy(native))
+    receipt = limite.export_insertion(SNAPSHOT, tmp_path / mode, LimiteAdapterConfig(variant="normal"),
+                                      trainable_mode=mode)
+    assert receipt["insertion"]["output_state"] == "zero" and receipt["insertion"]["trainable_mode"] == mode
+    model = AutoModelForCausalLM.from_pretrained(tmp_path / mode)
+    backbone = [p.requires_grad for n, p in model.named_parameters() if ".adapters." not in n]
+    assert all(p.requires_grad for n, p in model.named_parameters() if ".adapters." in n)
+    assert all(backbone) if mode == "full" else not any(backbone)
+    ids = torch.tensor([[1, 4, 8, 5, 2]])
+    torch.testing.assert_close(model(input_ids=ids, use_cache=False).logits,
+                               native(input_ids=ids, use_cache=False).logits, rtol=0, atol=0)
+
+
 def test_trained_insertion_export_changes_only_preludes_and_keeps_parent_assets(tmp_path, native):
     from safetensors.torch import save_model
 

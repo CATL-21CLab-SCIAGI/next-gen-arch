@@ -240,6 +240,22 @@ def test_bootstrap_admits_fresh_insertion_with_declared_supervised_eos(inserted_
     assert result["chat_template"]["repo"] == "paradigma-inc/limite-1b-violetto"
 
 
+def test_bootstrap_admits_fresh_full_scope_insertion_for_full_training(inserted_assets):
+    model, _ = inserted_assets
+    config = json.loads((model / "config.json").read_text())
+    (model / "config.json").write_text(json.dumps(dict(config, trainable_mode="full")))
+    receipt = json.loads((model / "EXPORT.json").read_text())
+    receipt["insertion"]["trainable_mode"] = "full"
+    (model / "EXPORT.json").write_text(json.dumps(receipt))
+    full = [o.replace("trainable_mode=adapter", "trainable_mode=full") for o in INSERTION]
+    experiment = read_bootstrap(RECIPE, full)
+    result = bootstrap.validate_assets(experiment, compose_sft(experiment, UPSTREAM))
+    assert result["insertion"]["trainable_mode"] == "full" and result["insertion"]["output_state"] == "zero"
+    experiment = read_bootstrap(RECIPE, INSERTION)
+    with pytest.raises(ValueError):
+        bootstrap.validate_assets(experiment, compose_sft(experiment, UPSTREAM))
+
+
 @pytest.mark.parametrize("defect", ["geometry", "scope", "trained", "eos", "layers"])
 def test_bootstrap_insertion_rejects_mismatched_parent(inserted_assets, defect):
     model, data = inserted_assets

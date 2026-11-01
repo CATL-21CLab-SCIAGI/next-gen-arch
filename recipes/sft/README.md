@@ -89,6 +89,11 @@ Override `insertion={...}` with the arm's exported prelude geometry and
 uninserted baseline. RL142 supervision ends with its native `<|endoftext|>`
 (`generation_eos_token_id=151643`).
 
+`recipes/limite/variant_scaling_ladders.yaml` runs the same recipe with every
+weight trainable (`trainable_mode=full`) from a fresh insertion exported by
+`export_insertion(..., trainable_mode="full")`: one complete run per token
+rung, with the LR, `min_lr` and warmup steps overridden per run.
+
 `supervised_tokens` and `evaluations` make the token budget part of the contract.
 verl draws rows with `DistributedSampler(seed=0, drop_last=True)`, so composition
 replays that order over the prepared `loss_mask` column and sets the step count,

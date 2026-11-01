@@ -437,13 +437,20 @@ def export_model(model, snapshot, destination, *, source_checkpoint=None, parent
     return receipt
 
 
-def export_insertion(snapshot, destination, adapter, *, chat_template=None, backbone_attention=None):
-    """Export the unmodified publisher with fresh zero-output preludes; only preludes train."""
-    model = install_adapters(load_model(snapshot, attn_implementation="sdpa"), adapter)
+def export_insertion(snapshot, destination, adapter, *, chat_template=None, backbone_attention=None,
+                     trainable_mode="adapter"):
+    """Export the unmodified publisher with fresh zero-output preludes.
+
+    ``trainable_mode="adapter"`` trains only the preludes; ``"full"`` is the parent of
+    training every weight from the publisher function.
+    """
+    model = set_trainable_mode(install_adapters(load_model(snapshot, attn_implementation="sdpa"), adapter),
+                               trainable_mode)
     receipt = export_model(model, snapshot, destination, chat_template=chat_template,
                            backbone_attention=backbone_attention)
-    if receipt["insertion"]["output_state"] != "zero" or receipt["insertion"]["trainable_mode"] != "adapter":
-        raise ValueError("a fresh insertion must start at the publisher function with frozen weights")
+    if (receipt["insertion"]["output_state"] != "zero"
+            or receipt["insertion"]["trainable_mode"] != trainable_mode):
+        raise ValueError("a fresh insertion must start at the publisher function in its training scope")
     return receipt
 
 

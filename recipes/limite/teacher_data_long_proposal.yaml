@@ -1,0 +1,48 @@
+# PROPOSED, not launched. Becomes a versioned contract only after the gate below is met
+# and the token budget is approved; nothing in the queue reads it.
+name: limite-teacher-data-long-v1-proposal
+status: proposed
+gate: >-
+  recipes/limite/variant_scaling_ladders.yaml: at least one inserted arm meets the scaling
+  claim against normal or none through the 200M rung. Only those arms, none and normal
+  continue; a vanishing gap retires the longer budget.
+question: >-
+  Does the full-training advantage of the gated arms persist to about 1.5B supervised
+  tokens, and does more unique teacher data beat repeating the 178M-token set?
+current_data:
+  prepared: rl142-verified-solutions-v1
+  prompts: the teacher's RL split (5898 train / 128 heldout of 7732 source rows; 1706 excluded)
+  draws_per_prompt: 8
+  verified_rows: 12385          # 26% of 47184 train draws
+  supervised_tokens: 178201190
+  generation_cost: 2.2 h on 16 B300 for 48208 draws (stage 10, vLLM FlashInfer)
+proposed_data:
+  # Two additions, prepared as separate immutable datasets so each can be ablated.
+  more_draws:
+    name: rl142-verified-solutions-v2-draws32
+    prompts: the same 5898 train prompts; held-out rows and order unchanged
+    draws_per_prompt: 32        # 24 new draws, seeds disjoint from v1's
+    sampler: archlab.preprocessing.limite_teacher_traces generate under its pinned SERVING contract
+    selection: unchanged (symbolically correct, closed reasoning, natural <|endoftext|>)
+    expected: {verified_rows: about 49500, supervised_tokens: about 0.71B}
+    estimated_generation: about 6.5 h on 16 B300
+  new_prompts:
+    name: rl142-verified-solutions-v2-nemotron-math
+    prompts: verifiable-answer problems from nvidia/Nemotron-Math-v2 outside the RL split,
+      excluding exact held-out and AIME26 problem hashes
+    draws_per_prompt: 8
+    expected_supervised_tokens: about 0.8B at the v1 verified rate
+    estimated_generation: about 12 h on 16 B300
+    risk: off the teacher's RL distribution; reported separately before mixing
+budget:
+  supervised_tokens: [400000000, 800000000, 1600000000]   # extends the ladder's rungs
+  repetition_control: none and normal at 400M and 800M on v1 repeated (2.2 and 4.5 epochs)
+training: recipes/limite/variant_scaling_ladders.yaml#schedule at each arm's selected LR
+evaluation:
+  primary: held-out CE on the unchanged 240 validation rows
+  secondary: heldout-128 pass@1 and AIME26 for softmax arms and none at 1.6B
+    (recipes/limite/higher_order_preludes_math.yaml#evaluation)
+estimated_training: >-
+  1.6B tokens is 8x the 200M rung: at measured full-training rates, per arm about 7 h
+  (none), 10 h (normal) and 35-60 h (delta and simplicial preludes) on one 8-B300 node,
+  unless their kernels get faster first.
