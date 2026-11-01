@@ -123,6 +123,30 @@ def test_delta_prelude_starts_at_identity_keeps_rows_separate_and_learns(config)
         prelude(hidden, dict(cache=object()))
 
 
+@pytest.mark.parametrize("shape", [(2, 7), (3, 5), (2, 8)])
+def test_official_token_bucket_changes_neither_rows_nor_gradients(monkeypatch, shape):
+    from archlab.architectures import limite_adapter
+
+    cfg, native_cls = _native()
+    config = LimiteAdapterConfig(variant="triadic", heads=5, feature_dim=4, attention_backend="official")
+    prelude = DeltaPrelude(native_cls(cfg, 1), config, 1)
+    prelude.core.backend = "reference"  # the CPU oracle stands in for the official kernels
+    with torch.no_grad():
+        prelude.core.output.weight.normal_(std=0.02)
+    hidden = torch.randn(*shape, cfg.hidden_size)
+    results = []
+    for bucket in (1, 16):
+        monkeypatch.setattr(limite_adapter, "OFFICIAL_TOKEN_BUCKET", bucket)
+        prelude.zero_grad()
+        out = prelude(hidden, dict(cache=None))
+        out.square().sum().backward()
+        results.append((out, {n: p.grad.clone() for n, p in prelude.named_parameters()}))
+    (exact, exact_grads), (bucketed, bucketed_grads) = results
+    torch.testing.assert_close(bucketed, exact)
+    for name, grad in exact_grads.items():
+        torch.testing.assert_close(bucketed_grads[name], grad, msg=name)
+
+
 def test_matched_compensation_meets_the_recipe_bound_on_native_geometry():
     cfg, native_cls = _native()
     layers = [native_cls(cfg, index) for index in range(cfg.num_hidden_layers)]

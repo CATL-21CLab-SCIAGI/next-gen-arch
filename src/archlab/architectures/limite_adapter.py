@@ -29,6 +29,7 @@ from archlab.architectures.limite_context import (
 
 SOFTMAX_VARIANTS = ("normal", "simplicial")
 DELTA_VARIANTS = ("gdn", "triadic")
+OFFICIAL_TOKEN_BUCKET = 1024
 
 
 @dataclass(frozen=True)
@@ -353,9 +354,16 @@ class DeltaPrelude(nn.Module):
         if context["cache"] is not None:
             raise ValueError("delta preludes have no qualified cached decode")
         batch, length, width = hidden.shape
-        packed = hidden.reshape(1, batch * length, 1, width)
-        offsets = torch.arange(0, (batch + 1) * length, length, device=hidden.device, dtype=torch.int32)
-        mixed = self.core(packed, cu_seqlens=offsets).reshape(batch, length, width)
+        tokens = batch * length
+        # The official kernels compile once per packed token count. Rounding it up
+        # bounds their cache; the zero tail is its own document, so no state reaches it.
+        bucket = OFFICIAL_TOKEN_BUCKET if self.config.attention_backend == "official" else 1
+        padded = -(-tokens // bucket) * bucket
+        packed = F.pad(hidden.reshape(1, tokens, 1, width), (0, 0, 0, 0, 0, padded - tokens))
+        offsets = torch.arange(0, tokens + 1, length, device=hidden.device, dtype=torch.int32)
+        if padded > tokens:
+            offsets = F.pad(offsets, (0, 1), value=padded)
+        mixed = self.core(packed, cu_seqlens=offsets)[:, :tokens].reshape(batch, length, width)
         if self.compensation is None:
             return mixed
         x = self.upstream.rms_norm(hidden)
