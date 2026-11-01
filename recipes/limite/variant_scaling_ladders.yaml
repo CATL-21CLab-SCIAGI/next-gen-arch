@@ -102,3 +102,19 @@ execution:
   hardware: NVIDIA B300
   nodes: [dlc-fcq-transplant, dlc-fcq-embryo]
   restart: an interrupted run restarts from its parent (bootstrap admits no resume)
+amendments:
+  - date: 2026-11-01
+    name: structure-aligned-arms
+    reason: >-
+      Matching every arm's parameters to 2-simplicial(w=16) with a parallel SwiGLU
+      "compensation" MLP adds a different-width MLP per mechanism, so matched arms compare
+      mechanism plus MLP, not mechanism. Matched arms (v1 queue) finish unchanged and are
+      reported as such.
+    arms: >-
+      ARM-nc for normal, gdn, triadic-e2/e4/e8/e16, simplicial-w4/w8/w16: the same prelude
+      with compensation=0 (no SwiGLU); parameter counts differ and are reported.
+    lr: >-
+      every matched arm selected 1e-3, the grid ceiling; -nc core arms (normal, gdn,
+      triadic-e4, simplicial-w16) grid {3e-4, 1e-3, 3e-3} with edge extension to 1e-2;
+      ablations inherit their family's -nc LR; none and normal get a 3e-3 bracketing run.
+    rungs: core 25/50/100M; ablations 25/50/100M.
