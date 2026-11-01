@@ -3,7 +3,8 @@
 ``generate`` samples a Limite export through the archlab vLLM boundary. Prompts are
 the question turns of a sealed RL split, rendered by the teacher's own chat template;
 each (problem, sample) has a shard-independent seed, and a shard resumes from its own
-records. Every sample is kept and graded by the shared symbolic ``math_reward``.
+records. Every sample is kept and graded by the shared symbolic ``math_reward``;
+``--record-logprobs`` also keeps each sampled token's raw serving log-probability.
 ``prepare`` selects correct samples with closed reasoning that end with the teacher's
 own EOS and writes assistant-only SFT rows (unshifted target masks, supervised EOS).
 
@@ -27,6 +28,10 @@ TOKENIZER_EOS = 151643
 # RL142 ends its responses with <|endoftext|>; neither its RL rollouts nor its sampled
 # traces emit <|im_end|>. Evaluation stops on both tokens.
 TEACHER_EOS = TOKENIZER_EOS
+# The Limite rollout serving contract: inserted-prelude caches read FlashAttention-2 metadata,
+# and every sampled request runs its own prefill.
+SERVING = dict(attention_config=dict(backend="FLASH_ATTN", flash_attn_version=2),
+               enable_prefix_caching=False)
 _USER, _ASSISTANT = "<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n"
 
 
@@ -66,6 +71,21 @@ def _records(path: Path) -> dict:
     return records
 
 
+def completed(traces: Path, split: str) -> tuple[list[Path], list[dict]]:
+    """Records of every completed shard of a split, after checking each shard's checksum."""
+    receipts = sorted(traces.glob(f"{split}-shard-*.complete.json"))
+    if not receipts:
+        raise ValueError("no completed teacher shards for split " + split)
+    records = []
+    for path in receipts:
+        receipt = json.loads(path.read_text())
+        source = traces / receipt["file"]
+        if sha256_file(source) != receipt["file_sha256"]:
+            raise ValueError("teacher shard changed after completion: " + source.name)
+        records.extend(_records(source).values())
+    return receipts, records
+
+
 def generate(args) -> dict:
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
@@ -83,7 +103,7 @@ def generate(args) -> dict:
     llm = LLM(model=str(args.export), tokenizer=str(args.export), dtype="bfloat16",
               max_model_len=args.max_model_len, max_num_seqs=args.max_num_seqs,
               gpu_memory_utilization=args.gpu_memory_utilization, enforce_eager=True,
-              seed=args.seed)
+              seed=args.seed, logprobs_mode="raw_logprobs", **SERVING)
     with output.open("a") as stream:
         for start in range(0, len(pending), args.chunk):
             chunk = pending[start:start + args.chunk]
@@ -91,7 +111,8 @@ def generate(args) -> dict:
                                      max_tokens=args.max_tokens,
                                      seed=benchmark_seed(args.seed, row["uuid"], sample),
                                      stop_token_ids=[GENERATION_EOS, TOKENIZER_EOS],
-                                     skip_special_tokens=True)
+                                     skip_special_tokens=True,
+                                     logprobs=0 if args.record_logprobs else None)
                       for row, sample in chunk]
             outputs = llm.generate([{"prompt_token_ids": row["prompt_ids"]} for row, _ in chunk],
                                    params, use_tqdm=False)
@@ -104,6 +125,9 @@ def generate(args) -> dict:
                               finish_reason=completion.finish_reason, text=completion.text,
                               **grade(completion.text, row["expected_answer"], completion.finish_reason,
                                       ids[-1] if ids else None))
+                if args.record_logprobs:
+                    record["response_logprobs"] = [
+                        step[token].logprob for token, step in zip(ids, completion.logprobs, strict=True)]
                 stream.write(json.dumps(record) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -117,6 +141,7 @@ def generate(args) -> dict:
                    shard=args.shard, shards=args.shards, samples=args.samples, seed=args.seed,
                    sampling=dict(temperature=args.temperature, top_p=args.top_p, top_k=-1,
                                  max_tokens=args.max_tokens, stop_token_ids=[GENERATION_EOS, TOKENIZER_EOS]),
+                   serving=SERVING, response_logprobs="raw" if args.record_logprobs else None,
                    records=len(records), correct=sum(r["correct"] for r in records.values()),
                    natural_eos=sum(r["natural_eos"] for r in records.values()),
                    response_tokens=sum(len(r["response_ids"]) for r in records.values()),
@@ -144,23 +169,16 @@ def prepare(args) -> dict:
     args.output.mkdir(parents=True, exist_ok=False)
     splits, index = {}, []
     for name, split in (("train", "train"), ("validation", "heldout")):
-        receipts = sorted(args.traces.glob(f"{split}-shard-*.complete.json"))
-        if not receipts:
-            raise ValueError("no completed teacher shards for split " + split)
+        receipts, records = completed(args.traces, split)
         rows = []
-        for path in receipts:
-            receipt = json.loads(path.read_text())
-            source = args.traces / receipt["file"]
-            if sha256_file(source) != receipt["file_sha256"]:
-                raise ValueError("teacher shard changed after completion: " + source.name)
-            for record in _records(source).values():
-                row = supervised(record, args.max_length)
-                index.append(dict(split=split, uuid=record["uuid"], sample=record["sample"],
-                                  selected=row is not None, correct=record["correct"],
-                                  natural_eos=record["natural_eos"],
-                                  response_tokens=len(record["response_ids"])))
-                if row is not None:
-                    rows.append(row)
+        for record in records:
+            row = supervised(record, args.max_length)
+            index.append(dict(split=split, uuid=record["uuid"], sample=record["sample"],
+                              selected=row is not None, correct=record["correct"],
+                              natural_eos=record["natural_eos"],
+                              response_tokens=len(record["response_ids"])))
+            if row is not None:
+                rows.append(row)
         rows.sort(key=lambda row: (row["uuid"], row["sample"]))
         # Small row groups let every training rank stream ~36k-token rows.
         pq.write_table(pa.Table.from_pylist(rows), args.output / f"{name}.parquet", row_group_size=256)
@@ -211,6 +229,8 @@ def main(argv=None):
     gen.add_argument("--max-num-seqs", type=int, default=256)
     gen.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     gen.add_argument("--chunk", type=int, default=1024)
+    gen.add_argument("--record-logprobs", action="store_true",
+                     help="keep each sampled token's raw vLLM log-probability for native replay admission")
     prep = commands.add_parser("prepare")
     prep.add_argument("--traces", type=Path, required=True)
     prep.add_argument("--tokenizer", type=Path, required=True)

@@ -96,3 +96,14 @@ epochs and the validation/checkpoint interval; the launch receipt records the
 exact supervised tokens at every evaluation. Checkpoints keep HF weights only,
 because bootstrap starts fresh rather than resuming. Inserted TileLang preludes
 run at runtime sequence lengths under the Megatron provider.
+
+`archlab.training.limite.export_trained_insertion` turns an adapter checkpoint
+back into a servable export. It requires the zero-output parent, the
+checkpoint's checksum receipt, the parent's exact tensor inventory, and a
+bit-identical backbone, and it keeps the parent's tokenizer and template files.
+Held-out pass@1 samples each export through `limite_teacher_traces generate
+--record-logprobs`. `archlab.evaluation.limite_heldout admit` replays a fixed
+subset natively against those serving log-probabilities, and `summarize`
+scores only admitted models, with paired problem-clustered bootstrap
+intervals. Delta preludes have no cached decode and are compared by held-out
+CE only.

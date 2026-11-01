@@ -183,6 +183,21 @@ def summarize_aime(records: list[dict], expected_ids: list[str], samples: int,
                 p95_completion_tokens=token_counts[min(len(token_counts) - 1, int(.95 * len(token_counts)))])
 
 
+def paired_cluster_bootstrap(first: list[float], second: list[float], *, draws: int = 10000,
+                             seed: int = 20261101) -> dict:
+    """Interval of mean(second - first) when whole problems, with all their draws, are resampled."""
+    if not first or len(first) != len(second):
+        raise ValueError("paired problem scores must be nonempty and aligned")
+    differences = [b - a for a, b in zip(first, second, strict=True)]
+    rng = random.Random(seed)
+    means = sorted(sum(rng.choices(differences, k=len(differences))) / len(differences)
+                   for _ in range(draws))
+    interval = [means[int(.025 * draws)], means[min(draws - 1, int(.975 * draws))]]
+    return dict(problems=len(differences), difference=sum(differences) / len(differences),
+                cluster_bootstrap_95pct=interval, excludes_zero=interval[0] > 0 or interval[1] < 0,
+                draws=draws, seed=seed)
+
+
 def compare_aime(first: list[dict], second: list[dict], expected_ids: list[str]) -> dict:
     """Reuse the existing conservative paired test on the first registered draw."""
     def scores(rows):

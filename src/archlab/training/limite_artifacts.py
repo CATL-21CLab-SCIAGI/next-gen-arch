@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from safetensors import safe_open
+
 from archlab.artifacts import sha256_file
 
 
@@ -18,3 +20,10 @@ def verify_export(path):
         if Path(name).name != name or sha256_file(root / name) != digest:
             raise ValueError("export checksum mismatch: " + name)
     return receipt
+
+
+def tensor_inventory(path):
+    """Map each stored tensor name to its shape and safetensors dtype without reading data."""
+    with safe_open(path, framework="pt", device="cpu") as source:
+        return {name: (source.get_slice(name).get_shape(), source.get_slice(name).get_dtype())
+                for name in source.keys()}

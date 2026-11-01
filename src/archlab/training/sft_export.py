@@ -19,7 +19,7 @@ import yaml
 from safetensors import safe_open
 
 from archlab.artifacts import atomic_write_json, sha256_file
-from archlab.training.limite_artifacts import verify_export
+from archlab.training.limite_artifacts import tensor_inventory, verify_export
 
 _ASSETS = ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
            "chat_template.jinja", "generation_config.json")
@@ -39,12 +39,6 @@ def _inside(root, name):
     if not path.is_relative_to(root.resolve()):
         raise ValueError("Package content path escapes its checkpoint")
     return path
-
-
-def _inventory(path):
-    with safe_open(path, framework="pt", device="cpu") as source:
-        return {name: (source.get_slice(name).get_shape(), source.get_slice(name).get_dtype())
-                for name in source.keys()}
 
 
 def _stored_aliases(source):
@@ -210,7 +204,7 @@ def _lineage(parent, checkpoint, launch_path, hf_root):
 def _validate_weights(root, parent, *, _parent_chain=()):
     if list(root.glob("model*.safetensors")) != [root / "model.safetensors"] or (root / "model.safetensors.index.json").exists():
         raise ValueError("Native SFT export requires the parent's single safetensors layout")
-    if _inventory(root / "model.safetensors") != _inventory(parent / "model.safetensors"):
+    if tensor_inventory(root / "model.safetensors") != tensor_inventory(parent / "model.safetensors"):
         raise ValueError("Package SFT tensor inventory, shapes or mixed dtypes differ")
     candidate, original = _json(root / "config.json"), _json(parent / "config.json")
     if any(candidate.get(key) != original.get(key) for key in _GEOMETRY):

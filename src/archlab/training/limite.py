@@ -15,6 +15,7 @@ from pathlib import Path
 from types import MethodType
 
 import torch
+from safetensors import safe_open
 from safetensors.torch import load_model as load_safetensors_model
 from safetensors.torch import save_model as save_safetensors_model
 from transformers import AutoConfig, AutoModelForCausalLM, PretrainedConfig, PreTrainedModel
@@ -34,7 +35,7 @@ from archlab.architectures.limite_conversion import (
 )
 from archlab.architectures.limite_loader import load_model, upstream_classes
 from archlab.artifacts import atomic_write_json, sha256_file
-from archlab.training.limite_artifacts import verify_export
+from archlab.training.limite_artifacts import tensor_inventory, verify_export
 
 
 class LimiteConfig(PretrainedConfig):
@@ -386,6 +387,8 @@ def export_model(model, snapshot, destination, *, source_checkpoint=None, chat_t
     publisher with the same tokenizer, e.g. base weights served in Violetto's chat.
     ``backbone_attention`` selects the publisher attention the export is constructed
     with (default: the exported model's); CPU exports cannot load FlashAttention-2.
+    ``source_checkpoint`` records the caller-verified lineage of trained weights:
+    their checkpoint path and receipt checksum.
     """
     root = Path(destination)
     root.mkdir(parents=True, exist_ok=False)
@@ -410,12 +413,7 @@ def export_model(model, snapshot, destination, *, source_checkpoint=None, chat_t
     config.save_pretrained(root)
     save_safetensors_model(wrapper, root / "model.safetensors")
     _copy_publisher_assets(snapshot, root, chat_template)
-    source = None
-    if source_checkpoint is not None:
-        source_root = Path(source_checkpoint)
-        source = dict(path=str(source_root.resolve()),
-                      receipt_sha256=sha256_file(source_root / "COMPLETE.json"))
-    receipt = dict(format="archlab-limite-hf-v1", source_checkpoint=source,
+    receipt = dict(format="archlab-limite-hf-v1", source_checkpoint=source_checkpoint,
                    optimizer_migrated=False, state_sha256=_state_digest(model.state_dict()),
                    files={p.name: sha256_file(p) for p in root.iterdir() if p.is_file()})
     if conversion:
@@ -440,6 +438,59 @@ def export_insertion(snapshot, destination, adapter, *, chat_template=None, back
                            backbone_attention=backbone_attention)
     if receipt["insertion"]["output_state"] != "zero" or receipt["insertion"]["trainable_mode"] != "adapter":
         raise ValueError("a fresh insertion must start at the publisher function with frozen weights")
+    return receipt
+
+
+_PRELUDE_PREFIX = "policy.model.adapters."
+
+
+def export_trained_insertion(parent, checkpoint_receipt, destination, *, chat_template=None):
+    """Export adapter-trained preludes over their fresh insertion parent.
+
+    ``checkpoint_receipt`` is a JSON file whose ``files`` checksums, relative to its
+    directory, cover the trained ``model.safetensors``. The weights must have the
+    parent's exact tensor inventory and differ from it only in prelude tensors.
+    ``chat_template`` must name the parent's template publisher; every non-weight
+    file of the export must equal the parent's.
+    """
+    parent, receipt_path = Path(parent), Path(checkpoint_receipt)
+    parent_receipt = verify_export(parent)
+    insertion = parent_receipt.get("insertion") or {}
+    if insertion.get("output_state") != "zero" or insertion.get("trainable_mode") != "adapter":
+        raise ValueError("trained preludes require their fresh adapter-scope insertion parent")
+    files = json.loads(receipt_path.read_text())["files"]
+    if "model.safetensors" not in files:
+        raise ValueError("checkpoint receipt does not cover model.safetensors")
+    for name, digest in files.items():
+        if sha256_file(receipt_path.parent / name) != digest:
+            raise ValueError("checkpoint checksum mismatch: " + name)
+    weights = receipt_path.parent / "model.safetensors"
+    if tensor_inventory(weights) != tensor_inventory(parent / "model.safetensors"):
+        raise ValueError("trained tensor inventory, shapes or dtypes differ from the parent")
+    changed = []
+    with safe_open(parent / "model.safetensors", framework="pt") as before, \
+            safe_open(weights, framework="pt") as after:
+        for name in before.keys():
+            if not torch.equal(before.get_tensor(name), after.get_tensor(name)):
+                changed.append(name)
+    if not changed:
+        raise ValueError("checkpoint leaves the insertion parent unchanged")
+    if frozen := [name for name in changed if not name.startswith(_PRELUDE_PREFIX)]:
+        raise ValueError(f"adapter training changed backbone tensors: {frozen[:8]}")
+    model = LimiteForCausalLM.from_pretrained(parent)
+    load_safetensors_model(model, weights, strict=True, device="cpu")
+    receipt = export_model(
+        model.policy, model.config.publisher_snapshot, destination,
+        source_checkpoint=dict(path=str(receipt_path.parent.resolve()), receipt=receipt_path.name,
+                               receipt_sha256=sha256_file(receipt_path)),
+        chat_template=chat_template, backbone_attention=model.config.backbone_attention,
+    )
+    if receipt["insertion"] != {**insertion, "output_state": "trained"}:
+        raise ValueError("trained export changed the insertion geometry or training scope")
+    differing = {name for name in set(receipt["files"]) | set(parent_receipt["files"])
+                 if receipt["files"].get(name) != parent_receipt["files"].get(name)}
+    if differing != {"model.safetensors"}:
+        raise ValueError(f"trained export assets differ from the parent: {sorted(differing)}")
     return receipt
 
 

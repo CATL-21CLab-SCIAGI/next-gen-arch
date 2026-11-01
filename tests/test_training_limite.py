@@ -210,6 +210,62 @@ def test_export_checksum_rejects_changed_weights_before_loading(tmp_path, native
         AutoModelForCausalLM.from_pretrained(root)
 
 
+def test_trained_insertion_export_changes_only_preludes_and_keeps_parent_assets(tmp_path, native):
+    from safetensors.torch import save_model
+
+    template = Path("/mnt/oss/models/limite-1b-violetto-4cf321846e47")
+    if not template.exists():
+        pytest.skip("verified teacher publisher unavailable")
+    parent = tmp_path / "parent"
+    limite.export_model(install_adapters(native, LimiteAdapterConfig(variant="normal")), SNAPSHOT, parent,
+                        chat_template=template)
+
+    def checkpoint(name, change):
+        model = AutoModelForCausalLM.from_pretrained(parent)
+        with torch.no_grad():
+            change(model.policy)
+        model.train().eval()
+        root = tmp_path / name
+        root.mkdir()
+        save_model(model, root / "model.safetensors")
+        model.config.save_pretrained(root)
+        atomic_write_json(root / "CHECKPOINT.json", dict(files={p.name: sha256_file(p) for p in root.iterdir()}))
+        return model, root / "CHECKPOINT.json"
+
+    def train_preludes(policy):
+        for adapter in policy.model.adapters:
+            adapter.native.o_proj.weight.normal_(std=.01)
+
+    trained, receipt_path = checkpoint("trained", train_preludes)
+    receipt = limite.export_trained_insertion(parent, receipt_path, tmp_path / "export", chat_template=template)
+    assert receipt["insertion"]["output_state"] == "trained"
+    assert receipt["insertion"]["trainable_mode"] == "adapter"
+    assert receipt["source_checkpoint"] == dict(path=str(receipt_path.parent.resolve()), receipt="CHECKPOINT.json",
+                                                receipt_sha256=sha256_file(receipt_path))
+    assert receipt["state_sha256"] == limite._state_digest(trained.policy.state_dict())
+    ids = torch.tensor([[1, 4, 8, 5, 2], [1, 3, 9, 6, 2]])
+    actual = AutoModelForCausalLM.from_pretrained(tmp_path / "export")
+    want = trained(input_ids=ids, use_cache=False).logits
+    torch.testing.assert_close(actual(input_ids=ids, use_cache=False).logits, want, rtol=0, atol=0)
+    original = AutoModelForCausalLM.from_pretrained(parent)(input_ids=ids, use_cache=False).logits
+    assert not torch.equal(want, original)
+
+    def change_backbone(policy):
+        train_preludes(policy)
+        next(p for name, p in policy.named_parameters() if ".adapters." not in name).add_(.5)
+
+    _, backbone = checkpoint("backbone", change_backbone)
+    with pytest.raises(ValueError, match="changed backbone tensors"):
+        limite.export_trained_insertion(parent, backbone, tmp_path / "backbone-export", chat_template=template)
+    _, unchanged = checkpoint("unchanged", lambda policy: None)
+    with pytest.raises(ValueError, match="unchanged"):
+        limite.export_trained_insertion(parent, unchanged, tmp_path / "unchanged-export", chat_template=template)
+    with (receipt_path.parent / "model.safetensors").open("ab") as payload:
+        payload.write(b"changed")
+    with pytest.raises(ValueError, match="checkpoint checksum mismatch"):
+        limite.export_trained_insertion(parent, receipt_path, tmp_path / "corrupt-export", chat_template=template)
+
+
 @pytest.mark.parametrize("source_mode,target_backend", [
     ("full", None), ("adapter", None), ("adapter", "tilelang"),
 ])

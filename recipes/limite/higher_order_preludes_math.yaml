@@ -86,6 +86,11 @@ evaluation:
   secondary:  # softmax arms and the baseline; delta preludes have no qualified cached decode
     - heldout-128 pass@1, 4 seeded draws, temperature 0.6, top-p 0.95, 32768 new tokens
     - endpoint AIME26 per eval_aime26_pipeline_v3.yaml (4 draws, 131072-token context)
+  # Held-out samples come from archlab's vLLM integration. A model is scored only if native
+  # teacher-forced replay of its own first draws on the first 8 held-out problems meets the
+  # serving contract's absolute bounds on the sampled-token log-ratio.
+  serving_admission: {replayed: first draw of the first 8 held-out problems,
+                      maximum_absolute_logratio: 0.5, maximum_k3_kl_estimate: 0.005}
   also_report: [truncation_rate, natural_eos_rate, completion_tokens, parameters, training_FLOPs,
                 tokens_per_second]
   claim_rule: >-
