@@ -27,6 +27,8 @@ from archlab.artifacts import sha256_file
 class BootstrapParentStage(str, Enum):
     original_base = "original_base"
     package_sft = "package_sft"
+    # Preludes trained by a completed adapter phase over their original-base insertion.
+    adapter_endpoint = "adapter_endpoint"
 
 
 @dataclass
@@ -261,9 +263,14 @@ def validate_assets(experiment: BootstrapExperiment, config: DictConfig) -> dict
         raise ValueError("bootstrap data cannot provide one complete DP8 training batch")
 
     # Verify export files independently of the model runtime.
-    from archlab.training.limite_artifacts import verify_export
+    from archlab.training.limite_artifacts import verify_export, verify_trained_insertion
 
-    if experiment.parent_stage == BootstrapParentStage.package_sft:
+    endpoint = experiment.parent_stage == BootstrapParentStage.adapter_endpoint
+    if endpoint and not inserted:
+        raise ValueError("an adapter-endpoint parent carries trained inserted preludes")
+    if endpoint:
+        receipt = verify_trained_insertion(root)
+    elif experiment.parent_stage == BootstrapParentStage.package_sft:
         from archlab.training.sft_export import verify_package_sft_export
 
         receipt = verify_package_sft_export(root)
@@ -301,15 +308,15 @@ def validate_assets(experiment: BootstrapExperiment, config: DictConfig) -> dict
             raise ValueError("package SFT parent lacks explicit trained conversion metadata")
     if inserted:
         insertion = receipt.get("insertion", {})
-        if (experiment.parent_stage != BootstrapParentStage.original_base
+        if (experiment.parent_stage == BootstrapParentStage.package_sft
                 or insertion.get("format") != "archlab-limite-insertion-v1"
                 or insertion.get("intervention") != "insert_residual_prelude"
                 or not insertion.get("config")
                 or any(inserted.get(key) != value for key, value in insertion["config"].items())
                 or insertion.get("layers") != list(range(exported["num_hidden_layers"]))
                 or insertion.get("trainable_mode") != experiment.trainable_mode
-                or insertion.get("output_state") != "zero"):
-            raise ValueError("insertion receipt does not establish fresh zero-output preludes")
+                or insertion.get("output_state") != ("trained" if endpoint else "zero")):
+            raise ValueError("insertion receipt does not establish the parent stage's preludes")
     result = {
         "export_receipt_sha256": sha256_file(root / "EXPORT.json"),
         "publisher_receipt_sha256": sha256_file(source_path),
@@ -322,6 +329,9 @@ def validate_assets(experiment: BootstrapExperiment, config: DictConfig) -> dict
     }
     if experiment.parent_stage == BootstrapParentStage.package_sft:
         result["parent_training"] = receipt["training"]
+    if endpoint:
+        result["parent_lineage"] = dict(parent_export=receipt["parent_export"],
+                                        source_checkpoint=receipt["source_checkpoint"])
     if "supervision" in manifest:
         if not isinstance(manifest["supervision"], dict):
             raise ValueError("prepared supervision must be an explicit manifest object")

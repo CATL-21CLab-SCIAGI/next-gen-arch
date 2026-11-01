@@ -1,4 +1,5 @@
 """Exact weights, precision, and native computation at the package boundary."""
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -184,8 +185,6 @@ def test_native_forward_backward_survives_auto_model_export(tmp_path, native, ch
 
 
 def test_legacy_export_assets_are_completed_without_changing_model_state(tmp_path, native):
-    import json
-
     root = tmp_path / "export"
     receipt = limite.export_model(policy(native), SNAPSHOT, root)
     original_digest = receipt["state_sha256"]
@@ -249,6 +248,14 @@ def test_trained_insertion_export_changes_only_preludes_and_keeps_parent_assets(
     torch.testing.assert_close(actual(input_ids=ids, use_cache=False).logits, want, rtol=0, atol=0)
     original = AutoModelForCausalLM.from_pretrained(parent)(input_ids=ids, use_cache=False).logits
     assert not torch.equal(want, original)
+    full = limite.export_trained_insertion(parent, receipt_path, tmp_path / "full", chat_template=template,
+                                           trainable_mode="full")
+    assert full["insertion"] == dict(receipt["insertion"], trainable_mode="full")
+    assert full["state_sha256"] == receipt["state_sha256"]
+    assert full["parent_export"] == receipt["parent_export"] == dict(
+        path=str(parent.resolve()), receipt_sha256=sha256_file(parent / "EXPORT.json"),
+        state_sha256=json.loads((parent / "EXPORT.json").read_text())["state_sha256"])
+    assert all(p.requires_grad for p in AutoModelForCausalLM.from_pretrained(tmp_path / "full").parameters())
 
     def change_backbone(policy):
         train_preludes(policy)
@@ -264,6 +271,14 @@ def test_trained_insertion_export_changes_only_preludes_and_keeps_parent_assets(
         payload.write(b"changed")
     with pytest.raises(ValueError, match="checkpoint checksum mismatch"):
         limite.export_trained_insertion(parent, receipt_path, tmp_path / "corrupt-export", chat_template=template)
+    from archlab.training.limite_artifacts import verify_trained_insertion
+
+    atomic_write_json(receipt_path, dict(json.loads(receipt_path.read_text()), note="rewritten"))
+    with pytest.raises(ValueError, match="checkpoint receipt changed"):
+        verify_trained_insertion(tmp_path / "export")
+    atomic_write_json(parent / "EXPORT.json", dict(json.loads((parent / "EXPORT.json").read_text()), note="x"))
+    with pytest.raises(ValueError, match="parent receipt changed"):
+        verify_trained_insertion(tmp_path / "full")
 
 
 @pytest.mark.parametrize("source_mode,target_backend", [

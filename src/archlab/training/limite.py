@@ -35,7 +35,11 @@ from archlab.architectures.limite_conversion import (
 )
 from archlab.architectures.limite_loader import load_model, upstream_classes
 from archlab.artifacts import atomic_write_json, sha256_file
-from archlab.training.limite_artifacts import tensor_inventory, verify_export
+from archlab.training.limite_artifacts import (
+    tensor_inventory,
+    verify_export,
+    verify_trained_insertion,
+)
 
 
 class LimiteConfig(PretrainedConfig):
@@ -379,8 +383,8 @@ def add_publisher_assets(snapshot, destination):
     return verify_export(root)
 
 
-def export_model(model, snapshot, destination, *, source_checkpoint=None, chat_template=None,
-                 backbone_attention=None):
+def export_model(model, snapshot, destination, *, source_checkpoint=None, parent_export=None,
+                 chat_template=None, backbone_attention=None):
     """Export every weight, then reload and compare its exact state digest.
 
     ``chat_template`` takes the tokenizer config and template of another verified
@@ -388,7 +392,8 @@ def export_model(model, snapshot, destination, *, source_checkpoint=None, chat_t
     ``backbone_attention`` selects the publisher attention the export is constructed
     with (default: the exported model's); CPU exports cannot load FlashAttention-2.
     ``source_checkpoint`` records the caller-verified lineage of trained weights:
-    their checkpoint path and receipt checksum.
+    their checkpoint path and receipt checksum; ``parent_export`` the export they
+    were trained from.
     """
     root = Path(destination)
     root.mkdir(parents=True, exist_ok=False)
@@ -414,6 +419,7 @@ def export_model(model, snapshot, destination, *, source_checkpoint=None, chat_t
     save_safetensors_model(wrapper, root / "model.safetensors")
     _copy_publisher_assets(snapshot, root, chat_template)
     receipt = dict(format="archlab-limite-hf-v1", source_checkpoint=source_checkpoint,
+                   **({"parent_export": parent_export} if parent_export else {}),
                    optimizer_migrated=False, state_sha256=_state_digest(model.state_dict()),
                    files={p.name: sha256_file(p) for p in root.iterdir() if p.is_file()})
     if conversion:
@@ -444,14 +450,16 @@ def export_insertion(snapshot, destination, adapter, *, chat_template=None, back
 _PRELUDE_PREFIX = "policy.model.adapters."
 
 
-def export_trained_insertion(parent, checkpoint_receipt, destination, *, chat_template=None):
+def export_trained_insertion(parent, checkpoint_receipt, destination, *, chat_template=None,
+                             trainable_mode="adapter"):
     """Export adapter-trained preludes over their fresh insertion parent.
 
     ``checkpoint_receipt`` is a JSON file whose ``files`` checksums, relative to its
     directory, cover the trained ``model.safetensors``. The weights must have the
     parent's exact tensor inventory and differ from it only in prelude tensors.
     ``chat_template`` must name the parent's template publisher; every non-weight
-    file of the export must equal the parent's.
+    file of the export must equal the parent's, except that ``trainable_mode="full"``
+    (the parent of full-weight training) changes only that config field.
     """
     parent, receipt_path = Path(parent), Path(checkpoint_receipt)
     parent_receipt = verify_export(parent)
@@ -479,19 +487,26 @@ def export_trained_insertion(parent, checkpoint_receipt, destination, *, chat_te
         raise ValueError(f"adapter training changed backbone tensors: {frozen[:8]}")
     model = LimiteForCausalLM.from_pretrained(parent)
     load_safetensors_model(model, weights, strict=True, device="cpu")
+    set_trainable_mode(model.policy, trainable_mode)
     receipt = export_model(
         model.policy, model.config.publisher_snapshot, destination,
         source_checkpoint=dict(path=str(receipt_path.parent.resolve()), receipt=receipt_path.name,
                                receipt_sha256=sha256_file(receipt_path)),
+        parent_export=dict(path=str(parent.resolve()), receipt_sha256=sha256_file(parent / "EXPORT.json"),
+                           state_sha256=parent_receipt["state_sha256"]),
         chat_template=chat_template, backbone_attention=model.config.backbone_attention,
     )
-    if receipt["insertion"] != {**insertion, "output_state": "trained"}:
-        raise ValueError("trained export changed the insertion geometry or training scope")
+    if receipt["insertion"] != {**insertion, "output_state": "trained", "trainable_mode": trainable_mode}:
+        raise ValueError("trained export changed the insertion geometry")
     differing = {name for name in set(receipt["files"]) | set(parent_receipt["files"])
                  if receipt["files"].get(name) != parent_receipt["files"].get(name)}
+    if trainable_mode != "adapter":
+        exported, original = (json.loads((root / "config.json").read_text()) for root in (Path(destination), parent))
+        if exported == {**original, "trainable_mode": trainable_mode}:
+            differing.discard("config.json")
     if differing != {"model.safetensors"}:
         raise ValueError(f"trained export assets differ from the parent: {sorted(differing)}")
-    return receipt
+    return verify_trained_insertion(destination)
 
 
 # Explicit package extension requested by verl's external_lib setting.

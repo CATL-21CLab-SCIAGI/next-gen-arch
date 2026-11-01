@@ -101,7 +101,10 @@ run at runtime sequence lengths under the Megatron provider.
 back into a servable export. It requires the zero-output parent, the
 checkpoint's checksum receipt, the parent's exact tensor inventory, and a
 bit-identical backbone, and it keeps the parent's tokenizer and template files.
-Held-out pass@1 samples each export through `limite_teacher_traces generate
+Its receipt records the parent export and checkpoint receipt; with
+`trainable_mode="full"` the export is the parent of a full-weight phase, which
+bootstrap admits as `parent_stage=adapter_endpoint` only after re-verifying
+that lineage. Held-out pass@1 samples each export through `limite_teacher_traces generate
 --record-logprobs`. `archlab.evaluation.limite_heldout admit` replays a fixed
 subset natively against those serving log-probabilities, and `summarize`
 scores only admitted models, with paired problem-clustered bootstrap

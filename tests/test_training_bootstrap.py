@@ -160,6 +160,14 @@ def prepared_assets(deployment, monkeypatch):
     (model / "EXPORT.json").write_text(json.dumps(receipt))
     module = types.ModuleType("archlab.training.limite_artifacts")
     module.verify_export = lambda root: json.loads((root / "EXPORT.json").read_text())
+
+    def verify_trained_insertion(root):
+        receipt = module.verify_export(root)
+        if receipt.get("insertion", {}).get("output_state") != "trained" or "parent_export" not in receipt:
+            raise ValueError("export lacks trained-insertion lineage")
+        return receipt
+
+    module.verify_trained_insertion = verify_trained_insertion
     monkeypatch.setitem(sys.modules, "archlab.training.limite_artifacts", module)
     return model, data, publisher
 
@@ -247,6 +255,54 @@ def test_bootstrap_insertion_rejects_mismatched_parent(inserted_assets, defect):
         overrides[3] = "generation_eos_token_id=151645"
     else:
         receipt["insertion"]["layers"] = [0]
+    (model / "EXPORT.json").write_text(json.dumps(receipt))
+    experiment = read_bootstrap(RECIPE, overrides)
+    with pytest.raises(ValueError):
+        bootstrap.validate_assets(experiment, compose_sft(experiment, UPSTREAM))
+
+
+ENDPOINT = ["variant=normal", "trainable_mode=full", "insertion={variant: gdn, heads: 5}",
+            "generation_eos_token_id=151643", "parent_stage=adapter_endpoint"]
+
+
+def _adapter_endpoint(model):
+    config = json.loads((model / "config.json").read_text())
+    (model / "config.json").write_text(json.dumps(dict(config, trainable_mode="full")))
+    receipt = json.loads((model / "EXPORT.json").read_text())
+    receipt["insertion"].update(trainable_mode="full", output_state="trained")
+    receipt.update(parent_export={"path": "fresh-insertion", "receipt_sha256": "p", "state_sha256": "s"},
+                   source_checkpoint={"path": "global_step_8", "receipt": "CHECKPOINT.json",
+                                      "receipt_sha256": "c"})
+    (model / "EXPORT.json").write_text(json.dumps(receipt))
+
+
+def test_bootstrap_admits_adapter_endpoint_for_full_training_with_lineage(inserted_assets):
+    model, _ = inserted_assets
+    _adapter_endpoint(model)
+    experiment = read_bootstrap(RECIPE, ENDPOINT)
+    result = bootstrap.validate_assets(experiment, compose_sft(experiment, UPSTREAM))
+    assert result["parent_stage"] == "adapter_endpoint"
+    assert result["insertion"]["output_state"] == "trained" and result["insertion"]["trainable_mode"] == "full"
+    assert result["parent_lineage"]["source_checkpoint"]["receipt"] == "CHECKPOINT.json"
+
+
+@pytest.mark.parametrize("defect", ["fresh", "original_stage", "lineage", "uninserted"])
+def test_bootstrap_adapter_endpoint_rejects_untrained_or_unlinked_parents(inserted_assets, defect):
+    model, _ = inserted_assets
+    _adapter_endpoint(model)
+    overrides = list(ENDPOINT)
+    receipt = json.loads((model / "EXPORT.json").read_text())
+    if defect == "fresh":
+        receipt["insertion"]["output_state"] = "zero"
+    elif defect == "original_stage":
+        overrides.remove("parent_stage=adapter_endpoint")
+    elif defect == "lineage":
+        del receipt["parent_export"]
+    else:
+        config = json.loads((model / "config.json").read_text())
+        (model / "config.json").write_text(json.dumps(dict(config, adapter={})))
+        overrides.remove("insertion={variant: gdn, heads: 5}")
+        receipt.pop("insertion")
     (model / "EXPORT.json").write_text(json.dumps(receipt))
     experiment = read_bootstrap(RECIPE, overrides)
     with pytest.raises(ValueError):
