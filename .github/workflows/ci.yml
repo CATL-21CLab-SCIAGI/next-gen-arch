@@ -45,7 +45,7 @@ jobs:
               diff = subprocess.check_output(["git", "-C", str(checkout), "diff", "--full-index", "HEAD", "--"])
               assert hashlib.sha256(diff).hexdigest() == item["working_diff_sha256"], checkout
           PY
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           python-version: "3.11"
