@@ -118,3 +118,19 @@ amendments:
       triadic-e4, simplicial-w16) grid {3e-4, 1e-3, 3e-3} with edge extension to 1e-2;
       ablations inherit their family's -nc LR; none and normal get a 3e-3 bracketing run.
     rungs: core 25/50/100M; ablations 25/50/100M.
+  - date: 2026-11-01
+    name: attention-to-attention-without-swiglu
+    reason: >-
+      The parameter-matching SwiGLU is a structural confound; the remaining matched-arm jobs
+      (A25/A100 ablations, F50 frozen contrasts, L200 inserted rungs, the normal 3e-3 bracket)
+      are retired unrun; finished matched results stay as recorded but are not the comparison.
+      Parameter counts cannot be matched by design and are reported per arm.
+    arms: ARM-nc only (mechanism alone), each with and without frozen-backbone warmup.
+    warmup: >-
+      ARM-nc-frozen (adapter scope, zero output) trains preludes alone for 50M tokens at
+      1e-4 (F50-ARM-nc, also the frozen-regime point); its endpoint is exported as the
+      full-scope parent ARM-nc-warm, which then trains every weight at the cold arm's
+      selected LR for 25/50/100M tokens (W25/W50/W100). Warm runs revisit the warmup's
+      data; figures report full-phase tokens and warmup + full tokens.
+    core: [normal-nc, gdn-nc, triadic-e4-nc, simplicial-w16-nc]
+    ablations: cold only (triadic e2/e8/e16-nc, simplicial w4/w8-nc).
