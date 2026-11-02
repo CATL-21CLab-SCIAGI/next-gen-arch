@@ -9,16 +9,22 @@ Controlled experiments on attention, memory and reasoning in language models.
 - `src/archlab/architectures`: model definitions, attention mechanisms and numerical kernels.
 - `src/archlab/training`: typed experiment contracts, model integration and a thin verl launcher.
 - `src/archlab/data`: reproducible dataset indexes and provenance.
-- `recipes/rl`: shared Qwen agentic contracts and historical architecture experiments.
+- `recipes/`: portable contracts grouped into pretraining, distillation, SFT, RL, evaluation and frozen references.
+- `tests/`: verification grouped by code domain; deployment probes stay in `tests/integration`.
+- `scripts/`: operational launchers, evaluation setup and pinned upstream patches.
 - `third_party/verl`: pinned XiaomiMiMo trainer, agent harness, rollout contracts and monitoring.
 
 Megatron/Transformer Engine and TileLang have different responsibilities: Megatron distributes training, while TileLang implements attention kernels. Support requires model construction, numerical, optimizer, checkpoint and distributed tests for the particular combination. Selecting a configuration does not establish support.
 
-The current Qwen3.5-4B jobs run from immutable snapshots. Their shared recipe and two overlays reproduce the live configurations exactly. Deploying the cleaned source still requires native Qwen GPU admission; existing trainer handles remain in use. Limite and Muse recipes retain their separate experiment contracts.
+Production runs use immutable source snapshots and keep their checkpoint state
+independent of this checkout. Qwen3.5 recipes preserve the recorded configuration;
+the changed deployment still requires native GPU admission. Limite SFT and RL
+have separate experiment contracts. Muse admission remains incomplete where its
+native serving/context/throughput probes are missing.
 
 ## Run
 
-Use the prepared GPU container's PyTorch, CUDA, NCCL, Transformer Engine and Megatron packages. Initialize the agent dependencies:
+Use Python 3.12 and the prepared GPU container's PyTorch, CUDA, NCCL, Transformer Engine and Megatron packages. Initialize the agent dependencies:
 
 ```bash
 git submodule update --init --recursive third_party/verl

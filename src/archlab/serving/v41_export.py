@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import math
+import mmap
 import re
 import shutil
 import struct
@@ -132,31 +133,37 @@ def expert_tensors(inventory, name, scratch):
     _, offsets = inventory.layouts[name]
     dtype = getattr(torch, entries[0]["dtype"].removeprefix("torch."))
     with tempfile.TemporaryDirectory(prefix="v41-expert-", dir=scratch) as directory:
-        mapped = torch.from_file(str(Path(directory) / "tensor.bin"), shared=True,
-                                 size=math.prod(shape), dtype=dtype).reshape(shape)
-        for rank, entry in enumerate(entries):
-            if math.prod(entry["shape"]) * _DTYPE[entry["dtype"]][1] > 2 * 2**30:
-                raise ValueError("expert local shard exceeds the 2 GiB staging limit")
-            local = torch.empty(entry["shape"], dtype=dtype)
-            position = 0
-            for chunk in verified_chunks(inventory, rank, entry):
-                local.view(-1)[position:position + chunk.numel()].copy_(chunk)
-                position += chunk.numel()
-            slices = tuple(slice(first, first + size)
-                           for first, size in zip(offsets[rank], local.shape, strict=True))
-            mapped[slices].copy_(local)
-            del local
-        base = released_name(name).rsplit(".", 1)[0]
-        for expert in range(shape[0]):
-            if name.endswith("gate_and_up_projs"):
-                if shape[2] % 2:
-                    raise ValueError("gate/up dimension must split evenly")
-                middle = shape[2] // 2
-                yield f"{base}.{expert}.w1.weight", mapped[expert, :, :middle].T.contiguous()
-                yield f"{base}.{expert}.w3.weight", mapped[expert, :, middle:].T.contiguous()
-            else:
-                yield f"{base}.{expert}.w2.weight", mapped[expert].T.contiguous()
-        del mapped
+        # Close the mapping before unlinking its file on NAS, including early
+        # generator close. Returned tensors own their bytes even for unit axes.
+        with (Path(directory) / "tensor.bin").open("w+b") as backing:
+            backing.truncate(math.prod(shape) * _DTYPE[entries[0]["dtype"]][1])
+            with mmap.mmap(backing.fileno(), 0) as memory:
+                mapped = torch.frombuffer(memory, dtype=dtype).reshape(shape)
+                try:
+                    for rank, entry in enumerate(entries):
+                        if math.prod(entry["shape"]) * _DTYPE[entry["dtype"]][1] > 2 * 2**30:
+                            raise ValueError("expert local shard exceeds the 2 GiB staging limit")
+                        local = torch.empty(entry["shape"], dtype=dtype)
+                        position = 0
+                        for chunk in verified_chunks(inventory, rank, entry):
+                            local.view(-1)[position:position + chunk.numel()].copy_(chunk)
+                            position += chunk.numel()
+                        slices = tuple(slice(first, first + size)
+                                       for first, size in zip(offsets[rank], local.shape, strict=True))
+                        mapped[slices].copy_(local)
+                        del local
+                    base = released_name(name).rsplit(".", 1)[0]
+                    for expert in range(shape[0]):
+                        if name.endswith("gate_and_up_projs"):
+                            if shape[2] % 2:
+                                raise ValueError("gate/up dimension must split evenly")
+                            middle = shape[2] // 2
+                            yield f"{base}.{expert}.w1.weight", mapped[expert, :, :middle].T.clone(memory_format=torch.contiguous_format)
+                            yield f"{base}.{expert}.w3.weight", mapped[expert, :, middle:].T.clone(memory_format=torch.contiguous_format)
+                        else:
+                            yield f"{base}.{expert}.w2.weight", mapped[expert].T.clone(memory_format=torch.contiguous_format)
+                finally:
+                    del mapped
 
 
 def write_experts(path, inventory, name, scratch):

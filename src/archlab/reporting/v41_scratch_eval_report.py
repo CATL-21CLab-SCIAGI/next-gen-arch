@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -73,7 +73,7 @@ def main():
     for value in mc.values():
         value.pop("exact_consumed_training_overlaps", None)
     result = {
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "generated_at_utc": datetime.now(UTC).isoformat(),
         "passed": True,
         "cursor": complete["normal"]["cursor"],
         "heldout_fineweb": {v: complete[v]["heldout_fineweb"] for v in variants},

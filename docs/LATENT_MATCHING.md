@@ -1,7 +1,7 @@
 # Qwen3.5 layerwise architecture switching
 
 The maintained entry point is `python -m archlab.training.latent_match run.json`.
-Resolve `recipes/patching/qwen35_4b_stage1.yaml` with OmegaConf and explicit
+Resolve `recipes/distill/qwen35_4b_stage1.yaml` with OmegaConf and explicit
 `ARCHLAB_TEACHER`, `ARCHLAB_OUTPUT`, `ARCHLAB_VARIANT`, and `ARCHLAB_LATENT_DATA`
 environment references. Run each variant from the same qualified immutable source
 snapshot. Use `torchrun --standalone --nproc_per_node=4` for one variant; place the
@@ -89,7 +89,7 @@ stream while reducing per-token cost to `O(L * window_2)`.
 ## Stage 2: End-to-end off-policy forward-KL distillation
 
 The maintained Stage-2 entry point is `python -m archlab.training.stage2_distill run.json`,
-paired with `recipes/patching/qwen35_4b_stage2.yaml` (`ARCHLAB_TEACHER`,
+paired with `recipes/distill/qwen35_4b_stage2.yaml` (`ARCHLAB_TEACHER`,
 `ARCHLAB_STAGE1_CHECKPOINT`, `ARCHLAB_OUTPUT`, `ARCHLAB_VARIANT`, `ARCHLAB_LATENT_DATA`).
 Stage 2 composes all replacement switches on an independent student copy initialized from a
 Stage-1 `archlab-latent-checkpoint-v1` checkpoint, keeps the original teacher frozen in BF16,
@@ -104,7 +104,7 @@ verification on `--resume`.
 ## Stage 3: On-policy reverse-KL distillation
 
 The maintained Stage-3 entry point is `python -m archlab.training.stage3_onpolicy run.json`,
-paired with `recipes/patching/qwen35_4b_stage3.yaml` (`ARCHLAB_TEACHER`,
+paired with `recipes/distill/qwen35_4b_stage3.yaml` (`ARCHLAB_TEACHER`,
 `ARCHLAB_INIT_CHECKPOINT`, `ARCHLAB_OUTPUT`, `ARCHLAB_VARIANT`, `ARCHLAB_LATENT_DATA`).
 Stage 3 initializes from either a Stage-1 (`archlab-latent-checkpoint-v1`), Stage-2
 (`archlab-stage2-checkpoint-v1`), or prior Stage-3 (`archlab-stage3-checkpoint-v1`) checkpoint,

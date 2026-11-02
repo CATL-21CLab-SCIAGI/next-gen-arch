@@ -9,12 +9,18 @@ usage: python -m archlab.evaluation.ladder heldout <plan.json>
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from filelock import FileLock
+
+from archlab.artifacts import atomic_write_json
 
 
 def log(**fields):
@@ -95,41 +101,79 @@ def _merge(operation: str, checkpoint: Path, target: Path) -> None:
 
 
 class Curves:
-    """One MLflow run per model curve; each (curve, label) is logged once (ledger: {"runs", "logged"})."""
+    """Reconcile durable metric events after a crash, under a shared file lock.
+
+    Writers for one experiment must share ``run_registry`` (NAS path). MLflow
+    has no transaction spanning remote metrics and this local ledger; retries
+    reconcile the fixed timestamp/value against metric history before sending.
+    """
 
     def __init__(self, config: dict):
         self.config, self.ledger_path = config, Path(config["ledger"])
+        self.registry = Path(config.get("run_registry", self.ledger_path.parent / "mlflow-runs.json"))
+        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        self.registry.parent.mkdir(parents=True, exist_ok=True)
+
+    def _run(self, client, curve, ledger):
+        if curve in ledger["runs"]:
+            return ledger["runs"][curve]
+        with FileLock(str(self.registry) + ".lock", timeout=30):
+            runs = json.loads(self.registry.read_text()) if self.registry.exists() else {}
+            key = f"{self.config['experiment']}|{curve}"
+            run_id = runs.get(key)
+            if run_id is None and self.config.get("runs_from"):
+                run_id = json.loads(Path(self.config["runs_from"]).read_text())["runs"].get(curve)
+            if run_id is None:
+                name = self.config["experiment"]
+                experiment = client.get_experiment_by_name(name) or client.get_experiment(client.create_experiment(name))
+                # Quote names before passing them to MLflow's filter parser.
+                escaped = curve.replace("\\", "\\\\").replace("'", "\\'")
+                existing = client.search_runs([experiment.experiment_id],
+                    filter_string=f"tags.mlflow.runName = '{escaped}'",
+                    order_by=["attributes.start_time ASC"], max_results=1)
+                run_id = existing[0].info.run_id if existing else client.create_run(
+                    experiment.experiment_id, run_name=curve, tags=self.config.get("tags", {})).info.run_id
+            runs[key] = run_id
+            atomic_write_json(self.registry, runs)
+            return run_id
 
     def log(self, curve: str, label: str, step: int, metrics: dict, tags: dict | None = None) -> bool:
         import mlflow
 
-        ledger = json.loads(self.ledger_path.read_text()) if self.ledger_path.exists() else {"runs": {}, "logged": []}
-        key = f"{curve}|{label}"
-        if key in ledger["logged"]:
-            return False
-        secrets = json.loads(Path(self.config["secrets"]).read_text())
-        os.environ["MLFLOW_TRACKING_TOKEN"] = secrets["token"]
-        mlflow.set_tracking_uri(secrets["tracking_uri"])
-        client = mlflow.tracking.MlflowClient()
-        run_id = ledger["runs"].get(curve)
-        if run_id is None and self.config.get("runs_from"):  # share runs with another ledger, never its file
-            run_id = json.loads(Path(self.config["runs_from"]).read_text())["runs"].get(curve)
-        if run_id is None:
-            name = self.config["experiment"]
-            experiment = client.get_experiment_by_name(name) or client.get_experiment(client.create_experiment(name))
-            # Two ladders (separate ledgers, separate hosts) can open the same curve: reuse a run of that name.
-            existing = client.search_runs([experiment.experiment_id], filter_string=f"tags.mlflow.runName = '{curve}'",
-                                          order_by=["attributes.start_time ASC"], max_results=1)
-            run_id = existing[0].info.run_id if existing else client.create_run(
-                experiment.experiment_id, run_name=curve, tags=self.config.get("tags", {})).info.run_id
-        ledger["runs"][curve] = run_id
-        for metric, value in metrics.items():
-            client.log_metric(run_id, metric, value, step=step)
-        for tag, value in (tags or {}).items():
-            client.set_tag(run_id, tag, value)
-        ledger["logged"].append(key)
-        self.ledger_path.write_text(json.dumps(ledger, indent=1))
-        return True
+        if type(step) is not int or step < 0 or any(not math.isfinite(value) for value in metrics.values()):
+            raise ValueError("curve metrics require a nonnegative integer step and finite values")
+        payload = dict(step=step, metrics=metrics, tags=tags or {})
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()
+        with FileLock(str(self.ledger_path) + ".lock", timeout=30):
+            ledger = json.loads(self.ledger_path.read_text()) if self.ledger_path.exists() else {"runs": {}, "logged": []}
+            key = f"{curve}|{label}"
+            events = ledger.setdefault("events", {})
+            event = events.get(key)
+            if event and event["sha256"] != digest:
+                raise ValueError("curve point already has a different metric payload: " + key)
+            if key in ledger["logged"]:
+                return False
+            secrets = json.loads(Path(self.config["secrets"]).read_text())
+            os.environ["MLFLOW_TRACKING_TOKEN"] = secrets["token"]
+            mlflow.set_tracking_uri(secrets["tracking_uri"])
+            client = mlflow.tracking.MlflowClient()
+            run_id = self._run(client, curve, ledger)
+            ledger["runs"][curve] = run_id
+            retry = event is not None
+            if event is None:
+                event = events[key] = dict(sha256=digest, timestamp=int(time.time() * 1000), payload=payload)
+            # A retry keeps the original timestamp, including after an ambiguous remote response.
+            atomic_write_json(self.ledger_path, ledger, allow_nan=False)
+            for metric, value in metrics.items():
+                history = client.get_metric_history(run_id, metric) if retry else ()
+                if not any(item.step == step and item.timestamp == event["timestamp"] and item.value == value
+                           for item in history):
+                    client.log_metric(run_id, metric, value, timestamp=event["timestamp"], step=step)
+            for tag, value in (tags or {}).items():
+                client.set_tag(run_id, tag, value)
+            ledger["logged"].append(key)
+            atomic_write_json(self.ledger_path, ledger, allow_nan=False)
+            return True
 
 
 MAX_EXPORT_FAILURES = 3

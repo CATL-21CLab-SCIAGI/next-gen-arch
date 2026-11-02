@@ -10,9 +10,9 @@
 | Optimizer/schedule/parallelism arguments | `megatron/qwen38_flash_next_config.py` |
 | Deterministic data order | `megatron/token_batches.py` |
 | TP1 gated projections and Muon grouping | `megatron/gated_qkv.py` |
-| Geometry and numerical regression | `tests/test_qwen38_width320.py` (repository root) |
+| Geometry and numerical regression | `tests/megatron/test_qwen38_width320.py` (repository root) |
 
-The launcher is `scripts/run_qwen38_flash_next_full_dlc.sh`; select `recipes/qwen/launches.yaml#flash_next_w320_e32` with `NGA_LAUNCH_RECIPE`.
+The launcher is `scripts/launch/run_qwen38_flash_next_full_dlc.sh`; select `recipes/pretrain/qwen/launches.yaml#flash_next_w320_e32` with `NGA_LAUNCH_RECIPE`.
 
 ## Review invariants
 

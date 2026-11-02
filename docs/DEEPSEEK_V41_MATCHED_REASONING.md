@@ -19,7 +19,7 @@ attention implementation, and must qualify its 32-to-16-rank inference mesh.
 
 ## Registered protocol
 
-`recipes/deepseek_v41/eval_reasoning_eval_v1.yaml` fixes 280 native-chat prompts:
+`recipes/eval/deepseek_v41/eval_reasoning_eval_v1.yaml` fixes 280 native-chat prompts:
 40 calibration cases and 240 held-out test cases. Five task families each have
 two levels, with 12 counterfactual test pairs per level. Cases cover function
 composition, two-hop relational joins, modular pair search, and one-hop retrieval

@@ -1,7 +1,7 @@
 # DeepSeek official AutoModel integration
 
 **Type:** frozen-backbone adapter training contract.
-**Recipe:** `recipes/deepseek_v41/simplicial_math_1b_official.yaml`.
+**Recipe:** `recipes/sft/deepseek_v41/simplicial_math_1b_official.yaml`.
 **Upstream:** `f7ccd6f7902634af34c2f31b3294ac250dc97670`.
 
 ## Preserved experiment

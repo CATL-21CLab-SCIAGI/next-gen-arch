@@ -17,7 +17,7 @@ import os
 import pickle
 import shutil
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from archlab.artifacts import atomic_write_json
@@ -486,7 +486,7 @@ def _export_checkpoint(source, audit, *, retire, workers, protected_iterations):
     _fsync_directory(stage)
     proof = validate_export(source, stage, metadata, models, manifest)
     receipt = {"format": FORMAT, "can_resume": False,
-               "created_utc": datetime.now(timezone.utc).isoformat(),
+               "created_utc": datetime.now(UTC).isoformat(),
                "source": str(source), "stage": str(stage), "iteration": iteration,
                "source_metadata_sha256": _sha(source / ".metadata"),
                "eval_metadata_sha256": _sha(stage / ".metadata"),

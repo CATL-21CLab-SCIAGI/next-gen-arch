@@ -1,5 +1,5 @@
-# Adapter phase of recipes/limite/higher_order_preludes_math.yaml and every run of
-# recipes/limite/variant_scaling_ladders.yaml. Each arm overrides insertion (its exported
+# Adapter phase of recipes/sft/limite/higher_order_preludes_math.yaml and every run of
+# recipes/sft/limite/variant_scaling_ladders.yaml. Each arm overrides insertion (its exported
 # prelude geometry), trainable_mode and settings.trainer.seed; ladder runs also override
 # the token budget and LR schedule. The parent is that arm's immutable zero-output export
 # and the data are the verified RL142 solutions.

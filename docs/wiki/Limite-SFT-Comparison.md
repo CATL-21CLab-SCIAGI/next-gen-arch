@@ -43,9 +43,9 @@ preserve the parent logits initially.
 3. Separate full-weight GRPO/DAPO comparison on Nemotron-RL-Math-v2, up to 400
    rollout-update steps. Rollout steps and applied optimizer updates differ.
 
-Use the [full-finetuning recipe](../../recipes/limite/full_finetune_math.yaml)
+Use the [full-finetuning recipe](../../recipes/sft/limite/full_finetune_math.yaml)
 for the actual matched continuation. The
-[original adapter recipe](../../recipes/limite/native_adapters_math.yaml)
+[original adapter recipe](../../recipes/sft/limite/native_adapters_math.yaml)
 documents the original 10B adapter-only proposal, which was superseded at 2B.
 The [later RL protocol](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/full_math_rl_async.yaml)
 overrides the earlier embedded 8K RL settings with a 16K completion budget and

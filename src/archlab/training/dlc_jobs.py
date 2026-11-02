@@ -35,7 +35,14 @@ def site(path: str | os.PathLike | None = None) -> dict:
 
 
 def job_body(config: dict, *, name: str, command: str, pods: int, cpu: int, memory_gi: int,
-             image: str | None = None, shared_memory_gi: int | None = None, nodes: str | None = None) -> dict:
+             image: str | None = None, shared_memory_gi: int | None = None, nodes: str | None = None,
+             require_oss: bool = False) -> dict:
+    sources = [config["nas"]]
+    if require_oss:
+        oss = config.get("oss")
+        if not oss or oss.get("MountPath", "").rstrip("/") != "/mnt/oss":
+            raise RuntimeError("Sandbox images require site settings 'oss' mounted at /mnt/oss")
+        sources.append({**oss, "MountAccess": "RO"})
     resources = {"CPU": str(cpu), "Memory": f"{memory_gi}Gi", "GPU": "0"}
     if shared_memory_gi:
         resources["SharedMemory"] = f"{shared_memory_gi}Gi"
@@ -45,12 +52,13 @@ def job_body(config: dict, *, name: str, command: str, pods: int, cpu: int, memo
         spec["AssignNodeSpec"] = {"EnableAssignNode": True, "NodeNames": nodes}
     return {"WorkspaceId": config["workspace"], "DisplayName": name, "JobType": "PyTorchJob",
             "ResourceId": config["quota"], "Priority": config["priority"], "Accessibility": "PRIVATE",
-            "UserCommand": command, "UserVpc": config["vpc"], "JobSpecs": [spec], "DataSources": [config["nas"]]}
+            "UserCommand": command, "UserVpc": config["vpc"], "JobSpecs": [spec], "DataSources": sources}
 
 
 def sandbox_pool_command(source: str, registry: str, slots: int, log_dir: str) -> str:
     """Pool servers from an immutable source snapshot; each restarts in place and re-announces in `registry`."""
-    return (f"cd /tmp; while true; do PYTHONPATH={source}/src python3 -m archlab.training.dlc_sandbox serve "
+    return ("cd /tmp; while true; do if ! mountpoint -q /mnt/oss; then sleep 30; continue; fi; "
+            f"PYTHONPATH={source}/src python3 -m archlab.training.dlc_sandbox serve "
             f"{IMAGES} {registry} --slots {slots} --port 8765 >> {log_dir}/serve-$(hostname).log 2>&1; sleep 5; done")
 
 
@@ -76,7 +84,7 @@ def image_export_command(out: str, env_only: bool = False) -> str:
 
 def aliyun(config: dict, action: str, *arguments: str) -> dict:
     reply = subprocess.run(["aliyun", "pai-dlc", action, "--region", config["region"], "--endpoint",
-                            config["endpoint"], *arguments], capture_output=True, text=True)
+                            config["endpoint"], *arguments], capture_output=True, text=True, timeout=60)
     if reply.returncode:
         raise RuntimeError(f"{action} failed: {(reply.stderr or reply.stdout)[-600:]}")
     return json.loads(reply.stdout)
@@ -128,7 +136,7 @@ def main(argv: list[str] | None = None) -> None:
     else:
         command, shared = agent_pods_command(args.head_dir, args.ray_cpus), 16
     body = job_body(config, name=args.name, command=command, pods=args.pods, cpu=args.cpu, memory_gi=args.memory,
-                    shared_memory_gi=shared, nodes=args.nodes)
+                    shared_memory_gi=shared, nodes=args.nodes, require_oss=args.kind == "sandbox-pool")
     print(json.dumps({"JobId": create(body, config), "name": args.name, "pods": args.pods}))
 
 

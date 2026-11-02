@@ -1,6 +1,6 @@
 # DeepSeek V4.1 scratch width study
 
-Current contract, revised 2026-09-29: the [portable recipe](../recipes/deepseek_v41/scratch_scaling.yaml)
+Current contract, revised 2026-09-29: the [portable recipe](../recipes/pretrain/deepseek_v41/scratch_scaling.yaml)
 compares ordinary local attention and exact windowed 2-simplicial attention at
 widths 128, 384, 640, and 1280. Each base run has a 10B supervised-token budget.
 Both variants retain the native V4.1 sparse-attention backbone and differ in
@@ -36,7 +36,7 @@ heads, and a 512-token ordinary window versus 512×32 simplicial windows. Branch
 head dimension is 16 at d128/d384/d640 and 32 at d1280. Its additional short-axis
 projections are counted explicitly; the pair is not exactly parameter matched.
 
-The [performance-v1 contract](../recipes/deepseek_v41/performance/performance-v1.json)
+The [performance-v1 contract](../recipes/pretrain/deepseek_v41/performance/performance-v1.json)
 is authoritative again for future runs, as it already was for running d128 and
 checkpointed d640. The optional fixed-anchor implementation and its archived
 contract remain available for provenance, but are not selected by this study.

@@ -1,7 +1,7 @@
 # Qwen W320 simplicial continuation
 
 **Type:** production experiment contract.
-**Recipe:** `recipes/qwen/w320_simplicial_production.yaml`.
+**Recipe:** `recipes/pretrain/qwen/w320_simplicial_production.yaml`.
 
 | Item | Setting |
 | --- | --- |

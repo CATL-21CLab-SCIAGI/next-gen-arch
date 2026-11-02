@@ -2,7 +2,7 @@
 
 **Type:** selected model design; implementation evidence is recorded separately.
 **Factory:** `Qwen38FlashNextFullConfig.width320_e32_depth48_no_mtp()`.
-**Recipe:** `recipes/qwen/models.yaml#flash_next_w320_e32`.
+**Recipe:** `recipes/pretrain/qwen/models.yaml#flash_next_w320_e32`.
 
 ## Geometry change
 

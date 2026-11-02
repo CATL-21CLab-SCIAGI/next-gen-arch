@@ -6,6 +6,7 @@ import argparse
 from dataclasses import asdict
 from pathlib import Path
 
+from filelock import FileLock
 from omegaconf import OmegaConf
 
 from archlab.artifacts import atomic_write_json
@@ -24,20 +25,24 @@ def main(argv=None):
     experiment = read_experiment(args.recipe, args.overrides, overlays=args.overlay)
     config = compose_verl(experiment, args.verl)
     args.output.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(config, args.output / "resolved.yaml", resolve=True)
-    atomic_write_json(args.output / "experiment.json", asdict(experiment))
     if args.action == "resolve":
+        with FileLock(args.output / ".qualification.lock", timeout=0):
+            if (args.output / "qualification.json").exists():
+                raise FileExistsError("admission records are immutable; use a new output directory")
+            OmegaConf.save(config, args.output / "resolved.yaml", resolve=True)
+            atomic_write_json(args.output / "experiment.json", asdict(experiment))
         return 0
     from archlab.training.qualification import qualify
 
-    result = qualify(experiment, config, args.verl, args.output)
-    if not result["passed"]:
-        print("Qualification blocked; see", args.output / "qualification.json")
-        return 1
+    if args.action == "qualify" or not (args.output / "qualification.json").exists():
+        result = qualify(experiment, config, args.verl, args.output)
+        if not result["passed"]:
+            print("Qualification blocked; see", args.output / "qualification.json")
+            return 1
     if args.action == "train":
         from archlab.training.runtime import run
 
-        run(config)
+        run(config, qualification=args.output)
     return 0
 
 

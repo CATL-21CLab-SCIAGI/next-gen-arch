@@ -5,7 +5,7 @@
 | Path | Entry or boundary | Scope |
 | --- | --- | --- |
 | Speedrun | `archlab.speedrun` | Frozen nanochat/modded-nanogpt comparison behavior |
-| Megatron renderer | `archlab.megatron.backend` | Native baseline launch plans and topology |
+| Megatron runtime | `archlab.megatron.runtime` | Validate and describe the container-owned runtime |
 | Megatron comparison | `archlab.megatron.train` | Shared project architecture math under the MCore lifecycle |
 | Model-specific Megatron | Qwen entries under `archlab.megatron` | Named model and checkpoint contracts |
 | verl | `archlab.training`, `third_party/verl` | Current RL execution, rollouts and monitoring |

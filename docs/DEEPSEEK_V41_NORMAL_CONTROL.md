@@ -1,7 +1,7 @@
 # DeepSeek ordinary-attention control
 
 **Type:** matched architecture control.
-**Recipe:** `recipes/deepseek_v41/normal_math_1b_official.yaml`.
+**Recipe:** `recipes/sft/deepseek_v41/normal_math_1b_official.yaml`.
 
 ## Controlled change
 

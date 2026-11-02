@@ -15,7 +15,7 @@
 | Inactive components | Vision and MTP accounted for explicitly |
 | Control | No separately trained ordinary-adapter arm |
 
-The [portable proposal](../recipes/qwen/proposals.yaml#pretrained_simplicial_fineweb) records the nonzero-init experiment. Historical resumes use their original source and recipe contracts.
+The [portable proposal](../recipes/pretrain/qwen/proposals.yaml#pretrained_simplicial_fineweb) records the nonzero-init experiment. Historical resumes use their original source and recipe contracts.
 
 ## Initialization and recovery evidence
 

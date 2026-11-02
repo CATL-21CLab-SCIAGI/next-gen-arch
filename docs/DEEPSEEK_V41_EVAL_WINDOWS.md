@@ -29,7 +29,7 @@ The service creates no optimizer. Checkpoint pins and reader leases protect mode
 ## Sources
 
 - Entry: `archlab.automodel.deepseek_v41_checkpoint_service`.
-- Policy: `recipes/deepseek_v41/eval_windows.yaml`.
+- Policy: `recipes/eval/deepseek_v41/eval_windows.yaml`.
 - Shared protocol: `archlab.automodel.deepseek_v41_live_window`.
 - Request deadlines are deployment settings, separate from service lifetime.
 

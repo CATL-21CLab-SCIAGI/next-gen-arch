@@ -9,7 +9,6 @@ that every mechanism has a tensor-parallel-native MCore layer implementation.
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import os
@@ -19,18 +18,18 @@ import sys
 import time
 import traceback
 import uuid
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from archlab.artifacts import atomic_write_json
 from archlab.campaigns import (
     CAMPAIGN_VARIANTS,
     COMPARISON_BATCH_TOKENS,
     COMPARISON_EVAL_TOKENS,
     COMPARISON_GLOBAL_BATCH_SIZE,
-    COMPARISON_SEEDS,
     COMPARISON_SEQUENCE_LENGTH,
     FINEWEB_CAMPAIGN_VARIANTS,
     FINEWEB_FIXED_TOKEN_TARGETS,
@@ -56,15 +55,19 @@ from archlab.fineweb import (
     fixed_fineweb_validation_loader,
     inspect_fineweb_dataset,
 )
-from archlab.megatron.backend import validate_runtime
+from archlab.megatron.cli import parse_args
 from archlab.megatron.lifecycle import invoke_pretrain
+from archlab.megatron.profiles import (
+    MegatronBackendProfile,
+    get_megatron_backend_profile,
+)
+from archlab.megatron.runtime import validate_runtime
 from archlab.model_factory import (
     build_engram_token_map,
     build_model_config,
     instantiate_model,
 )
 from archlab.optimizers.recipes import (
-    OPTIMIZATION_RECIPES,
     OptimizationRecipe,
     get_optimization_recipe,
 )
@@ -99,7 +102,6 @@ _TRAIN_METRICS_ENABLED = False
 _TOKEN_BYTES: torch.Tensor | None = None
 _RUN_ID = ""
 _ATTEMPT_ID = ""
-DATASETS = ("climbmix", "fineweb10b", "fineweb100b")
 FINEWEB_DATASETS = frozenset({"fineweb10b", "fineweb100b"})
 FINEWEB_EXPECTED_TRAIN_SHARDS = {"fineweb10b": 103, "fineweb100b": 1_028}
 _MEGATRON_PARAM_GROUP_ID_KEYS = (
@@ -139,100 +141,6 @@ def _append_jsonl(path: Path | None, payload: dict[str, Any]) -> None:
         enriched.setdefault("attempt_id", _ATTEMPT_ID)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(enriched, sort_keys=True) + "\n")
-
-
-@dataclass(frozen=True)
-class MegatronBackendProfile:
-    """One explicit, auditable set of Megatron wrapper optimizations."""
-
-    name: str
-    compile_architecture: bool
-    use_mcore_bf16_master: bool
-    finite_checks: bool = True
-    compile_mode: str | None = None
-    overlap_grad_reduce: bool = False
-    ddp_num_buckets: int | None = None
-    ddp_average_in_collective: bool = False
-    compile_mode_overrides: tuple[tuple[str, str | None], ...] = ()
-
-    def resolved_compile_mode(self, variant: str) -> str | None:
-        overrides = dict(self.compile_mode_overrides)
-        return overrides[variant] if variant in overrides else self.compile_mode
-
-
-MEGATRON_BACKEND_PROFILES = {
-    profile.name: profile
-    for profile in (
-        MegatronBackendProfile(
-            name="legacy",
-            compile_architecture=False,
-            use_mcore_bf16_master=True,
-        ),
-        MegatronBackendProfile(
-            name="compile",
-            compile_architecture=True,
-            use_mcore_bf16_master=True,
-        ),
-        MegatronBackendProfile(
-            name="compile-reduce-overhead",
-            compile_architecture=True,
-            use_mcore_bf16_master=True,
-            compile_mode="reduce-overhead",
-        ),
-        MegatronBackendProfile(
-            name="compile-max-autotune",
-            compile_architecture=True,
-            use_mcore_bf16_master=True,
-            compile_mode="max-autotune",
-        ),
-        MegatronBackendProfile(
-            name="compile-safe-autotune",
-            compile_architecture=True,
-            use_mcore_bf16_master=True,
-            compile_mode="max-autotune",
-            compile_mode_overrides=(
-                ("kda", None),
-                ("kimi-k3-kda-update", None),
-                ("qwen-gdn", None),
-            ),
-        ),
-        MegatronBackendProfile(
-            name="compile-dp-overlap",
-            compile_architecture=True,
-            use_mcore_bf16_master=True,
-            overlap_grad_reduce=True,
-            ddp_num_buckets=4,
-        ),
-        MegatronBackendProfile(
-            name="compile-dp-overlap-average",
-            compile_architecture=True,
-            use_mcore_bf16_master=True,
-            overlap_grad_reduce=True,
-            ddp_num_buckets=4,
-            ddp_average_in_collective=True,
-        ),
-        MegatronBackendProfile(
-            name="native-master",
-            compile_architecture=False,
-            use_mcore_bf16_master=False,
-        ),
-        MegatronBackendProfile(
-            name="speedrun",
-            compile_architecture=True,
-            use_mcore_bf16_master=False,
-        ),
-    )
-}
-
-
-def get_megatron_backend_profile(name: str) -> MegatronBackendProfile:
-    try:
-        return MEGATRON_BACKEND_PROFILES[name]
-    except KeyError as error:
-        choices = ", ".join(MEGATRON_BACKEND_PROFILES)
-        raise ValueError(
-            f"unknown Megatron backend profile {name!r}; choose one of: {choices}"
-        ) from error
 
 
 def _model_config_kwargs(
@@ -335,16 +243,12 @@ def _current_training_iteration(args) -> int:
     return int(args.iteration)
 
 
-def _source_provenance(repository: Path) -> dict[str, Any]:
-    return source_provenance(repository)
 
 
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _validate_checkpoint_artifact(checkpoint_dir: Path, expected_iteration: int) -> dict[str, Any]:
@@ -1447,7 +1351,7 @@ def _environment(
         "python": sys.version,
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
-        **_source_provenance(repository),
+        **source_provenance(repository),
         "data_root": (
             str(data_root) if data_root is not None else os.environ.get("NANOCHAT_BASE_DIR")
         ),
@@ -1466,105 +1370,7 @@ def _environment(
 def main() -> None:
     global _ATTEMPT_ID, _RUN_ID
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    scales = tuple(dict.fromkeys((*CAMPAIGN_VARIANTS, *FINEWEB_CAMPAIGN_VARIANTS)))
-    parser.add_argument("--dataset", choices=DATASETS, default="climbmix")
-    parser.add_argument("--data-root", type=Path)
-    parser.add_argument("--scale", choices=scales, default="10m")
-    parser.add_argument("--variant", required=True)
-    parser.add_argument("--seed", required=True, type=int, choices=COMPARISON_SEEDS)
-    parser.add_argument("--run-dir", required=True, type=Path)
-    parser.add_argument("--probe-steps", type=int, default=0)
-    parser.add_argument(
-        "--comparison-regime",
-        choices=tuple(item.value for item in ComparisonRegime),
-        help="controlled=fixed tokens, fixed_compute=fixed model FLOPs, scaling=fixed tokens/parameter",
-    )
-    parser.add_argument("--target-train-tokens", type=int)
-    parser.add_argument("--target-model-flops", type=float)
-    parser.add_argument("--tokens-per-parameter", type=float)
-    parser.add_argument(
-        "--artifact-policy",
-        choices=("metrics_only", "research"),
-        default="metrics_only",
-        help="research requires content provenance, initialization hash, and final checkpoint",
-    )
-    parser.add_argument("--data-manifest", type=Path)
-    parser.add_argument(
-        "--data-verification",
-        choices=("metadata", "full"),
-        default="metadata",
-    )
-    parser.add_argument(
-        "--initialization-hash",
-        choices=("none", "shared", "full"),
-        default="none",
-    )
-    parser.add_argument(
-        "--micro-batch-size",
-        type=int,
-        help="FineWeb rank-local micro batch; Megatron accumulates to the fixed global batch",
-    )
-    parser.add_argument(
-        "--exact-global-batch-replay",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="preserve the 192-sequence canonical stream over non-divisible DP worlds",
-    )
-    parser.add_argument("--metrics-every", type=int, default=10)
-    parser.add_argument(
-        "--throughput-warmup-steps",
-        type=int,
-        default=10,
-        help="optimizer-step intervals excluded from steady-state throughput",
-    )
-    parser.add_argument(
-        "--throughput-measurement-steps",
-        type=int,
-        default=0,
-        help="steady-state intervals to measure (0 uses every post-warmup interval)",
-    )
-    parser.add_argument("--checkpoint-dir", type=Path)
-    parser.add_argument("--save-interval", type=int)
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="load model/optimizer/RNG/scheduler state and derive the data cursor from iteration",
-    )
-    parser.add_argument(
-        "--backend-profile",
-        choices=tuple(MEGATRON_BACKEND_PROFILES),
-        default="legacy",
-        help="explicit Megatron wrapper optimization profile",
-    )
-    parser.add_argument(
-        "--optimization-recipe",
-        choices=tuple(OPTIMIZATION_RECIPES),
-        default="baseline",
-        help="isolated speedrun/Marin optimization recipe",
-    )
-    args = parser.parse_args()
-    if args.probe_steps < 0:
-        parser.error("--probe-steps must be non-negative")
-    if args.metrics_every < 1:
-        parser.error("--metrics-every must be positive")
-    if args.throughput_warmup_steps < 0 or args.throughput_measurement_steps < 0:
-        parser.error("throughput step counts must be non-negative")
-    if args.micro_batch_size is not None and args.micro_batch_size < 1:
-        parser.error("--micro-batch-size must be positive")
-    if args.checkpoint_dir is not None and (args.save_interval is None or args.save_interval < 1):
-        parser.error("--checkpoint-dir requires a positive --save-interval")
-    if args.checkpoint_dir is None and args.save_interval is not None:
-        parser.error("--save-interval requires --checkpoint-dir")
-    if args.resume and args.checkpoint_dir is None:
-        parser.error("--resume requires --checkpoint-dir")
-    if args.artifact_policy == "research":
-        if args.checkpoint_dir is None:
-            parser.error("research artifact policy requires --checkpoint-dir")
-        if args.data_manifest is None:
-            parser.error("research artifact policy requires --data-manifest")
-        if args.initialization_hash == "none":
-            parser.error("research artifact policy requires --initialization-hash=shared or full")
+    parser, args = parse_args(description=__doc__)
     try:
         contract_variant, budget, probed_algorithmic_flops, probed_executed_flops = (
             resolve_variant_contract(
@@ -1712,7 +1518,7 @@ def main() -> None:
         if args.artifact_policy == "research" and environment["source_dirty"]:
             raise RuntimeError("research runs require a clean source worktree")
         if primary:
-            _write_json(run_dir / "resolved_run.json", environment)
+            atomic_write_json(run_dir / "resolved_run.json", environment)
         started = time.perf_counter()
         schedule, parameter_count, final_bpb, model_audit = _run_megatron(
             variant,
@@ -1774,12 +1580,12 @@ def main() -> None:
             "completed_at_unix": time.time(),
         }
         if primary:
-            _write_json(run_dir / "result.json", result)
+            atomic_write_json(run_dir / "result.json", result)
             marker.replace(run_dir / "COMPLETE.json")
     except BaseException as error:
         if primary:
             failure = classify_failure(error)
-            _write_json(
+            atomic_write_json(
                 run_dir / "FAILED.json",
                 {
                     "status": "failed",

@@ -279,9 +279,9 @@ def test_native_forward_backward():
     from megatron.bridge import AutoBridge
     from megatron.core import parallel_state
     from megatron.core.distributed import DistributedDataParallelConfig
-    from test_agentic_training import _tiny_policy
 
     from archlab.training.limite import LimiteForCausalLM, export_model
+    from tests.integration.test_agentic_training import _tiny_policy
 
     snapshot = Path(os.getenv("ARCHLAB_LIMITE_PUBLISHER", "/mnt/oss/models/limite-1b-base-cc612bafcd4a"))
     deployment = _deployment_config()
@@ -457,13 +457,13 @@ def test_package_engine_optimizer_scheduler_checkpoint_restart():
     from megatron.core import parallel_state
     from megatron.core.tensor_parallel import random as mcore_random
     from tensordict import TensorDict
-    from test_agentic_training import _tiny_policy
     from verl.trainer.config import CheckpointConfig
     from verl.utils import tensordict_utils as tu
     from verl.workers.config import HFModelConfig, McoreEngineConfig, McoreOptimizerConfig
     from verl.workers.engine.megatron.transformer_impl import MegatronEngineWithLMHead
 
     from archlab.training.limite import export_model
+    from tests.integration.test_agentic_training import _tiny_policy
 
     snapshot = Path(os.getenv("ARCHLAB_LIMITE_PUBLISHER", "/mnt/oss/models/limite-1b-base-cc612bafcd4a"))
     deployment = _deployment_config()

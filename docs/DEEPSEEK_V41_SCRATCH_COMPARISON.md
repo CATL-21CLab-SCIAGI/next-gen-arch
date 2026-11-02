@@ -12,13 +12,13 @@ Counts are logical global parameters, excluding distributed replicas. Channel di
 ## Code review map
 
 - [Scaling contract](../src/archlab/architectures/deepseek_v41_scratch.py): width/depth scaling and adapter-layer selection.
-- [Construction](../src/archlab/automodel/deepseek_v41_scratch_construct.py): random initialization, native backbone, distributed setup, precision boundaries, and parameter accounting.
+- [Construction](wiki/Code-Map.md#retirement-boundary): random initialization, native backbone, distributed setup, precision boundaries, and parameter accounting.
 - [Normal-attention branch](../src/archlab/architectures/deepseek_v41_normal_adapter.py): deterministic local attention with shared initialization and residual-stream read/write gates.
 - [2-simplicial branch](../src/archlab/architectures/deepseek_v41_adapter.py): two key/value projections, branch geometry, and the simplicial attention call.
 - [Deterministic simplicial implementation](../src/archlab/architectures/simplicial_deterministic.py): forward and backward implementation.
 - [Backbone insertion](../src/archlab/automodel/deepseek_v41_official_adapter.py): additive branch applied at the native attention hyperconnection expansion.
-- [Trainer](../src/archlab/automodel/deepseek_v41_scratch_training.py): loss normalization, optimizer, routing updates, validation, checkpointing, and exact stopping step.
-- [Portable experiment recipe](../recipes/deepseek_v41/scratch_w640_d20.yaml).
+- [Trainer](wiki/Code-Map.md#retirement-boundary): loss normalization, optimizer, routing updates, validation, checkpointing, and exact stopping step.
+- [Portable experiment recipe](../recipes/pretrain/deepseek_v41/scratch_w640_d20.yaml).
 
 The native backbone is supplied by the external NeMo AutoModel runtime, pinned to commit `f7ccd6f7902634af34c2f31b3294ac250dc97670`. Its primary files are `nemo_automodel/components/models/deepseek_v41/model.py`, `attention.py`, and `engram.py`. Runtime libraries and upstream source are not vendored here. Source checksums (historical record in the private archive) identify the implementation copied from the running experiment snapshot; that snapshot identifier is provenance, not the commit ID of this publication.
 
@@ -32,11 +32,11 @@ Machine paths are supplied through the environment variables named in the recipe
 
 ## Checkpoints and matching
 
-[Full-state checkpoints](../src/archlab/automodel/deepseek_v41_full_checkpoint.py) preserve model tensors, optimizer state, RNG state, and the exact data cursor across all ranks. A completion marker is written only after all rank manifests are complete.
+[Full-state checkpoints](wiki/Code-Map.md#retirement-boundary) preserve model tensors, optimizer state, RNG state, and the exact data cursor across all ranks. A completion marker is written only after all rank manifests are complete.
 
 [Newest-only retention](../src/archlab/storage/checkpoint_retention.py) is an external service with explicit run roots. It validates the newest complete checkpoint before removing older saves, preserves incomplete writes and configured dependencies, and keeps deletion receipts. It does not alter running model code or save cadence. Scratch saves occur every 500M additional targets, on stop/final completion, and ten updates after a start or resume.
 
-To obtain matched checkpoints, checkpoint and pause the faster variant using its `STOP_REQUEST` file. Read the resulting completed checkpoint cursor, then resume the slower variant with the trainer's `--steps TARGET_STEP` option. Matching requires identical dataset contracts and data ordering; wall-clock matching alone is insufficient. [The independent verifier](../src/archlab/tracking/v41_matched_checkpoint_watch.py) records completion only when both checkpoints have the requested token count, identical cursors, and valid shard manifests and payload lengths.
+To obtain matched checkpoints, checkpoint and pause the faster variant using its `STOP_REQUEST` file. Read the resulting completed checkpoint cursor, then resume the slower variant with the trainer's `--steps TARGET_STEP` option. Matching requires identical dataset contracts and data ordering; wall-clock matching alone is insufficient. [The independent verifier](wiki/Code-Map.md#retirement-boundary) records completion only when both checkpoints have the requested token count, identical cursors, and valid shard manifests and payload lengths.
 
 ## Validation
 

@@ -19,7 +19,7 @@ done
 - `0005-preserve-length-finish-reason.patch`: retain backend `length` / `max_tokens` termination when earlier complete tool calls parse. Keep their message and tokens for history, while the gateway's OpenAI response lets MiMo report `LimitsExceeded` before dispatching any calls from that truncated turn. EOS-completed tool turns still report `tool_calls`.
 - `0006-native-muse-codec.patch`: detect templates requiring nested function-call history, resolve nameless tool observations from their linked calls during incremental encoding, and use the installed vLLM Muse reasoning/tool parsers. Generated token histories remain intact, including interleaved reasoning; malformed tool channels receive normal harness feedback and capped turns retain `length`. This requires the native Muse package runtime, not a parser backport.
 
-Run `tests/test_native_agentic_contract.py` in the package runtime with
+Run `tests/training/test_native_agentic_contract.py` in the package runtime with
 `ARCHLAB_NATIVE_TOKENIZER` pointing to the local Limite Base snapshot. It uses
 upstream BashOnlyAgent tool declarations, Hermes parsing and GatewaySession;
 checks exact two-turn rendering, full native-context allowance, and masks tool
@@ -28,10 +28,10 @@ neither executes task code nor establishes GPU inference or sandbox readiness.
 The same test file also checks the native tokenizer, Hermes parser, gateway,
 OpenAI serialization and MiMo length guard together: capped turns retain their
 parsed calls and tokens but execute no actions; EOS-completed turns execute one
-mocked action. Run it with `pytest -q tests/test_native_agentic_contract.py`.
+mocked action. Run it with `pytest -q tests/training/test_native_agentic_contract.py`.
 
 For Muse, set `ARCHLAB_MUSE_TOKENIZER` to the checksum-verified publisher
-snapshot and run `tests/test_muse_agentic_codec.py` in the Muse runtime. It
+snapshot and run `tests/contracts/test_muse_agentic_codec.py` in the Muse runtime. It
 checks nested history, linked observations, native EOS, quoted tool examples,
 malformed/capped calls, and exact retained generated tokens with observation
 loss masks. A semantic dictionary cannot represent every possible interleaving
@@ -43,4 +43,4 @@ compared with a complete native template rendering.
 evictable CPU agent pods join the cluster; losing the controller there ended
 the run (2026-10-20/21), while losing a pod now only loses its runner tasks.
 `archlab.training.runtime` pins the TaskRunner the same way
-(`tests/test_training_runtime.py`).
+(`tests/training/test_training_runtime.py`).

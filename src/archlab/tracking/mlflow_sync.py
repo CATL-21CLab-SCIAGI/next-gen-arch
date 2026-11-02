@@ -9,7 +9,7 @@ import json
 import math
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
@@ -431,7 +431,7 @@ class Sync:
         checkpoints = sorted(root.glob("checkpoints/step-*/COMPLETE.json"))
         tags = {
             "archlab.last_ingested_step": str(last["step"]),
-            "archlab.last_sync_utc": datetime.now(timezone.utc).isoformat(),
+            "archlab.last_sync_utc": datetime.now(UTC).isoformat(),
         }
         if spec.get("engram_cohort"):
             tags["archlab.engram_cohort"] = spec["engram_cohort"]
@@ -577,7 +577,7 @@ def main():
         sync = Sync(configure_client(args.credentials), args.state)
         last_state = {}
         while True:
-            summary = {"utc": datetime.now(timezone.utc).isoformat(), "runs": [], "errors": []}
+            summary = {"utc": datetime.now(UTC).isoformat(), "runs": [], "errors": []}
             for spec in json.loads(args.config.read_text())["runs"]:
                 try:
                     row = sync.sync_run(spec)

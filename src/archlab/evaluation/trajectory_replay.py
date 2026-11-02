@@ -41,8 +41,8 @@ def main(argv=None):
     from transformers import AutoConfig, AutoModelForCausalLM
 
     from archlab.architectures.qwen35_switch import SwitchConfig
+    from archlab.training.distill_runtime import install_student_switches
     from archlab.training.latent_match import text_model
-    from archlab.training.stage2_distill import install_student_switches
 
     config_path = Path((argv or sys.argv[1:])[0])
     config = json.loads(config_path.read_text())

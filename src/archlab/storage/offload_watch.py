@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from archlab.storage.model_migration import save
@@ -36,7 +36,7 @@ def main():
                 {
                     "state": "waiting_for_initial_transfer",
                     "initial_pid": args.wait_for_pid,
-                    "utc": datetime.now(timezone.utc).isoformat(),
+                    "utc": datetime.now(UTC).isoformat(),
                 },
             )
             time.sleep(30)
@@ -65,7 +65,7 @@ def main():
                 {
                     "state": "transferring_new_payloads",
                     "new_files": added,
-                    "utc": datetime.now(timezone.utc).isoformat(),
+                    "utc": datetime.now(UTC).isoformat(),
                 },
             )
             subprocess.run(
@@ -89,7 +89,7 @@ def main():
                 "state": "caught_up",
                 "new_files": added,
                 "scan": summary,
-                "utc": datetime.now(timezone.utc).isoformat(),
+                "utc": datetime.now(UTC).isoformat(),
             },
         )
         time.sleep(120)

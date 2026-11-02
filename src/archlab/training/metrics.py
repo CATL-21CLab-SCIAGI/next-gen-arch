@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import math
+import os
+import time
 from collections import defaultdict
 
 from archlab.architectures.limite_cost import baseline_flops, converted_flops
+from archlab.artifacts import atomic_write_json
 
 B300_DENSE_BF16_FLOPS = 2.25e15
 
@@ -82,4 +85,6 @@ def step_metrics(*, config, batch, tags, timing, step):
                    "rollout/incomplete_groups": incomplete,
                    "perf/consumed_generated_tokens_per_second": generated / seconds,
                    "perf/bf16_reference_tflops_per_gpu": B300_DENSE_BF16_FLOPS / 1e12})
+    if path := os.environ.get("ARCHLAB_PROGRESS_FILE"):
+        atomic_write_json(path, dict(step=int(step), at=time.time()))
     return result

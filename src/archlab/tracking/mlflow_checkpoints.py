@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
@@ -200,7 +200,7 @@ class CheckpointSync:
                     if json.loads(returned.read_text()) != reference:
                         raise ValueError("MLflow reference readback mismatch")
                 receipt = {
-                    "attached_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "attached_at_utc": datetime.now(UTC).isoformat(),
                     "metadata_only": True,
                     "reference_readback_verified": True,
                     "checkpoint_marker_sha256": digest,
@@ -233,7 +233,7 @@ class CheckpointSync:
         catalog = {
             "attachment_mode": "reference-and-manifests",
             "weights_uploaded": False,
-            "checked_at_utc": datetime.now(timezone.utc).isoformat(),
+            "checked_at_utc": datetime.now(UTC).isoformat(),
             "checkpoints": [
                 dict(v, source_complete_marker_present=k in names)
                 for k, v in sorted(local["attached"].items())
@@ -303,7 +303,7 @@ def main():
         sync = CheckpointSync(configure_client(args.credentials), args.state)
         while True:
             ids = json.loads(args.runs_state.read_text())["runs"]
-            report = {"utc": datetime.now(timezone.utc).isoformat(), "runs": [], "errors": []}
+            report = {"utc": datetime.now(UTC).isoformat(), "runs": [], "errors": []}
             for spec in json.loads(args.config.read_text())["runs"]:
                 try:
                     if awaiting_training(spec):

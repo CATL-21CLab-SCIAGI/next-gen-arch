@@ -6,13 +6,11 @@
 !/third_party/
 /third_party/*
 !/third_party/verl/
-!/.python-version
 !/AGENTS.md
 !/CITATION.cff
 !/LICENSE
 !/README.md
 !/pyproject.toml
-!/uv.lock
 !/src/
 !/tests/
 !/recipes/

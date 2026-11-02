@@ -1,71 +1,39 @@
 # Experiment recipes
 
-Start with the model family or study. A study contract may describe multiple
-matched arms; a catalog keeps related model, scale or launch profiles together.
+Organize portable scientific contracts by workflow. Keep machine paths in private
+bindings or launch overrides, and executable Python in `src/archlab`.
 
-The maintained RL entry points are `resolve`, `qualify` and `train`, backed by verl.
-Historical AutoModel/SFT/scratch contracts below retain their scientific settings;
-their custom executors were [retired](../docs/wiki/Code-Map.md#retirement-boundary).
-Reproducing those runs requires their recorded immutable source, not the current CLI.
-
-| Directory / file | Contents |
+| Directory | Purpose |
 | --- | --- |
-| [`rl/`](rl/) | New package-backed agentic RL phases and bounded code-data contracts |
-| [`limite/`](limite/) | Matched normal/2-simplicial warmup, full finetuning, RL and evaluation |
-| [`deepseek_v41/`](deepseek_v41/) | Scratch scaling, adapter comparisons and performance contracts |
-| [`qwen/`](qwen/) | Qwen studies plus shared model, launch and proposal catalogs |
-| [`reference/`](reference/) | Frozen speedrun and Megatron topology comparisons |
-| [`triadic/`](triadic/) | Triadic scratch study and historical-prefix comparison |
-| [`defaults.yaml`](defaults.yaml) | Shared backend and scale defaults used by reference profiles |
+| [`pretrain/`](pretrain/) | Qwen and DeepSeek pretraining, scratch studies and launch/model catalogs |
+| [`distill/`](distill/) | Qwen latent matching, forward-KL and on-policy distillation stages |
+| [`sft/`](sft/) | Package-backed supervised training and recorded Limite/DeepSeek studies |
+| [`rl/`](rl/) | Package-backed agentic RL; reusable harness contracts in `rl/harness/` |
+| [`eval/`](eval/) | Fixed evaluation protocols and budgets |
+| [`reference/`](reference/) | Frozen speedrun/Megatron comparisons and their descriptive defaults |
 
-## Limite comparison
+`archlab resolve`, `archlab qualify` and `archlab train` consume the typed RL
+contracts. The [SFT guide](sft/README.md) describes its separate upstream SFT
+entrypoint. Distillation uses the stage-specific modules documented in
+[Latent Matching](../docs/LATENT_MATCHING.md).
 
-- [Matched full finetuning](limite/full_finetune_math.yaml): matched 2B adapter
-  warmup checkpoints, then full-weight continuation to 10B total.
-- [Original adapter warmup](limite/native_adapters_math.yaml): earlier proposal;
-  the actual sequence is explained in the [study](../docs/wiki/Limite-SFT-Comparison.md).
-- [Historical paired RL](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/full_math_rl_async.yaml).
-- [Native-context Violetto successor](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/violetto_math_rl_native_context.yaml).
-- [AIME26 evaluation](limite/eval_aime26_pipeline_v3.yaml).
+Historical contracts retain their scientific settings. Their presence does not
+establish current backend support: reproduce retired executors from the recorded
+immutable source. The old generic `ExperimentSpec`/`LaunchPlan` renderer has been
+retired; frozen `extends` profiles remain provenance, not current CLI inputs.
 
-## Select a catalog profile
-
-Catalogs contain a `profiles` mapping. Select a named entry explicitly with
-`FILE.yaml#PROFILE`; the loader never guesses the model from an output name.
-Quote recipe references in shell commands. For example:
+Select an entry in a `profiles` catalog explicitly with `FILE.yaml#PROFILE`:
 
 ```bash
 PYTHONPATH=src python -m archlab.megatron.launch_config \
-  --recipe 'recipes/qwen/launches.yaml#flash_next_w320_e32' --bindings
+  --recipe 'recipes/pretrain/qwen/launches.yaml#flash_next_w320_e32' --bindings
 ```
 
-This historical catalog command renders allowlisted bindings; it does not launch
-training. The primary package-backed workflow uses `archlab resolve`,
-`archlab qualify` and `archlab train` with the contracts under `recipes/rl/`.
+This command renders allowlisted launch bindings. Admission still requires the
+actual model/backend evidence. Changes to geometry, optimizer, data order or token
+budgets require an explicit experiment contract.
 
-| Catalog | Profiles |
-| --- | --- |
-| [`qwen/models.yaml`](qwen/models.yaml) | Seven recorded model geometries |
-| [`qwen/launches.yaml`](qwen/launches.yaml) | Six explicit launch/topology profiles |
-| [`qwen/proposals.yaml`](qwen/proposals.yaml) | Four Qwen research proposals |
-| [`deepseek_v41/proposals.yaml`](deepseek_v41/proposals.yaml) | Two DeepSeek research proposals |
-| [`reference/megatron_native_100m.yaml`](reference/megatron_native_100m.yaml) | Dense/MoE parallelism profiles |
-| [`qwen/qwen2p5_pretrain.yaml`](qwen/qwen2p5_pretrain.yaml) | DP8/DP32 profiles for the same pretraining recipe |
-
-`extends` can reference another catalog profile, including a profile in the same
-file. Model definitions and proposals are descriptive contracts, not admitted
-launch commands. Their status and qualification requirements remain explicit
-inside the selected profile. Historical profiles are retained for reproducibility;
-their presence does not indicate a current queue or production recommendation.
-
-Supply machine paths and runtime identities through the declared environment
-bindings. Changes to geometry, optimizer, budget or data order require a new
-experiment contract. The folder cleanup preserves those settings.
-
-The historical matched mathematical-RL contract is
-[`limite/full_math_rl_native_context.yaml`](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/blob/5b840305cfc2bd697713348d89d85bfdf3f71dd1/recipes/limite/full_math_rl_native_context.yaml):
-fresh RL optimizers from both matched 10B SFT checkpoints, full-weight updates,
-native 131K total context and pinned MiMo components. These executors and recipes
-have been [retired from the primary tree](../docs/wiki/Limite-RL-Health-and-Performance.md).
-
-Superseded native DeepSeek RL, Miles FP8 RL and SGLang prototype recipes are archived locally with their execution stacks. Historical reports remain available as evidence; they are not current launch instructions.
+The [Limite study](../docs/wiki/Limite-SFT-Comparison.md) explains matched adapter
+warmup and full finetuning. Its recorded contracts are under `sft/limite/`; the
+sealed AIME26 protocol is under `eval/limite/`. Historical RL executors are
+[retired](../docs/wiki/Limite-RL-Health-and-Performance.md).

@@ -145,14 +145,12 @@ def main():
                 ),
             )
         db.commit()
-        pending = [
-            item
-            for item in plan
-            if db.execute(
-                "SELECT state FROM transfers WHERE source=?", (item["source"],)
-            ).fetchone()[0]
-            != "verified"
-        ]
+        # Avoid a separate read transaction (and NFS lock round trip) per file.
+        verified_sources = {
+            row[0]
+            for row in db.execute("SELECT source FROM transfers WHERE state='verified'")
+        }
+        pending = [item for item in plan if item["source"] not in verified_sources]
         began = time.monotonic()
         last_report = began
         errors = 0

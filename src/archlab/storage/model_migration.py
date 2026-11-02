@@ -7,7 +7,7 @@ import os
 import shutil
 import stat
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -66,7 +66,7 @@ def prepare(source, destination, journal):
         "source": str(source),
         "destination": str(destination),
         "phase": "copying",
-        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "started_at_utc": datetime.now(UTC).isoformat(),
         "destination_children_before": before,
         "files": dict(files),
         "bytes": sum(info["bytes"] for info in files.values()),
@@ -111,7 +111,7 @@ def prepare(source, destination, journal):
         raise ValueError("Source tree changed during migration")
     if not set(before) <= set(path.name for path in destination.iterdir()):
         raise ValueError("Existing destination entries disappeared")
-    state.update(phase="verified", verified_at_utc=datetime.now(timezone.utc).isoformat())
+    state.update(phase="verified", verified_at_utc=datetime.now(UTC).isoformat())
     save(journal, state)
     return state
 
@@ -131,7 +131,7 @@ def commit(journal):
         target = target_file(destination, relative)
         if target.stat().st_size != info["bytes"] or digest(target) != info["sha256"]:
             raise ValueError(f"Verified destination changed: {relative}")
-    tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    tag = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = source.parent / f".{source.name}.nas-backup-{tag}"
     link = source.parent / f".{source.name}.oss-link-{tag}"
     if backup.exists() or link.exists() or link.is_symlink():
@@ -155,12 +155,12 @@ def commit(journal):
             raise ValueError("Original model path does not resolve correctly")
     if inventory(backup) != expected:
         raise ValueError("NAS backup changed; keeping it for recovery")
-    state.update(phase="linked", linked_at_utc=datetime.now(timezone.utc).isoformat())
+    state.update(phase="linked", linked_at_utc=datetime.now(UTC).isoformat())
     save(journal, state)
     shutil.rmtree(backup)
     state.update(
         phase="complete",
-        completed_at_utc=datetime.now(timezone.utc).isoformat(),
+        completed_at_utc=datetime.now(UTC).isoformat(),
         removed_nas_bytes=state["bytes"],
     )
     save(journal, state)

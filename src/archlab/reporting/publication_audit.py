@@ -11,8 +11,8 @@ from pathlib import Path, PurePosixPath
 
 ROOTS = frozenset({".github", "src", "tests", "recipes", "scripts", "docs"})
 ROOT_FILES = frozenset({
-    ".gitignore", ".gitmodules", ".python-version", "AGENTS.md", "CITATION.cff",
-    "LICENSE", "README.md", "pyproject.toml", "uv.lock",
+    ".gitignore", ".gitmodules", "AGENTS.md", "CITATION.cff",
+    "LICENSE", "README.md", "pyproject.toml",
 })
 REGISTERED_SUBMODULES = {
     "third_party/verl": ("verl", "https://github.com/XiaomiMiMo/verl.git"),

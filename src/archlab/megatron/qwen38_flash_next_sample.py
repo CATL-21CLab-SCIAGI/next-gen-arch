@@ -22,10 +22,10 @@ import torch
 
 from archlab.architectures.qwen38_flash_next_full import Qwen38FlashNextFullConfig
 from archlab.artifacts import atomic_write_json as _atomic_json
-from archlab.megatron.backend import validate_runtime
 from archlab.megatron.qwen38_flash_next_config import _megatron_argv
 from archlab.megatron.qwen38_flash_next_config import _parser as trainer_parser
 from archlab.megatron.qwen38_flash_next_model import _assert_dp_only_groups, build_model
+from archlab.megatron.runtime import validate_runtime
 from archlab.prompts import load_prompts
 
 

@@ -3,7 +3,7 @@ name = "next-gen-arch"
 version = "0.1.0"
 description = "A backend-aware architecture lab spanning speedrun experiments and Megatron scaling"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 license-files = ["LICENSE", "docs/NOTICE.md", "docs/licenses/*.txt"]
 authors = [
@@ -13,8 +13,6 @@ keywords = ["language-model", "pytorch", "megatron", "architecture", "scaling-la
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -24,15 +22,14 @@ dependencies = [
     "jinja2>=3.1.6",
     "hydra-core==1.3.2",
     "numpy>=1.26.0",
+    "omegaconf==2.3.1",
     "psutil>=7.1.0",
     "pyarrow>=21.0.0",
     "pyyaml>=6.0.3",
     "requests>=2.32.5",
-    "rustbpe>=0.1.0",
     "safetensors>=0.6.2",
     "tiktoken>=0.11.0",
     "tokenizers>=0.22.0",
-    "wandb>=0.21.3",
 ]
 
 [project.urls]
@@ -40,7 +37,6 @@ Homepage = "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch"
 Issues = "https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/issues"
 
 [project.scripts]
-next-gen-arch = "archlab.cli:main"
 archlab = "archlab.training.cli:main"
 
 [project.entry-points."vllm.general_plugins"]
@@ -50,7 +46,7 @@ archlab_limite = "archlab.training.serving:register"
 requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "build>=1.3.0",
     "einops==0.8.2",
@@ -63,8 +59,7 @@ dev = [
     "tenacity>=9.1.4",
 ]
 
-[project.optional-dependencies]
-cpu = ["torch==2.14.1"]
+reference = ["rustbpe>=0.1.0", "wandb>=0.21.3"]
 tracking = ["mlflow-skinny==3.16.1"]
 agentic = ["e2b==2.24.0"]
 eval = [
@@ -83,7 +78,7 @@ packages = ["src/archlab"]
 only-include = [
     "src", "tests", "recipes", "docs", "scripts", ".github",
     "README.md", "AGENTS.md", "LICENSE", "docs/NOTICE.md",
-    "CITATION.cff", "pyproject.toml", "uv.lock",
+    "CITATION.cff", "pyproject.toml",
 ]
 
 [tool.pytest.ini_options]
@@ -94,7 +89,7 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
@@ -102,19 +97,9 @@ select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
+# Persisted enums retain their historical str()/repr() behavior.
+"src/archlab/contracts.py" = ["UP042"]
+"src/archlab/training/bootstrap.py" = ["UP042"]
 "src/archlab/speedrun/base_train.py" = ["E402"]
 "src/archlab/speedrun/tok_train.py" = ["E402"]
 "src/archlab/speedrun/tokenizer.py" = ["B019", "E402"]
-
-[tool.uv]
-default-groups = []
-
-[tool.uv.sources]
-torch = [
-    {index = "pytorch-cpu", extra = "cpu"},
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true

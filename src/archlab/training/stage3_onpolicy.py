@@ -39,6 +39,14 @@ import torch.distributed as dist
 from torch.nn import functional as F
 
 from archlab.artifacts import sha256_file
+from archlab.training.distill_runtime import (
+    atomic_torch_save,
+    build_two_timescale_optimizer,
+    evaluate_composed,
+    install_student_switches,
+    restore_rank_rng,
+    runtime_versions,
+)
 from archlab.training.latent_match import (
     MixtureWindows,
     SourceConfig,
@@ -48,14 +56,6 @@ from archlab.training.latent_match import (
     teacher_identity,
     text_model,
     tokenizer_identity,
-)
-from archlab.training.stage2_distill import (
-    atomic_torch_save,
-    build_two_timescale_optimizer,
-    evaluate_composed,
-    install_student_switches,
-    restore_rank_rng,
-    runtime_versions,
 )
 
 

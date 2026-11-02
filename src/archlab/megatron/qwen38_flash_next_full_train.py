@@ -23,21 +23,13 @@ from archlab.architectures.qwen38_flash_next_full import (
 )
 from archlab.artifacts import atomic_write_json as _atomic_json
 from archlab.artifacts import sha256_file as _sha256
-from archlab.megatron.backend import validate_runtime
-from archlab.megatron.checkpoint_staging import (  # noqa: F401 - historical private import compatibility
+from archlab.megatron.checkpoint_staging import (
     _completed_checkpoint_iteration,
-    _execute_checkpoint_request_by_local_rank,
     _install_bounded_torch_dist_staging,
-)
-from archlab.megatron.indexed_data import (  # noqa: F401 - historical private import compatibility
-    data_prefixes as _data_prefixes,
 )
 from archlab.megatron.indexed_data import validated_data_prefixes as _validated_data_prefixes
 from archlab.megatron.lifecycle import current_iteration as _current_iteration
 from archlab.megatron.lifecycle import invoke_pretrain
-from archlab.megatron.losses import (
-    masked_token_loss as _loss_func,  # noqa: F401 - historical private import compatibility
-)
 from archlab.megatron.losses import native_token_forward_step as _forward_step
 from archlab.megatron.qwen38_flash_next_checks import (
     _effective_probe_gradient,
@@ -45,32 +37,27 @@ from archlab.megatron.qwen38_flash_next_checks import (
     _probe_ple_replica_equality,
     _probe_restored_replica_equality,
 )
-from archlab.megatron.qwen38_flash_next_config import (  # noqa: F401 - historical private import compatibility
+from archlab.megatron.qwen38_flash_next_config import (
     ATTENTION_GROUPING,
     BILLION_DEPTH48_NO_MTP_MODEL_VARIANT,
     CHECKPOINT_INTERVAL_STEPS,
     CHECKPOINT_WRITER_THREADS,
-    DISTRIBUTED_TIMEOUT_MINUTES,
     EFFECTIVE_TOKENS,
     FULL_MODEL_VARIANT,
     LOSS_NORMALIZATION,
-    NATIVE_MUON_FP32_MATMUL_PRECISION,
     QUARTER_DEPTH48_NO_MTP_MODEL_VARIANT,
-    TOKENS_PER_STEP,
     TRAIN_STEPS,
     WIDTH320_E32_MODEL_VARIANT,
     _megatron_argv,
     _native_muon_contract,
     _parser,
 )
-from archlab.megatron.qwen38_flash_next_model import (  # noqa: F401 - historical private import compatibility
+from archlab.megatron.qwen38_flash_next_model import (
     _assert_dp_only_groups,
-    _bind_native_moe_layer_number,
-    _build_model_classes,
-    _resolve_qwen_layer_number,
     _tag_native_optimizer_fallbacks,
     build_model,
 )
+from archlab.megatron.runtime import validate_runtime
 from archlab.megatron.simplicial_production import (
     attention_variant_contract,
     validate_attention_resume,

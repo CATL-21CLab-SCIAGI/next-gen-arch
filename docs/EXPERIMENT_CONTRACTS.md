@@ -21,11 +21,9 @@ Discrete-step rounding, actual parameter counts, executed fallback FLOPs and mea
 | RL | Behavior policy, sampling settings, reward, normalization, replay, generated tokens and applied updates |
 | Systems comparison | Hardware, topology, compilation state and timing window |
 
-```bash
-PYTHONPATH=src python -m archlab.cli pair-check \
-  --baseline /path/to/baseline/result.json \
-  --variant /path/to/variant/result.json
-```
+Use `archlab.contracts.assert_paired_controls(baseline, variant)` on the two
+resolved result mappings. It rejects mismatches in the frozen comparison axes.
+The historical `pair-check` CLI is retired.
 
 ## Promotion and reporting
 

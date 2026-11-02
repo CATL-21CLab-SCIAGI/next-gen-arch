@@ -6,7 +6,7 @@ import argparse
 import hashlib
 import json
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -78,7 +78,7 @@ def verify_checkpoint(path):
                     raise ValueError(f"payload checksum mismatch: {name}")
                 samples.append({"rank": rank, "name": name, "sha256": digest, "verified": True})
     return {
-        "verified_at_utc": datetime.now(timezone.utc).isoformat(),
+        "verified_at_utc": datetime.now(UTC).isoformat(),
         "passed": True,
         "path": str(path.resolve()),
         "cursor": marker["cursor"],

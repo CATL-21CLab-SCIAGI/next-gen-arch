@@ -30,7 +30,7 @@ The named Python factory is executable geometry. Editing the descriptive YAML al
 | Training | `megatron/qwen38_flash_next_full_train.py` |
 | Data order | `megatron/token_batches.py` |
 | Sampling | `megatron/qwen38_flash_next_sample.py` |
-| Launcher | `scripts/run_qwen38_flash_next_full_dlc.sh` |
+| Launcher | `scripts/launch/run_qwen38_flash_next_full_dlc.sh` |
 
 ## Runtime decisions
 
@@ -50,4 +50,4 @@ Check parameter counts/shapes, optimizer tags, GDN/attention gradients, DP agree
 
 Sampling is cache-free raw continuation. Its throughput is not a serving benchmark.
 
-[Infrastructure](TRAINING_INFRASTRUCTURE.md) · [Recipes](../recipes/qwen/models.yaml)
+[Infrastructure](TRAINING_INFRASTRUCTURE.md) · [Recipes](../recipes/pretrain/qwen/models.yaml)

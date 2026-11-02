@@ -81,7 +81,7 @@ success in an executable agent harness remains the acceptance criterion before R
 ## Higher-order prelude transplants
 
 `limite_teacher_preludes.yaml` executes the adapter phase of
-`recipes/limite/higher_order_preludes_math.yaml`: each arm trains only the
+`recipes/sft/limite/higher_order_preludes_math.yaml`: each arm trains only the
 zero-output preludes inserted into its own base export (`trainable_mode=adapter`)
 on verified RL142 solutions prepared by `archlab.preprocessing.limite_teacher_traces`.
 Override `insertion={...}` with the arm's exported prelude geometry and
@@ -89,7 +89,7 @@ Override `insertion={...}` with the arm's exported prelude geometry and
 uninserted baseline. RL142 supervision ends with its native `<|endoftext|>`
 (`generation_eos_token_id=151643`).
 
-`recipes/limite/variant_scaling_ladders.yaml` runs the same recipe with every
+`recipes/sft/limite/variant_scaling_ladders.yaml` runs the same recipe with every
 weight trainable (`trainable_mode=full`) from a fresh insertion exported by
 `export_insertion(..., trainable_mode="full")`: one complete run per token
 rung, with the LR, `min_lr` and warmup steps overridden per run.

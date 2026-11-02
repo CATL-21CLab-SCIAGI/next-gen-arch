@@ -33,7 +33,7 @@ These differences are inconclusive. Paired intervals and exact McNemar tests are
 
 ## Evidence
 
-- Contract: `recipes/qwen/eval_simplicial_regression_pilot.yaml`.
+- Contract: `recipes/eval/qwen/eval_simplicial_regression_pilot.yaml`.
 - Prompts: `src/archlab/prompts/capability_regression.yaml`.
 - Completed result: `results/pretrained-capability-dlc-step4000-20260908-v2/summary.json`.
 - Per-example predictions and run identities accompany the summary.

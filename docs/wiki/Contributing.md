@@ -30,11 +30,26 @@ A useful experiment page answers: **What changed? Against what control? What was
 
 ## Development checks
 
+Use an isolated Python 3.12 environment with PyTorch supplied by the chosen
+CPU/GPU container. Install project development tools with standard pip:
+
 ```bash
-uv sync --locked --extra cpu --extra tracking --group dev
-uv run --no-sync ruff check src/archlab tests
-NANOCHAT_ATTENTION_BACKEND=sdpa uv run --no-sync pytest -m "not slow" -q
+python -m pip install -e '.[dev,tracking]'
+python -m ruff check src/archlab tests
+NANOCHAT_ATTENTION_BACKEND=sdpa python -m pytest -m "not slow" -q \
+  --basetemp=results/local-checks/pytest
 ```
+
+Automatic CI and project uv settings are removed. Pages deployment is manual.
+Verification is local and scoped to the change. Record the actual package/container versions with results.
+`CITATION.cff` remains the citation metadata; Python support is declared in
+`pyproject.toml` and the runtime container.
+
+For a manual release, build into a fresh directory under `results/`, run
+`scripts/check_distribution.py` on that directory, install its wheel in an
+isolated environment, and check imports/CLI help from outside the checkout.
+Qualification and training additionally require the full immutable source
+snapshot, its tests, pinned upstream checkout and deployment assets.
 
 CPU checks do not qualify GPU or distributed behavior. Record the container,
 resolved packages, model/data identities, topology and numerical comparisons

@@ -21,6 +21,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict
 from pathlib import Path
 
+from filelock import FileLock
 from omegaconf import OmegaConf
 
 from archlab.artifacts import atomic_write_json, sha256_file
@@ -65,10 +66,10 @@ PREREQUISITES = {
 def source_manifest():
     """Fingerprint actual source bytes, including files not yet committed."""
     files = set()
-    for directory in ("src", "tests", "recipes", "scripts/patches"):
+    for directory in ("src", "tests", "recipes", "scripts"):
         files.update(path for path in (ROOT / directory).rglob("*")
-                     if path.is_file() and path.suffix in {".py", ".yaml", ".yml", ".patch"})
-    files.update(ROOT / name for name in ("pyproject.toml", "uv.lock", ".gitmodules", "docs/upstreams.json")
+                     if path.is_file() and path.suffix in {".py", ".yaml", ".yml", ".json", ".patch", ".sh", ".toml"})
+    files.update(ROOT / name for name in ("pyproject.toml", ".gitmodules", "docs/upstreams.json")
                  if (ROOT / name).is_file())
     return {str(path.relative_to(ROOT)): sha256_file(path) for path in sorted(files)}
 
@@ -536,13 +537,27 @@ def _check(name, function):
 
 
 def qualify(experiment, config, upstream, output):
-    """Inspect the deployment and execute tests, without launching a trainer."""
+    """Serialize admission writers so reports cannot mix two deployments."""
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
+    with FileLock(output / ".qualification.lock", timeout=0):
+        return _qualify(experiment, config, upstream, output)
+
+
+def _qualify(experiment, config, upstream, output):
+    """Inspect the deployment and execute tests, without launching a trainer."""
+    from archlab.training.admission import receipt_identity, require_checkout
+
+    require_checkout()
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    if (output / "qualification.json").exists():
+        raise FileExistsError("admission records are immutable; use a new output directory")
     OmegaConf.save(config, output / "resolved.yaml", resolve=True)
     atomic_write_json(output / "experiment.json", asdict(experiment))
     sources = source_manifest()
     atomic_write_json(output / "source.json", sources)
+    identity = receipt_identity(output, Path(upstream))
     if experiment.family == "qwen3_5":
         # Exact configuration migration does not transfer runtime qualification
         # from an immutable production snapshot to this changed source tree.
@@ -554,16 +569,16 @@ def qualify(experiment, config, upstream, output):
                       "logprob parity, full-context memory, executable verifier, and throughput evidence. "
                       "The live immutable launch handles remain authoritative until that migration passes.")),
                   _check("source_unchanged", lambda: check_source_unchanged(sources))]
-        result = dict(format="archlab-training-qualification-v1", passed=False,
+        result = dict(**identity, passed=False,
                       config_sha256=fingerprint(config), checks=checks,
                       blockers=[row["name"] for row in checks if row["status"] != "passed"])
         atomic_write_json(output / "qualification.json", result)
         return result
     muse = experiment.family == "muse_glimmer"
-    fixtures = (["tests/test_training_publisher.py", "tests/test_muse_agentic_codec.py",
-                 "tests/test_training_attention_padding.py"] if muse
-                else ["tests/test_training_limite.py", *([
-                    "tests/test_limite_conversion.py", "tests/test_training_serving_conversion.py",
+    fixtures = (["tests/training/test_training_publisher.py", "tests/contracts/test_muse_agentic_codec.py",
+                 "tests/training/test_training_attention_padding.py"] if muse
+                else ["tests/training/test_training_limite.py", *([
+                    "tests/architectures/test_limite_conversion.py", "tests/training/test_training_serving_conversion.py",
                 ] if experiment.intervention == "replace_attention" else [])])
     checks = [_check("scientific_config", lambda: (validate_science(experiment, config) or {})),
               _check("upstream_runtime", lambda: check_upstream(upstream)),
@@ -622,7 +637,9 @@ def qualify(experiment, config, upstream, output):
     else:
         checks.append(dict(name="agentic_learning_signal", status="pending", reason="real policy update has not passed"))
     checks.append(_check("source_unchanged", lambda: check_source_unchanged(sources)))
-    result = dict(format="archlab-training-qualification-v1", passed=all(
+    if receipt_identity(output, Path(upstream)) != identity:
+        checks.append(dict(name="admission_inputs", status="failed", reason="admission inputs changed during checks"))
+    result = dict(**identity, passed=all(
         row["status"] == "passed" for row in checks), config_sha256=fingerprint(config),
         checks=checks, blockers=[row["name"] for row in checks if row["status"] != "passed"])
     atomic_write_json(output / "qualification.json", result)

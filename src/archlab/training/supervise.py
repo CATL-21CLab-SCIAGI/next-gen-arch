@@ -1,255 +1,177 @@
-"""Keep one RL arm training to its step budget without an LLM in the loop.
+"""Own one qualified RL arm and recover only explicitly retriable failures.
 
-An arm spec (JSON, machine paths) names the GPU node, the resolved base config, the checkpoint directory, the Ray
-head directory with its CPU agent pods, the immutable source snapshot and the training snapshot. Every 2 minutes:
-- trainer running: if the spec's data or source differs from the last launch, stop the trainer right after its
-  next saved checkpoint (verl writes the latest-iteration file last);
-- trainer gone: resubmit evicted agent pods, wait for the GPUs to free, resume from the latest checkpoint.
-A new data snapshot resumes the actor only (fresh dataloader, data.seed = 1000 + step); otherwise the full checkpoint
-with its dataloader state resumes. Launches are recorded in <dir>/LAUNCHES.jsonl. Gives up after 3 launches without
-a new checkpoint.
-usage: python -m archlab.training.supervise <arm.json> [--once]
+Machine paths live in a JSON ArmSpec. Configuration changes require a new
+qualification. An unresponsive PID is reported as stalled, never as progress.
+The supervisor does not resize pools or change scientific settings.
 """
 
 from __future__ import annotations
 
-import hashlib
+import argparse
 import json
+import shlex
 import subprocess
-import sys
 import time
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
+from filelock import FileLock
 from omegaconf import OmegaConf
 
-from archlab.training import dlc_jobs
-
-LIVE_POD_STATES = {"Running", "Creating", "Queuing", "EnvPreparing"}
+from archlab.artifacts import atomic_write_json, sha256_file
 
 
-def rotate_log(path: Path) -> Path | None:
-    """Keep a non-empty previous log under a timestamped name; never overwrite an earlier rotation."""
-    if not (path.exists() and path.stat().st_size):
-        return None
-    stem = path.with_name(f"{path.stem}-{time.strftime('%m%d-%H%M%S')}")
-    target, n = stem.with_suffix(path.suffix), 1
-    while target.exists():  # two relaunches within one second
-        n += 1
-        target = stem.with_name(f"{stem.name}-{n}").with_suffix(path.suffix)
-    path.rename(target)
-    return target
+@dataclass(frozen=True)
+class ArmSpec:
+    arm: str
+    node: str
+    source: str
+    qualification: str
+    directory: str
+    pythonpath: list[str]
+    python: str = "/opt/venv/bin/python"
+    mlflow_config: str | None = None
+    max_attempts_without_progress: int = 3
+    progress_timeout_seconds: int = 21600
+    ssh_timeout_seconds: int = 60
+    poll_seconds: int = 120
 
-
-def log(message: str) -> None:
-    print(f"{time.strftime('%F %T')} {message}", flush=True)
-
-
-def last_launch(path: Path) -> dict:
-    lines = path.read_text().splitlines() if path.exists() else []
-    return json.loads(lines[-1]) if lines else {}
-
-
-def base_digest(spec: dict) -> str:
-    return hashlib.sha256(Path(spec["base"]).read_bytes()).hexdigest()[:16]
-
-
-def plan_launch(spec: dict, step: int, last: dict) -> dict:
-    """How to resume at `step`: a changed data snapshot (or a repeat at the same step after one) starts a fresh
-    dataloader from the actor state; anything else resumes the full checkpoint with the recorded seed."""
-    fresh = spec["data"] != last.get("data") or (step == last.get("step") and last.get("mode") == "fresh")
-    return {"step": step, "data": spec["data"], "source": spec["source"], "base": base_digest(spec),
-            "mode": "fresh" if fresh else "full", "seed": 1000 + step if fresh else last["seed"]}
-
-
-def switch_due(spec: dict, last: dict) -> bool:
-    """A running trainer must be stopped at its next checkpoint when the launch inputs changed: data, source, or
-    the base config (a systems edit such as rollout concurrency; launches recorded before digests count as equal)."""
-    return bool(last) and (spec["data"] != last.get("data") or spec["source"] != last.get("source")
-                           or last.get("base", base_digest(spec)) != base_digest(spec))
-
-
-def resolved_config(spec: dict, launch: dict, resume_from: str | None) -> Path:
-    config = OmegaConf.load(spec["base"])
-    resume = {"trainer.resume_mode": "resume_path", "trainer.resume_from_path": resume_from} if resume_from else \
-        {"trainer.resume_mode": "disable"}
-    for key, value in {"data.train_files": [launch["data"]], "data.seed": launch["seed"], **resume,
-                       "trainer.save_freq": spec["save_freq"], "trainer.total_training_steps": spec["total_steps"]}.items():
-        OmegaConf.update(config, key, value, merge=False, force_add=True)
-    path = Path(spec["dir"]) / f"resolved-{spec['arm']}-s{launch['step']}.yaml"
-    OmegaConf.save(config, path, resolve=True)
-    return path
-
-
-def matches_resolved_config(args: str, directory: Path, arm: str) -> bool:
-    """Match only a trainer argument referencing `<directory>/resolved-<arm>-s<step>.yaml`."""
-    prefixes = {
-        str(directory / f"resolved-{arm}-s"),
-        str(directory.resolve() / f"resolved-{arm}-s"),
-    }
-    for token in args.split():
-        cleaned = token.strip("'\"")
-        for prefix in prefixes:
-            if cleaned.startswith(prefix) and cleaned.endswith(".yaml"):
-                step_tail = cleaned[len(prefix) : -len(".yaml")]
-                if step_tail.isdigit():
-                    return True
-    return False
+    def __post_init__(self):
+        if not self.arm or not self.node or self.node.startswith("-"):
+            raise ValueError("arm and SSH node must be explicit")
+        for name in ("source", "qualification", "directory", "python"):
+            if not Path(getattr(self, name)).is_absolute():
+                raise ValueError(name + " must be an absolute path")
+        if not self.pythonpath or any(not Path(path).is_absolute() for path in self.pythonpath):
+            raise ValueError("pythonpath must contain absolute snapshot/runtime paths")
+        if str(Path(self.source) / "src") != self.pythonpath[0]:
+            raise ValueError("pythonpath must start with the qualified snapshot's src")
+        for name in ("max_attempts_without_progress", "progress_timeout_seconds", "ssh_timeout_seconds", "poll_seconds"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(name + " must be a positive integer")
 
 
 class Arm:
-    def __init__(self, spec: dict):
-        self.spec, self.dir = spec, Path(spec["dir"])
-        self.launches = self.dir / "LAUNCHES.jsonl"
-        self.checkpoints = Path(spec["checkpoints"])
+    def __init__(self, spec: ArmSpec):
+        self.spec = spec
+        self.directory = Path(spec.directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.state_path = self.directory / "supervisor.json"
+        self.qualification = Path(spec.qualification)
+        report = json.loads((self.qualification / "qualification.json").read_text())
+        if report.get("passed") is not True or report.get("source_root") != spec.source:
+            raise ValueError("supervision requires a passed qualification for the selected source")
+        self.config = OmegaConf.load(self.qualification / "resolved.yaml")
+        self.checkpoints = Path(self.config.trainer.default_local_dir)
+        self.identity = sha256_file(self.qualification / "qualification.json")
 
-    def ssh(self, command: str, check: bool = False) -> str:
-        return subprocess.run(["ssh", self.spec["node"], command], capture_output=True, text=True, check=check).stdout
+    def ssh(self, command: str) -> str:
+        return subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", self.spec.node, command],
+            capture_output=True, text=True, check=True, timeout=self.spec.ssh_timeout_seconds,
+        ).stdout
 
     def latest(self) -> int:
-        path = self.checkpoints / "latest_checkpointed_iteration.txt"
-        return int(path.read_text()) if path.exists() else 0  # 0: a new arm starts from its base model
+        marker = self.checkpoints / "latest_checkpointed_iteration.txt"
+        return int(marker.read_text()) if marker.exists() else 0
 
-    def trainer_pids(self) -> list[str]:
-        output = self.ssh("ps -eo pid,args", check=True)
-        pids: list[str] = []
-        for line in output.splitlines():
-            parts = line.strip().split(None, 1)
-            if len(parts) != 2 or not parts[0].isdigit():
-                continue
-            pid, args = parts
-            if ("archlab.training.runtime" in args or "launch.py" in args) and matches_resolved_config(
-                args, self.dir, self.spec["arm"]
-            ):
-                pids.append(pid)
-        return pids
-
-    def ensure_agent_pods(self) -> None:
-        pods, config = self.spec["agent_pods"], dlc_jobs.site(self.spec["dlc_site"])
-        record = Path(self.spec["head_dir"]) / "agent-pods-job.json"
-        try:
-            job = json.loads(record.read_text())["JobId"]
-            current = dlc_jobs.describe(job, config)
-            state = current["status"]
-        except (OSError, KeyError, ValueError) as error:
-            state = f"unrecorded ({type(error).__name__})"
-        except RuntimeError as error:  # the API did not answer: never double-submit on an unknown state
-            log(f"agent pod status unavailable ({str(error)[:120]}); not resubmitting")
-            return
-        if state in LIVE_POD_STATES:
-            if current["pods"] >= pods["pods"]:
-                return
-            # Only reached between launches (no trainer running), so resizing cannot cut live sessions.
-            log(f"agent pods {job}: {current['pods']} < {pods['pods']} pods; replacing")
-            dlc_jobs.stop(job, config)
-            state = "resized"
-        log(f"agent pods {state}; resubmitting {pods['pods']} x {pods['cpu']} CPU")
-        body = dlc_jobs.job_body(config, name=pods["name"], pods=pods["pods"], cpu=pods["cpu"],
-                                 memory_gi=pods["memory"], shared_memory_gi=16,
-                                 command=dlc_jobs.agent_pods_command(self.spec["head_dir"], pods["ray_cpus"]))
-        record.write_text(json.dumps({"JobId": dlc_jobs.create(body, config)}) + "\n")
-        for _ in range(80):  # up to 20 minutes for pods to join; the head's own CPUs can start the run
-            joined = self.ssh("/opt/venv/bin/ray status 2>/dev/null | grep -c '^ 1 node_'").strip()
-            if joined.isdigit() and int(joined) >= 5:
-                break
-            time.sleep(15)
-
-    def wait_for_free_gpus(self) -> bool:
-        probe = "nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk '{s+=$1} END {print s}'"
-        for _ in range(60):
+    def alive(self, attempt: Path) -> bool:
+        # Token matching excludes grep shells and other arms in the same node.
+        for line in self.ssh("ps -eo args").splitlines():
             try:
-                used = self.ssh(probe, check=True).strip()
-            except subprocess.SubprocessError:
-                used = ""
-            if used.isdigit() and int(used) < 8000:
+                words = shlex.split(line)
+            except ValueError:
+                continue
+            if ("archlab.training.runtime" in words and "--attempt" in words
+                    and str(attempt) in words):
                 return True
-            time.sleep(10)
         return False
 
-    def launch(self, last: dict) -> None:
+    def save(self, state: dict, status: str) -> None:
+        state.update(status=status, checked_at=time.time(), qualification_sha256=self.identity)
+        atomic_write_json(self.state_path, state)
+
+    def gpus_idle(self) -> bool:
+        values = self.ssh("nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits").splitlines()
+        if len(values) != self.config.trainer.n_gpus_per_node or any(not value.strip().isdigit() for value in values):
+            raise subprocess.SubprocessError("GPU memory probe returned incomplete telemetry")
+        return sum(int(value) for value in values) < 8000
+
+    def launch(self, state: dict) -> None:
+        attempt = self.directory / "attempts" / uuid.uuid4().hex
+        attempt.mkdir(parents=True)
+        command = [self.spec.python, "-u", "-m", "archlab.training.runtime",
+                   str(self.qualification / "resolved.yaml"), "--qualification", str(self.qualification),
+                   "--attempt", str(attempt)]
         step = self.latest()
-        launch = plan_launch(self.spec, step, last)
-        resume = self.checkpoints / f"global_step_{step}"
-        if step == 0:  # first launch of a new arm
-            resume = None
-        elif launch["mode"] == "fresh":  # actor, optimizer and RNG only; the saved dataloader belongs to old data
-            init = self.dir / f"init-step{step}" / f"global_step_{step}"
-            init.mkdir(parents=True, exist_ok=True)
-            link = init / "actor"
-            if not link.is_symlink():
-                link.symlink_to(resume / "actor")
-            resume = init
-        config = resolved_config(self.spec, launch, str(resume) if resume else None)
-        train_log = self.dir / "train.log"
-        rotate_log(train_log)
-        source = self.spec["source"]
-        paths = ":".join([f"{source}/src", f"{source}/third_party/verl", f"{source}/third_party/verl/third_party/uni_agent",
-                          f"{source}/third_party/verl/third_party/mimoagent-osr/src", self.spec["packages"]])
-        with self.launches.open("a") as out:
-            out.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **launch, "config": str(config)}) + "\n")
-        log(f"launch {self.spec['arm']} from step {step} ({launch['mode']}, seed {launch['seed']}, "
-            f"{Path(launch['data']).name}, {Path(source).name})")
-        self.ssh(f"cd /tmp && (PYTHONPATH={paths} ARCHLAB_MLFLOW_CONFIG={self.spec['mlflow_config']} NO_PROXY='*' "
-                 f"no_proxy='*' setsid nohup /opt/venv/bin/python -u -m archlab.training.runtime {config} "
-                 f"> {train_log} 2>&1 < /dev/null &)", check=True)
+        if step:
+            command += ["--resume", str(self.checkpoints / f"global_step_{step}")]
+        variables = {"PYTHONPATH": ":".join(self.spec.pythonpath), "NO_PROXY": "*", "no_proxy": "*"}
+        if self.spec.mlflow_config:
+            variables["ARCHLAB_MLFLOW_CONFIG"] = self.spec.mlflow_config
+        env = " ".join(shlex.quote(f"{key}={value}") for key, value in variables.items())
+        state.update(attempt=str(attempt), started_at=time.time(), last_progress_at=time.time(),
+                     step=step, attempts_without_progress=state.get("attempts_without_progress", 0) + 1)
+        # Persist intent before SSH. An ambiguous launch is never blindly retried.
+        self.save(state, "launching")
+        self.ssh(f"cd /tmp && (setsid nohup env {env} {shlex.join(command)} "
+                 f"> {shlex.quote(str(attempt / 'train.log'))} 2>&1 < /dev/null &)")
 
-    def run(self, once: bool = False) -> int:
-        stalls, switch_from = 0, None
-        while True:
-            last = last_launch(self.launches)
-            try:
-                pids = self.trainer_pids()
-            except subprocess.SubprocessError as error:
-                log(f"trainer probe failed ({error}); skipping recovery cycle")
+    def cycle(self, state: dict) -> str:
+        step = self.latest()
+        if step > state.get("step", 0):
+            state.update(step=step, attempts_without_progress=0, last_progress_at=time.time())
+        attempt = Path(state["attempt"]) if state.get("attempt") else None
+        if attempt:
+            progress = attempt / "progress.json"
+            if progress.exists():
+                heartbeat = json.loads(progress.read_text())
+                if heartbeat["step"] > state.get("progress_step", -1):
+                    state.update(progress_step=heartbeat["step"], last_progress_at=heartbeat["at"])
+            if self.alive(attempt):
+                return "stalled" if time.time() - state["last_progress_at"] > self.spec.progress_timeout_seconds else "running"
+            receipt = attempt / "result.json"
+            result = json.loads(receipt.read_text()) if receipt.exists() else {}
+            if result.get("status") == "succeeded":
+                return "complete" if step >= self.config.trainer.total_training_steps else "stopped_early"
+            if result.get("status") != "failed" or not result.get("failure", {}).get("retriable"):
+                return "needs_triage"
+        if step >= self.config.trainer.total_training_steps:
+            return "complete"
+        if state.get("attempts_without_progress", 0) >= self.spec.max_attempts_without_progress:
+            return "retry_limit"
+        if not self.gpus_idle():
+            return "gpu_busy"
+        self.launch(state)
+        return "running"
+
+    def run(self, *, once: bool = False) -> int:
+        with FileLock(self.directory / ".supervisor.lock", timeout=0):
+            state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
+            if state and state.get("qualification_sha256") != self.identity:
+                raise ValueError("arm directory belongs to a different qualification")
+            while True:
+                try:
+                    status = self.cycle(state)
+                except subprocess.SubprocessError:
+                    status = "probe_unavailable"
+                self.save(state, status)
+                print(f"{self.spec.arm}: {status}", flush=True)
+                if status not in {"running", "probe_unavailable", "gpu_busy"}:
+                    return 0 if status == "complete" else 1
                 if once:
-                    return 1
-                time.sleep(120)
-                continue
-            if pids:
-                if switch_due(self.spec, last):
-                    step = self.latest()
-                    if switch_from is None:
-                        switch_from = step
-                        log(f"switch to {Path(self.spec['data']).name} / {Path(self.spec['source']).name} pending: "
-                            f"after checkpoint {step}")
-                    elif step > switch_from:
-                        try:
-                            live_pids = self.trainer_pids()
-                        except subprocess.SubprocessError as error:
-                            log(f"trainer revalidation failed before stop ({error}); deferring switch")
-                            live_pids = []
-                        if live_pids:
-                            pid_arg = " ".join(live_pids)
-                            log(f"checkpoint {step} saved; stopping trainer {pid_arg} for the switch")
-                            self.ssh(f"kill {pid_arg}")
-                if once:
-                    return 0
-                time.sleep(120)
-                continue
-            step = self.latest()
-            if step >= self.spec["total_steps"]:
-                log(f"done at step {step}")
-                return 0
-            stalls = stalls + 1 if last and step <= last["step"] else 0
-            if stalls >= 3:
-                log(f"3 launches without a new checkpoint (latest {step}); giving up")
-                return 1
-            self.ensure_agent_pods()
-            if not self.wait_for_free_gpus():
-                log("GPUs remained occupied across wait timeout; refusing duplicate launch")
-                if once:
-                    return 1
-                time.sleep(120)
-                continue
-            self.launch(last)
-            switch_from = None
-            if once:
-                return 0
-            time.sleep(300)
+                    return 0 if status == "running" else 1
+                time.sleep(self.spec.poll_seconds)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = argv if argv is not None else sys.argv[1:]
-    return Arm(json.loads(Path(args[0]).read_text())).run(once="--once" in args)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("spec", type=Path)
+    parser.add_argument("--once", action="store_true")
+    args = parser.parse_args(argv)
+    return Arm(ArmSpec(**json.loads(args.spec.read_text()))).run(once=args.once)
 
 
 if __name__ == "__main__":

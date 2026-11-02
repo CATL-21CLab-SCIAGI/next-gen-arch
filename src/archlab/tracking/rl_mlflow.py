@@ -19,7 +19,7 @@ import re
 import socket
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from urllib.parse import urlparse
@@ -584,7 +584,7 @@ def main(argv=None):
                 client = MlflowClient(tracking_uri=uri)
             sync = RLMetricSync(client, args.state)
             while True:
-                summary = {"utc": datetime.now(timezone.utc).isoformat(), "runs": [], "errors": []}
+                summary = {"utc": datetime.now(UTC).isoformat(), "runs": [], "errors": []}
                 for spec in json.loads(args.config.read_text())["runs"]:
                     try:
                         result = sync.sync_run(spec)

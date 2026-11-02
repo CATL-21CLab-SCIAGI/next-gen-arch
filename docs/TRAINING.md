@@ -145,7 +145,13 @@ When the E2B pools refuse capacity, `archlab.training.dlc_sandbox.DLCEnvironment
 - Admission evidence is the per-task comparison against the E2B runtime receipts: base commit, verifier return code and baseline reward. Separately, exports are compared with the publisher layers.
 - Command timeouts return code 124 with partial output, as upstream's Kubernetes environment does; transport failures abort the session. Unlike E2B, `/proc` is the pod's (bound, not remounted): other processes' command lines are visible, while their environments, roots and signals are not reachable.
 
-`train` performs admission once and starts verl only after it passes. Use `qualify` instead when you want the checks without starting production; running both commands repeats the live checks.
+`qualify` writes an immutable v2 admission record. Use a new output directory for
+a changed or failed candidate. `train` creates admission if absent, or reuses its
+GPU evidence only after rechecking the exact configuration, source, upstream,
+runtime and model/data identities. Direct runtime and supervised launches use
+the same verifier; neither accepts old v1 receipts. A wheel alone can resolve
+contracts, but qualification/training require the full immutable source checkout.
+See [Operations](OPERATIONS.md) for attempt ownership and continuation rules.
 
 Install the project and the pinned verl/agent packages in an isolated environment that reuses the container's GPU runtime. Agent workers must import the same checkout and patches. Supply MLflow configuration through its standard environment variables; never put credentials in recipes or resolved artifacts. A functioning isolated task-container service is required. Dataset indexing alone does not qualify the agent loop.
 

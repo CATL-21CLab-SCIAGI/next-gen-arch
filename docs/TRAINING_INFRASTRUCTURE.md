@@ -23,11 +23,11 @@
 
 ## Launch configuration
 
-`recipes/qwen/launches.yaml#PROFILE` supplies allowlisted configuration; machine paths are launch overrides. Output names do not choose a model.
+`recipes/pretrain/qwen/launches.yaml#PROFILE` supplies allowlisted configuration; machine paths are launch overrides. Output names do not choose a model.
 
 ```bash
-export NGA_LAUNCH_RECIPE="$NGA_REPO_ROOT/recipes/qwen/launches.yaml#flash_next_w320_e32"
-bash "$NGA_REPO_ROOT/scripts/run_qwen38_flash_next_full_dlc.sh"
+export NGA_LAUNCH_RECIPE="$NGA_REPO_ROOT/recipes/pretrain/qwen/launches.yaml#flash_next_w320_e32"
+bash "$NGA_REPO_ROOT/scripts/launch/run_qwen38_flash_next_full_dlc.sh"
 ```
 
 This requires the declared existing topology, source, data, tokenizer and output settings. It is not an allocation command.

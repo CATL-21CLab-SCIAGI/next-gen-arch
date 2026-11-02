@@ -30,4 +30,8 @@ Historical recipes and reports preserve scientific settings and results. Their o
 
 Checksum-verified originals of the retired files are kept locally in `.legacy/20261017-execution-retirement/`, with a manifest recording source revision and file hashes. Mixed test files were backed up before removing tests for retired executors. Maintained code never imports this archive. For historical reproduction, use an isolated checkout or snapshot instead of restoring compatibility modules into the maintained package.
 
+On 2026-11-01, the unused Qwen request-file controller, fixed matched-reasoning watcher, PIQA script shim, misnamed Flash-Next forwarding launcher and orphan Miles argv fixture were retired. Their dedicated tests were removed; PIQA identity tests now import `archlab.evaluation.qwen38_piqa` directly. Originals of every changed or deleted file are checksum-verified in ignored `.legacy/20261101-code-compact/`, with `MANIFEST.json` recording hashes and the source revision.
+
+Run PIQA through `python -m archlab.evaluation.qwen38_piqa`. Retained Megatron launches use explicit recipes: dense Qwen uses `scripts/launch/run_qwen38_27b_quarter_dlc.sh`, and Flash-Next uses `scripts/launch/run_qwen38_flash_next_full_dlc.sh` as described in the [infrastructure guide](../TRAINING_INFRASTRUCTURE.md#launch-configuration). The dense launcher rejects Flash-Next recipes before runtime admission. Scientific recipes, numerical references, separate linked checkouts and immutable run snapshots were preserved; running jobs continue from their existing source snapshots.
+
 [Browse source](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/tree/main/src/archlab) · [Browse recipes](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/tree/main/recipes)

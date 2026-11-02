@@ -114,7 +114,7 @@ counts and prepared-file hashes. `index.jsonl` records per-task source row,
 repository/commit prefix, source-message hash, model selections and token
 counts. `prepared_sample.json` shows a projected native conversation.
 
-The maintained module is exercised by `tests/test_agentic_sft.py`. Set
+The maintained module is exercised by `tests/training/test_agentic_sft.py`. Set
 `ARCHLAB_NATIVE_TOKENIZER` to the qualified local snapshot to run the native
-codec integration test together with `tests/test_native_agentic_contract.py`;
+codec integration test together with `tests/training/test_native_agentic_contract.py`;
 these tests require the installed upstream agent runtime but no GPU.

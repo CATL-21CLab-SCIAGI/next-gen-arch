@@ -411,7 +411,7 @@
     },
     {
       "id": "oracle_acceptance_test",
-      "path": "tests/test_tilelang_attention.py",
+      "path": "tests/architectures/test_tilelang_attention.py",
       "bytes": 11302,
       "sha256": "12be644f12db9c3dc2b4732545871409bfad0685e23e855599a77757d27b9f45",
       "public_source": true

@@ -84,11 +84,18 @@ class TeacherTrajectoryDataset(PreparedAgenticSFTDataset):
 
 
 def prepare(collection: Path, student: Path, heldout: Path, output: Path, *, max_length: int,
-            split_seed: int = 42, validation_fraction: float = 0.1) -> dict:
+            split_seed: int = 42, validation_fraction: float = 0.1,
+            exclusion_contract: Path | None = None) -> dict:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     contract = json.loads((collection / "CONTRACT.json").read_text())
+    exclusions = None
+    if exclusion_contract is not None:
+        exclusions = json.loads(exclusion_contract.read_text())
+        if (exclusions.get("format") != "archlab.teacher-infrastructure-exclusions.v1"
+                or exclusions.get("collection_contract_sha256") != sha256_file(collection / "CONTRACT.json")):
+            raise ValueError("Infrastructure exclusions differ from collection contract")
     teacher = Path(contract["model"])
     tokenizers = tokenizer_compatibility(teacher, student)
     reference_path = Path(contract["model_bindings_reference"])
@@ -100,6 +107,7 @@ def prepare(collection: Path, student: Path, heldout: Path, output: Path, *, max
         raise FileExistsError(output)
     selected, index, rejected, assignments = {"train": [], "validation": []}, [], Counter(), {}
     bindings = {str(reference_path): sha256_file(reference_path)}
+    missing, episode_hashes, expected_count = [], {}, 0
     for relative, checksum in contract["shard_manifest_sha256"].items():
         manifest_path = collection / relative
         if sha256_file(manifest_path) != checksum:
@@ -122,9 +130,17 @@ def prepare(collection: Path, student: Path, heldout: Path, output: Path, *, max
         episodes_path = run / "episodes.jsonl"
         records = [json.loads(line) for line in episodes_path.read_text().splitlines()]
         expected, scored = completed_records(records, tasks, contract["seeds"])
-        if set(scored) != expected:
+        unscored = expected - set(scored)
+        if unscored and exclusions is None:
             raise ValueError(f"Collection is incomplete: {run}")
-        bindings[str(episodes_path)] = sha256_file(episodes_path)
+        failed = {(r["task"], r["seed"]) for r in records if r.get("status") == "missing"}
+        if unscored - failed:
+            raise ValueError("Cannot exclude an unattempted episode")
+        missing.extend(dict(shard=run.name, task=task, seed=seed) for task, seed in sorted(unscored))
+        expected_count += len(expected)
+        checksum = sha256_file(episodes_path)
+        episode_hashes[str(episodes_path.relative_to(collection))] = checksum
+        bindings[str(episodes_path)] = checksum
         sessions = {}
         for path in sorted((run / "sessions").glob("step_*/session-*/session.json")):
             session = json.loads(path.read_text())
@@ -161,6 +177,13 @@ def prepare(collection: Path, student: Path, heldout: Path, output: Path, *, max
                               input_tokens=len(row["input_ids"]), target_tokens=sum(row["loss_mask"])))
     if len(assignments) != contract["tasks"] or not all(selected.values()):
         raise ValueError("Incomplete task membership or empty training/validation split")
+    if exclusions is not None:
+        declared = sorted(exclusions["missing_samples"], key=lambda row: (row["shard"], row["task"], row["seed"]))
+        actual = sorted(missing, key=lambda row: (row["shard"], row["task"], row["seed"]))
+        if (declared != actual
+                or exclusions["episode_sha256"] != episode_hashes):
+            raise ValueError("Infrastructure exclusions do not match the exact missing grid and episode files")
+        bindings[str(exclusion_contract)] = sha256_file(exclusion_contract)
     output.mkdir(parents=True)
     schema = pa.schema([(name, pa.list_(pa.int64())) for name in
                         ("input_ids", "attention_mask", "loss_mask", "position_ids")])
@@ -174,6 +197,10 @@ def prepare(collection: Path, student: Path, heldout: Path, output: Path, *, max
                    loss_mask_alignment="unshifted-target-token", stop_tokens="omitted-by-serving-not-synthesized",
                    split_seed=split_seed, validation_fraction=validation_fraction, task_assignments=assignments,
                    rows={k: len(v) for k, v in selected.items()}, rejected=dict(rejected),
+                   collection_coverage=dict(expected=expected_count, scored=expected_count - len(missing),
+                                            complete=not missing, missing=missing,
+                                            exclusion_contract_sha256=(sha256_file(exclusion_contract)
+                                                                       if exclusion_contract else None)),
                    target_tokens={k: sum(r["target_tokens"] for r in index if r["split"] == k) for k in selected},
                    source_bindings=bindings,
                    files={p.name: sha256_file(p) for p in output.iterdir()})
@@ -188,6 +215,8 @@ def main():
     parser.add_argument("--max-length", type=int, required=True)
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--validation-fraction", type=float, default=0.1)
+    parser.add_argument("--exclusion-contract", type=Path,
+                        help="Explicit, hash-bound failed episodes to exclude from SFT; never marks them scored")
     args = parser.parse_args()
     receipt = prepare(**vars(args))
     print(json.dumps({key: receipt[key] for key in ("rows", "rejected", "target_tokens")}))

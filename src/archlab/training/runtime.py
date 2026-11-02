@@ -5,9 +5,17 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import time
+import uuid
 from pathlib import Path
 
+from filelock import FileLock
 from omegaconf import OmegaConf
+
+from archlab.artifacts import atomic_write_json, sha256_file
+from archlab.failures import classify_failure
+from archlab.training.admission import verify_admission
+from archlab.training.resume import claim_run, resumed_config
 
 
 def worker_setup():
@@ -56,7 +64,7 @@ def launch_config(config):
     """
     runtime = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
     variables = runtime.ray_kwargs.ray_init.runtime_env.env_vars
-    for key in ("PYTHONPATH", "NO_PROXY", "no_proxy"):
+    for key in ("PYTHONPATH", "NO_PROXY", "no_proxy", "ARCHLAB_PROGRESS_FILE"):
         if key in os.environ:
             variables[key] = os.environ[key]
     if path := os.environ.get("ARCHLAB_MLFLOW_CONFIG"):
@@ -93,16 +101,67 @@ def pinned_to_driver_node(actor_class):
     return Pinned
 
 
-def run(config):
-    from verl.trainer import main_ppo
+def run(config, *, qualification: Path, attempt: Path | None = None, resume: Path | None = None):
+    """The CLI and supervisor share this gate and the same per-run process lock."""
+    qualification = Path(qualification).resolve()
+    attempt = Path(attempt) if attempt else qualification / "attempts" / uuid.uuid4().hex
+    attempt.mkdir(parents=True, exist_ok=True)
+    status = attempt / "result.json"
+    if status.exists():
+        raise FileExistsError("attempt results are immutable; use a new attempt directory")
+    # O_EXCL prevents two invocations from publishing into the same attempt.
+    with (attempt / ".started").open("x"):
+        pass
+    atomic_write_json(status, dict(status="admitting", at=time.time()))
+    try:
+        report = verify_admission(config, qualification)
+        root = Path(config.trainer.default_local_dir).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        with FileLock(root / ".archlab-trainer.lock", timeout=0):
+            identity = dict(config_sha256=report["config_sha256"],
+                            qualification_sha256=sha256_file(qualification / "qualification.json"))
+            claim_run(root, identity, resume=resume)
+            if resume is not None:
+                config = resumed_config(config, resume)
+            OmegaConf.save(config, attempt / "resolved.yaml", resolve=True)
+            identity["attempt_config_sha256"] = sha256_file(attempt / "resolved.yaml")
+            from verl.trainer import main_ppo
 
-    config = launch_config(config)
-    if config.ray_kwargs.ray_init.get("address") not in (None, "local"):
-        main_ppo.TaskRunnerV1 = pinned_to_driver_node(main_ppo.TaskRunnerV1)
-    return main_ppo.main(config)
+            previous = main_ppo.TaskRunnerV1
+            old_progress = os.environ.get("ARCHLAB_PROGRESS_FILE")
+            os.environ["ARCHLAB_PROGRESS_FILE"] = str((attempt / "progress.json").resolve())
+            try:
+                config = launch_config(config)
+                if config.ray_kwargs.ray_init.get("address") not in (None, "local"):
+                    main_ppo.TaskRunnerV1 = pinned_to_driver_node(previous)
+                atomic_write_json(status, dict(status="running", at=time.time(), **identity))
+                result = main_ppo.main(config)
+                atomic_write_json(status, dict(status="succeeded", at=time.time(), **identity))
+                return result
+            finally:
+                main_ppo.TaskRunnerV1 = previous
+                if old_progress is None:
+                    os.environ.pop("ARCHLAB_PROGRESS_FILE", None)
+                else:
+                    os.environ["ARCHLAB_PROGRESS_FILE"] = old_progress
+    except Exception as error:
+        atomic_write_json(status, dict(status="failed", at=time.time(),
+                                       failure=classify_failure(error).to_dict()))
+        raise
 
 
-if __name__ == "__main__":  # python -m archlab.training.runtime <resolved.yaml>
-    import sys
+def main(argv=None):
+    import argparse
 
-    raise SystemExit(run(OmegaConf.load(sys.argv[1])))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("config", type=Path)
+    parser.add_argument("--qualification", type=Path, required=True)
+    parser.add_argument("--attempt", type=Path)
+    parser.add_argument("--resume", type=Path)
+    args = parser.parse_args(argv)
+    return run(OmegaConf.load(args.config), qualification=args.qualification,
+               attempt=args.attempt, resume=args.resume)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

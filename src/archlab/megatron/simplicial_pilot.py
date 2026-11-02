@@ -27,7 +27,6 @@ from archlab.architectures.qwen38_flash_next_full import (
 )
 from archlab.artifacts import atomic_write_json as _atomic_json
 from archlab.artifacts import sha256_file as _sha256
-from archlab.megatron.backend import validate_runtime
 from archlab.megatron.indexed_data import validated_data_prefixes as _validated_data_prefixes
 from archlab.megatron.losses import native_token_forward_step as _forward_step
 from archlab.megatron.qwen38_flash_next_checks import _effective_probe_gradient
@@ -38,6 +37,7 @@ from archlab.megatron.qwen38_flash_next_model import (
     _tag_native_optimizer_fallbacks,
     build_model,
 )
+from archlab.megatron.runtime import validate_runtime
 from archlab.megatron.token_batches import DPRankTokenBatches
 
 

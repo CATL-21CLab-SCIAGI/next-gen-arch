@@ -38,6 +38,13 @@
   aliases, duplicate data and tracked staging files. Name owned dataset folders
   descriptively in lowercase kebab-case; verify ownership before reorganizing
   shared storage, and update manifests and launch references together.
+- Resolve this project's artifact destinations from `.runtime/storage-layout.json`.
+  The configured artifact root is `/mnt/oss/evergreen/arch/`; put new immutable
+  models, datasets, completed checkpoints, large run artifacts and compressed
+  sandbox images in its corresponding folders. Keep small run metadata on NAS
+  and use node-local scratch for temporary downloads and unpacked images. Verify
+  the actual OSS mount before writing; never silently fall back to NAS. Preserve
+  active jobs and reuse verified shared model copies rather than duplicating them.
 - Measure correctness and end-to-end throughput before claiming improvement.
   Report completed checks, observed progress and remaining limitations plainly.
   Hardware is NVIDIA B300 even when NVIDIA-SMI/NVML labels it L20D.

@@ -61,4 +61,4 @@ Reused parts are verified copies with original provenance. Original outputs and 
 
 Require complete checkpoint mapping, base identity, gradient onset after zero-O warm start, exact local-window oracles, optimizer grouping, distributed continuation and full-context memory measurements. Zero output, placement and optimizer pilot settings are project choices—not paper-prescribed defaults.
 
-[Report/code audit](DEEPSEEK_V41_SIMPLICIAL_AUDIT.md) · [Portable proposal](../recipes/deepseek_v41/proposals.yaml#global_simplicial_math)
+[Report/code audit](DEEPSEEK_V41_SIMPLICIAL_AUDIT.md) · [Portable proposal](../recipes/sft/deepseek_v41/proposals.yaml#global_simplicial_math)

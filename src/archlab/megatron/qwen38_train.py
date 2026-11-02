@@ -19,10 +19,6 @@ from archlab.architectures.qwen38_flash_next import (
 )
 from archlab.artifacts import atomic_write_json as _atomic_json
 from archlab.artifacts import sha256_file as _sha256
-from archlab.megatron.backend import validate_runtime
-from archlab.megatron.indexed_data import (  # noqa: F401 - historical private import compatibility
-    data_prefixes as _data_prefixes,
-)
 from archlab.megatron.indexed_data import validated_data_prefixes as _validated_data_prefixes
 from archlab.megatron.lifecycle import architecture_from_model as _architecture_from_model
 from archlab.megatron.lifecycle import current_iteration as _current_iteration
@@ -31,6 +27,7 @@ from archlab.megatron.lifecycle import distributed_world_size as _distributed_wo
 from archlab.megatron.lifecycle import invoke_pretrain
 from archlab.megatron.losses import component_mean_loss as _loss_func
 from archlab.megatron.qwen38_muon import install_qwen38_muon_adapter, muon_recipe_contract
+from archlab.megatron.runtime import validate_runtime
 from archlab.megatron.token_batches import BinaryTokenBatches
 from archlab.megatron.token_batches import partition_prefixes as _partition_prefixes
 from archlab.speedrun.precision import resolve_precision_backend

@@ -183,19 +183,12 @@ Generated: {timestamp}
                 num_chars = int(parts[1])
     num_tokens = num_chars // 4  # assume approximately 4 chars per token
 
-    # count dependencies via uv.lock
-    uv_lock_lines = 0
-    if os.path.exists("uv.lock"):
-        with open("uv.lock", encoding="utf-8") as f:
-            uv_lock_lines = len(f.readlines())
-
     header += f"""
 ### Bloat
 - Characters: {num_chars:,}
 - Lines: {num_lines:,}
 - Files: {num_files:,}
 - Tokens (approx): {num_tokens:,}
-- Dependencies (uv.lock lines): {uv_lock_lines:,}
 
 """
     return header

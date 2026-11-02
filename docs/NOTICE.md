@@ -3,7 +3,7 @@
 Copyright 2026 CATL 21C Lab SCIAGI contributors.
 
 Project-owned contributions in this publication are licensed under the Apache
-License, Version 2.0; see [`LICENSE`](LICENSE). Third-party portions retain their
+License, Version 2.0; see [`LICENSE`](../LICENSE). Third-party portions retain their
 original licenses and attributions. The earlier MIT notice is preserved in
 [`docs/licenses/legacy-MIT.txt`](licenses/legacy-MIT.txt); previously granted
 MIT permissions are not withdrawn by this publication.
@@ -19,7 +19,7 @@ history at `ecbb586296d3dac36fd206211f25d63bad4a6b35`. Marin/Levanter source is 
 vendored or used as a runtime backend; portable hypotheses are independently
 expressed as small, attributed experiment recipes.
 
-Architecture modules in this repository are research adaptations informed by the primary sources listed in [`docs/ARCHITECTURES.md`](docs/ARCHITECTURES.md). They are not represented as official implementations, endorsements, or exact reproductions of the authors' complete systems.
+Architecture modules in this repository are research adaptations informed by the primary sources listed in [`docs/ARCHITECTURES.md`](ARCHITECTURES.md). They are not represented as official implementations, endorsements, or exact reproductions of the authors' complete systems.
 
 “nanochat”, “Engram”, “Kimi”, “Qwen”, “DeepSeek”, “GLM”, “Inkling”, and other project names belong to their respective owners. No model weights, dataset shards, tokenizer binaries, or third-party trademarks are distributed as project assets.
 

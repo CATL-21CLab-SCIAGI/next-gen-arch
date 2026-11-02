@@ -10,7 +10,7 @@ import signal
 import socket
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from archlab.artifacts import atomic_write_json
@@ -18,7 +18,7 @@ from archlab.artifacts import atomic_write_json
 
 def supervise(command, status_path, interval=30):
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL)
-    started = datetime.now(timezone.utc).isoformat()
+    started = datetime.now(UTC).isoformat()
     original_handlers = {}
 
     def forward(signum, frame):

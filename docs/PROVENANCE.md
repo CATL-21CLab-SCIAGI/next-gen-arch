@@ -14,16 +14,11 @@
 
 Research-policy speedrun and Megatron comparison runs reject dirty source. Other entries enforce their documented source and runtime contracts.
 
-## Manifest commands
+## Manifest API
 
-```bash
-PYTHONPATH=src python -m archlab.cli data-manifest create \
-  --root /path/to/data --dataset owner/dataset --revision IMMUTABLE_REVISION \
-  --pattern '*.bin' --output /path/to/data.manifest.json
-
-PYTHONPATH=src python -m archlab.cli data-manifest verify \
-  --root /path/to/data --manifest /path/to/data.manifest.json --mode full
-```
+Use the dataset-manifest functions in `archlab.provenance` from data preparation
+code, and `verify_dataset_manifest(root, manifest, mode="full")` before launch.
+The historical `data-manifest` CLI is retired.
 
 `full` rehashes content. `metadata` validates inventory and sizes against a trusted prior transfer ledger; record which was used.
 

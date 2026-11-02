@@ -9,7 +9,7 @@ from their matched fine-tuned step-4537 parents**, with fresh RL state.
 The old RL checkpoints are recovery artifacts, not the new run's parents.
 
 **Historical migration record:** the two 16-GPU drivers were retired. The subsequent attempt used one 32-GPU arm at a time; see resident qualification (historical record in the private archive). Production training is not yet verified. The retired portable migration
-contract was `recipes/deepseek_v41/proposals.yaml#miles_mimo`. It is not an executable
+contract was `recipes/sft/deepseek_v41/proposals.yaml#miles_mimo`. It is not an executable
 recipe or a claim of Miles support for the custom models.
 
 ## Selected recipe

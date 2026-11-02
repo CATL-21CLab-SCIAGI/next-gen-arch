@@ -16,7 +16,7 @@ import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
@@ -27,7 +27,7 @@ atomic_json = partial(atomic_write_json, sort_keys=False, allow_nan=True, create
 
 
 def utc():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def confined(root, relative):

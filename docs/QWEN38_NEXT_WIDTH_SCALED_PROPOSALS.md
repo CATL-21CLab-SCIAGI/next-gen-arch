@@ -46,4 +46,4 @@ The subsequently selected E32/W320 candidate has 387,680,960 parameters. The fir
 - Analytical counts do not prove runtime capacity or speed.
 - Qualify construction, gradients, optimizer grouping and checkpoint continuation before launch.
 
-Full shape/count definitions are in `recipes/qwen/proposals.yaml#next_width_scaled` and the named model factories.
+Full shape/count definitions are in `recipes/pretrain/qwen/proposals.yaml#next_width_scaled` and the named model factories.

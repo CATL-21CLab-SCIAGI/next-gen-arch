@@ -20,7 +20,8 @@ def test_package_learner_throughput(tmp_path):
 
     from omegaconf import OmegaConf
     from tensordict import TensorDict
-    from test_megatron_agentic_training import deployment_engine_arguments
+
+    from tests.integration.test_megatron_agentic_training import deployment_engine_arguments
 
     importlib.import_module("archlab.training.megatron")
     from verl.utils import tensordict_utils as tu
