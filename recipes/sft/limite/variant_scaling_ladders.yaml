@@ -134,3 +134,12 @@ amendments:
       data; figures report full-phase tokens and warmup + full tokens.
     core: [normal-nc, gdn-nc, triadic-e4-nc, simplicial-w16-nc]
     ablations: cold only (triadic e2/e8/e16-nc, simplicial w4/w8-nc).
+  - date: 2026-11-02
+    name: attention-only-top-rung
+    reason: >-
+      Cold attention-only arms track the uninserted parent within 0.01 held-out CE at
+      25/50/100M; the 200M rung (L200-none recorded) tests whether a gap opens with scale.
+    rungs: core ARM-nc cold at 200M with the arm's selected LR, queued after the warm runs.
+    warm_export: >-
+      ossfs rejects safetensors serialization; the ARM-nc-warm export is staged node-locally
+      and copied with EXPORT.json last, as the parent exports. Failed first attempts are kept.
