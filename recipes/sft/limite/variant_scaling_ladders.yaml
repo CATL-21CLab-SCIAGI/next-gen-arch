@@ -187,4 +187,5 @@ amendments:
     source: >-
       the snapshot of the commit that adds the virtual-query kernel; earlier arms keep 4aec6d0,
       so w<=16 and w>16 arms differ in training kernel within BF16 oracle bounds
+    control: K100-simplicial-w16-nc reruns the w16 100M rung on the new kernel
     serving: paged decode still caps the short window at 16; these arms report CE only
