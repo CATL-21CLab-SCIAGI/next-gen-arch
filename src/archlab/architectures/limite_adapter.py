@@ -1,8 +1,9 @@
 """Native Limite attention preludes before its 48 frozen attention/MLP blocks.
 
-The normal branch calls the unchanged publisher attention. The simplicial
-branch substitutes only its attention reduction, keeping native QKV/O, scaling,
-QK normalization, RoPE/NoPE, value embeddings, XSA and attention gates.
+The normal branch calls the unchanged publisher attention or the shared TileLang
+reduction. The simplicial branch substitutes only its TileLang attention
+reduction, keeping native QKV/O, scaling, QK normalization, RoPE/NoPE, value
+embeddings, XSA and attention gates.
 The GDN (E=1) and Triadic (E>1) branches are the single-stream gated delta-rule
 mixers of ``deepseek_v41_triadic_adapter``; they are teacher-forced only.
 Any prelude may add a parallel SwiGLU with a zero down projection, used only
@@ -22,10 +23,6 @@ from torch import nn
 from torch.nn import functional as F
 
 from archlab.architectures.limite_bindings import bind_native_forward
-from archlab.architectures.limite_context import (
-    NativeTrainingContextCache,
-    native_training_context_key,
-)
 
 SOFTMAX_VARIANTS = ("normal", "simplicial")
 DELTA_VARIANTS = ("gdn", "triadic")
@@ -48,8 +45,9 @@ class LimiteAdapterConfig:
         if self.compensation < 0:
             raise ValueError("compensation width must be nonnegative")
         if self.variant in SOFTMAX_VARIANTS:
-            if self.attention_backend not in ("native", "tilelang"):
-                raise ValueError("invalid adapter attention backend")
+            oracle = "reference" if self.variant == "simplicial" else "native"
+            if self.attention_backend not in (oracle, "tilelang"):
+                raise ValueError(f"{self.variant} preludes use the {oracle} or TileLang backend")
             if self.heads or self.feature_dim != 1:
                 raise ValueError("softmax preludes inherit the native attention geometry")
         else:
@@ -88,28 +86,23 @@ def _attention_forward_with_reduction(forward, reduction):
     )
 
 
-def _simplicial_reduce(module, q, k, v, mask, *, scaling, **kwargs):
-    # Native interface uses [B,H,N,D], while the tested kernel uses [B,N,H,D].
-    q, k, v = [x.transpose(1, 2).contiguous() for x in (q, k, v)]
-    k1, v1 = module._short_values
-    q = q.float() * (scaling * q.shape[-1] ** 0.5)
-    if q.shape[1] == 1:
-        from archlab.architectures.simplicial_packed import packed_simplicial_decode
+def _reference_simplicial_reduce(module, q, k, v, mask, *, scaling, **kwargs):
+    from archlab.architectures.simplicial_attention import reference_simplicial
 
-        out = packed_simplicial_decode(q, k1.float(), k.float(), v1.float(), v.float())
+    if getattr(module, "_archlab_decode_lengths", None) is not None:
+        raise ValueError("the simplicial reference supports unbatched decode only")
+    q, k, v = [x.transpose(1, 2).float() for x in (q, k, v)]
+    k1, v1 = (x.float() for x in module._short_values)
+    long = k.shape[1] if module.is_global else module.window_span
+    if q.shape[1] == 1 and k.shape[1] != 1:
+        k, v = k[:, -long:], v[:, -long:]
+        groups = q.shape[2] // k.shape[2]
+        k1, k, v1, v = (x.repeat_interleave(groups, dim=2) for x in (k1, k, v1, v))
+        scores = torch.einsum("bhd,bjhd,bkhd->bhjk", q[:, 0], k1, k) * scaling
+        probabilities = scores.flatten(-2).softmax(-1).reshape_as(scores)
+        out = torch.einsum("bhjk,bjhd,bkhd->bhd", probabilities, v1, v)[:, None]
     else:
-        from archlab.architectures.simplicial_packed import packed_simplicial_attention
-
-        long = q.shape[1] if module.is_global else module.window_span
-        out = packed_simplicial_attention(
-            q,
-            k1,
-            k,
-            v1,
-            v,
-            min(module._short_window, long),
-            long,
-        )
+        out = reference_simplicial(q, k1, k, v1, v, min(module._short_window, long), long, scale=scaling)
     return out.to(v.dtype), None
 
 
@@ -124,13 +117,6 @@ def _tilelang_reduce(module, q, k, v, mask, *, scaling, **kwargs):
         out = tilelang_decode(
             q, k, v, scaling=scaling, short=short,
             lengths=getattr(module, "_archlab_decode_lengths", None),
-        )
-    elif getattr(module, "_archlab_normal_backward", "tilelang") == "fa4" and not dynamic_length:
-        from archlab.architectures.fa4_attention import native_bf16_gqa_attention
-        from archlab.architectures.tilelang_attention import normal_attention_forward
-
-        out = native_bf16_gqa_attention(
-            q, k, v, scaling=scaling, long_window=long, forward=normal_attention_forward
         )
     else:
         out = tilelang_attention(
@@ -169,8 +155,6 @@ def set_normal_attention_kernel(model, kernel):
     """Select execution kernels without changing saved adapter geometry."""
     if kernel not in ("shared", "gqa"):
         raise ValueError("normal attention kernel must be shared or gqa")
-    if kernel != "gqa" and getattr(model.model, "normal_backward", "tilelang") == "fa4":
-        raise ValueError("select TileLang backward before leaving the FA4 GQA configuration")
     config = model.model.adapter_config
     if kernel != "shared" and (
         config["variant"] != "normal" or config["attention_backend"] != "tilelang"
@@ -180,29 +164,6 @@ def set_normal_attention_kernel(model, kernel):
         adapter.native._archlab_gqa_kernel = kernel
     model.model.normal_kernel = kernel
     model.archlab_normal_attention_kernel = kernel
-
-
-def set_normal_attention_backward(model, backward):
-    """Select a qualified native reduction while retaining the generic GQA API."""
-    if backward not in ("tilelang", "fa4"):
-        raise ValueError("normal attention backward must be tilelang or fa4")
-    backbone = model.model
-    if backward == "fa4":
-        if (
-            backbone.adapter_config["variant"] != "normal"
-            or backbone.adapter_config["attention_backend"] != "tilelang"
-            or backbone.normal_kernel != "gqa"
-        ):
-            raise ValueError("FA4 backward requires the normal TileLang GQA configuration")
-        from archlab.architectures.fa4_attention import fa4_runtime_contract
-
-        model.archlab_normal_attention_backward_contract = fa4_runtime_contract()
-    else:
-        model.archlab_normal_attention_backward_contract = {"backend": "tilelang"}
-    for adapter in _attention_preludes(model):
-        adapter.native._archlab_normal_backward = backward
-    backbone.normal_backward = backward
-    model.archlab_normal_attention_backward = backward
 
 
 class _Compensation(nn.Module):
@@ -252,12 +213,11 @@ class AttentionPrelude(nn.Module):
             self.short_kv = short
             self.register_buffer("_inference_short_weight", None, persistent=False)
             self.native._short_window = config.short_window
-        if config.variant == "simplicial" or config.attention_backend == "tilelang":
+        if config.attention_backend != "native":
             # Select only this adapter's reduction; publisher and frozen modules
             # retain their original code and attention implementation.
-            reduction = (
-                _tilelang_reduce if config.attention_backend == "tilelang" else _simplicial_reduce
-            )
+            reduction = (_tilelang_reduce if config.attention_backend == "tilelang"
+                         else _reference_simplicial_reduce)
             bound = _attention_forward_with_reduction(cls.forward, reduction)
             self.native.forward = MethodType(bound, self.native)
             self.native.config._attn_implementation = "archlab_adapter"
@@ -437,10 +397,8 @@ class PreludeBackbone(nn.Module):
         )
         self._context = None
         self._bounds = None
-        self._native_context_cache = NativeTrainingContextCache()
         self.trainable_mode = "adapter"
         self.normal_kernel = "shared"
-        self.normal_backward = "tilelang"
         self._handles = [base.embed_tokens.register_forward_hook(self._embedding)]
         for i, layer in enumerate(base.layers[:-1]):
             self._handles.append(layer.register_forward_hook(self._after(i + 1)))
@@ -493,28 +451,9 @@ class PreludeBackbone(nn.Module):
         return apply
 
     def train(self, mode=True):
-        if self.training != mode:
-            self._native_context_cache.invalidate()
         super().train(mode)
         self.base.train(mode if self.trainable_mode == "full" else False)
         return self
-
-    def enable_static_training_context(self, enabled=True):
-        """Opt in without changing parameter objects, state keys or hooks."""
-        self._native_context_cache.enable(enabled)
-
-    def prepare_static_training_context(self, ids):
-        if not self.training:
-            raise RuntimeError("static native context requires training mode")
-        if not isinstance(ids, torch.Tensor) or ids.ndim != 2:
-            raise ValueError("static native context requires two-dimensional input_ids")
-        key = native_training_context_key(ids, self.base, self.training, self.trainable_mode)
-        return self._native_context_cache.prepare(
-            ids, key, self.base.embed_tokens.weight.dtype, self._masks
-        )
-
-    def lock_static_training_context(self, locked=True):
-        self._native_context_cache.lock(locked)
 
     def _masks(self, hidden, positions, mask, cache):
         if hasattr(cache, "decode_masks"):
@@ -572,21 +511,6 @@ class PreludeBackbone(nn.Module):
             native_cache = cache.archlab_native_preludes
         mask = kwargs.get("attention_mask")
         positions = kwargs.get("position_ids")
-        static_context = None
-        if (
-            self._native_context_cache.enabled
-            and self.training
-            and use_cache is False
-            and cache is None
-            and mask is None
-            and positions is None
-            and kwargs.get("inputs_embeds") is None
-            and len(args) <= 1
-            and isinstance(ids, torch.Tensor)
-            and ids.ndim == 2
-        ):
-            static_context = self.prepare_static_training_context(ids)
-            positions = static_context.positions
         if positions is None:
             if isinstance(mask, torch.Tensor):
                 positions = (mask.long().cumsum(-1) - 1).clamp_min(0)[:, -ids.shape[1] :]
@@ -597,13 +521,10 @@ class PreludeBackbone(nn.Module):
                 ].expand(ids.shape[0], -1)
         # Shapes/dtypes suffice for upstream mask construction; avoid a duplicate
         # token embedding lookup and keep the actual native lookup unchanged.
-        if static_context is None:
-            shape = torch.empty(
-                (*ids.shape, 0), dtype=self.base.embed_tokens.weight.dtype, device=ids.device
-            )
-            masks = self._masks(shape, positions, mask, native_cache)
-        else:
-            masks = static_context.masks
+        shape = torch.empty(
+            (*ids.shape, 0), dtype=self.base.embed_tokens.weight.dtype, device=ids.device
+        )
+        masks = self._masks(shape, positions, mask, native_cache)
         self._context = dict(
             rotary=self.base.rotary_emb(positions),
             values=self.base._value_embeddings(ids),
@@ -678,10 +599,6 @@ def install_adapters(model, config):
     return model
 
 
-def adapter_state(model):
-    return {k: v.detach().cpu() for k, v in model.model.adapters.state_dict().items()}
-
-
 def set_trainable_mode(model, mode):
     """Preserve native parameter dtypes while selecting adapter or full updates."""
     if mode not in ("adapter", "full"):
@@ -693,11 +610,3 @@ def set_trainable_mode(model, mode):
     # remove them after loading changed backbone weights and switching scope.
     model.train()
     return model
-
-
-def backbone_state(model):
-    return {
-        name: tensor.detach().cpu()
-        for name, tensor in model.state_dict().items()
-        if not name.startswith("model.adapters.")
-    }

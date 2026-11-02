@@ -42,7 +42,7 @@ def test_native_geometry_and_shared_initialization():
     for index in (0, 3):
         original = native_cls(cfg, index)
         normal = AttentionPrelude(original, LimiteAdapterConfig(variant="normal"), index)
-        simplicial = AttentionPrelude(original, LimiteAdapterConfig(variant="simplicial"), index)
+        simplicial = AttentionPrelude(original, LimiteAdapterConfig(variant="simplicial", attention_backend="reference"), index)
         for name in [
             "head_dim",
             "num_heads",
@@ -92,7 +92,7 @@ def test_prelude_mechanism_contracts(invalid):
 @pytest.mark.parametrize("config", [
     GDN, TRIADIC,
     LimiteAdapterConfig(variant="normal", compensation=16),
-    LimiteAdapterConfig(variant="simplicial", short_window=64, compensation=8),
+    LimiteAdapterConfig(variant="simplicial", short_window=64, compensation=8, attention_backend="reference"),
 ])
 def test_prelude_parameter_count_matches_construction(config):
     cfg, native_cls = _native()

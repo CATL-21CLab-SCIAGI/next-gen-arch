@@ -41,7 +41,7 @@ def test_machine_paths_are_explicit_deployment_inputs(monkeypatch):
     assert experiment.settings["ray_kwargs.ray_init"]["address"] == "local"
     assert experiment.settings["transfer_queue.backend.SimpleStorage.num_data_storage_units"] == 2
     assert experiment.settings["ray_kwargs.ray_init"]["runtime_env"]["worker_process_setup_hook"] == (
-        "archlab.architectures.fa4_attention.fa4_runtime_contract"
+        "archlab.training.runtime.flash_attn_namespace"
     )
 
 

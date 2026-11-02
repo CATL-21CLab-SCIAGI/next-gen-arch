@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import json
 import os
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -16,6 +18,26 @@ from archlab.artifacts import atomic_write_json, sha256_file
 from archlab.failures import classify_failure
 from archlab.training.admission import verify_admission
 from archlab.training.resume import claim_run, resumed_config
+
+
+def flash_attn_namespace():
+    """Resolve ``flash_attn.cute`` to the container's FA4 wheel before engines import it.
+
+    The wheel installs ``flash_attn/cute`` beside the container's FA2 ``flash_attn``
+    package, and Transformer Engine imports it whenever the wheel is installed.
+    """
+    try:
+        distribution = importlib.metadata.distribution("flash-attn-4")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    root = Path(distribution.locate_file("flash_attn")).resolve()
+    imported = getattr(sys.modules.get("flash_attn.cute"), "__file__", None)
+    if imported is not None and not Path(imported).resolve().is_relative_to(root):
+        raise RuntimeError(f"flash_attn.cute was already imported from {imported}")
+    namespace = importlib.import_module("flash_attn")
+    paths = [str(path) for path in namespace.__path__]
+    if paths[:1] != [str(root)]:
+        namespace.__path__ = [str(root), *(path for path in paths if path != str(root))]
 
 
 def worker_setup():

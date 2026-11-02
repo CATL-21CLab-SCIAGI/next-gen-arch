@@ -38,10 +38,10 @@ def test_prior_worker_setup_is_preserved(tmp_path, monkeypatch):
     monkeypatch.setenv("MLFLOW_TRACKING_TOKEN", "old-token")
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "old-uri")
     config = OmegaConf.create({"ray_kwargs": {"ray_init": {"runtime_env": {
-        "env_vars": {}, "worker_process_setup_hook": "archlab.architectures.fa4_attention.fa4_runtime_contract"}}}})
+        "env_vars": {}, "worker_process_setup_hook": "archlab.training.runtime.flash_attn_namespace"}}}})
     new = launch_config(config)
     assert new.ray_kwargs.ray_init.runtime_env.env_vars.ARCHLAB_WORKER_SETUP_HOOK == (
-        "archlab.architectures.fa4_attention.fa4_runtime_contract")
+        "archlab.training.runtime.flash_attn_namespace")
 
 
 def test_actors_are_pinned_to_the_creating_node(monkeypatch):

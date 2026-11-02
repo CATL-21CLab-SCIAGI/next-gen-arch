@@ -243,9 +243,9 @@ def test_prelude_replay_retains_geometry_causality_and_accumulated_gradients(mon
         actual.model(input_ids=sequences[0], attention_mask=torch.tensor([[0, 1, 1, 1, 1, 1, 1]]), use_cache=False)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="B300 official FA4 qualification")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="B300 replay qualification")
 @pytest.mark.parametrize("window", [None, 1025])
-@pytest.mark.parametrize("backend", ["fa4", "sdpa_bounded", "sdpa_native"])
+@pytest.mark.parametrize("backend", ["sdpa_bounded", "sdpa_native"])
 def test_cuda_replay_matches_sdpa_forward_and_backward(window, backend):
     torch.manual_seed(43)
     q = torch.randn(1, 10, 2053, 128, device="cuda", dtype=torch.bfloat16, requires_grad=True)

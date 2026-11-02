@@ -55,7 +55,8 @@ def native():
 
 
 def policy(native, variant="normal"):
-    model = install_adapters(native, LimiteAdapterConfig(variant=variant))
+    backend = "reference" if variant == "simplicial" else "native"
+    model = install_adapters(native, LimiteAdapterConfig(variant=variant, attention_backend=backend))
     set_trainable_mode(model, "full")
     with torch.no_grad():
         for adapter in model.model.adapters:

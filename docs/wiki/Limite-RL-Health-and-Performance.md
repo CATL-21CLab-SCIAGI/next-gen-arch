@@ -61,8 +61,8 @@ cap, only one applied update in 15 steps, and 2/60 groups with reward contrast.
 | Distributed resume | Eight-rank fixture from step142; exact state reload and next-update equality; synthetic fixture never used as a production checkpoint |
 
 FA4 and tiled local replay candidates did not meet the declared full-model
-continuation tolerance despite close individual-layer agreement. They remain
-experimental; tolerance was not relaxed to admit them. The final native path's
+continuation tolerance despite close individual-layer agreement. FA4 was retired
+on 2026-11-02 and tiling remains experimental; tolerance was not relaxed to admit them. The final native path's
 2053-token probe had maximum selected-log-probability error 3.8e-6 and gradient
 relative L2 error 0.00561.
 

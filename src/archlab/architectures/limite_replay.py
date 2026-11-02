@@ -5,8 +5,8 @@ gates, residuals and MUDD functions are retained. Only uncached, unpadded
 attention reductions use container-owned cuDNN SDPA at the native full shape.
 One boolean local mask is shared across layers; no sequence-squared integer
 intermediates are constructed. Non-reentrant checkpoints keep decoder
-intermediates out of the retained autograd graph. Tiling and FA4 remain explicit
-experimental alternatives because their full-model rounding differs.
+intermediates out of the retained autograd graph. Tiling remains an explicit
+experimental alternative because its full-model rounding differs.
 """
 
 from __future__ import annotations
@@ -30,16 +30,6 @@ class NativeReplayMask:
 
     window_span: int | None
     allowed: torch.Tensor | None = None
-
-
-@cache
-def _official_flash_attention():
-    from archlab.architectures.fa4_attention import fa4_runtime_contract
-
-    fa4_runtime_contract(validate=True)
-    from flash_attn.cute.interface import flash_attn_func
-
-    return flash_attn_func
 
 
 def _native_sdpa(q, k, v, *, scaling, mask):
@@ -139,9 +129,9 @@ def replay_attention(q, k, v, *, scaling, window_span, backend="sdpa_native", na
     """Native GQA reduction with a shared descriptor and unchanged full shape.
 
     Inputs use the publisher [batch, head, token, channel] interface. The
-    The explicit SDPA option is a small-shape numerical oracle. Bounded SDPA
-    and FA4 are experimental: their full-model parity checks fail despite
-    passing individual-layer tests.
+    explicit SDPA option is a small-shape numerical oracle. Bounded SDPA is
+    experimental: its full-model parity check fails despite passing
+    individual-layer tests.
     """
     if q.ndim != 4 or k.ndim != 4 or v.shape != k.shape:
         raise ValueError("native replay requires four-dimensional Q/K/V")
@@ -156,26 +146,17 @@ def replay_attention(q, k, v, *, scaling, window_span, backend="sdpa_native", na
         return _native_sdpa(q, k, v, scaling=scaling, mask=mask).transpose(1, 2).contiguous()
     if backend == "sdpa_bounded":
         return _bounded_sdpa(q, k, v, scaling=scaling, window_span=window_span).transpose(1, 2).contiguous()
-    if backend == "sdpa":
-        mask = None
-        if window_span is not None:
-            positions = torch.arange(q.shape[2], device=q.device)
-            age = positions[:, None] - positions[None, :]
-            mask = (age >= 0) & (age < window_span)
-        return F.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, is_causal=mask is None,
-            scale=scaling, dropout_p=0.0, enable_gqa=True,
-        ).transpose(1, 2).contiguous()
-    if backend != "fa4":
-        raise ValueError("native replay attention backend must be sdpa_native, sdpa_bounded, fa4 or sdpa")
-    if not q.is_cuda or any(t.dtype != torch.bfloat16 or t.device != q.device for t in (q, k, v)):
-        raise ValueError("official FA4 native replay requires CUDA BF16 Q/K/V")
-    window = (None, None) if window_span is None else (window_span - 1, 0)
-    output, _ = _official_flash_attention()(
-        *(t.transpose(1, 2).contiguous() for t in (q, k, v)),
-        softmax_scale=scaling, causal=True, window_size=window,
-    )
-    return output
+    if backend != "sdpa":
+        raise ValueError("native replay attention backend must be sdpa_native, sdpa_bounded or sdpa")
+    mask = None
+    if window_span is not None:
+        positions = torch.arange(q.shape[2], device=q.device)
+        age = positions[:, None] - positions[None, :]
+        mask = (age >= 0) & (age < window_span)
+    return F.scaled_dot_product_attention(
+        q, k, v, attn_mask=mask, is_causal=mask is None,
+        scale=scaling, dropout_p=0.0, enable_gqa=True,
+    ).transpose(1, 2).contiguous()
 
 
 class _ReplayInterface:
@@ -240,7 +221,7 @@ def enable_native_replay(model, *, attention_backend="sdpa_native", checkpoint_l
             raise ValueError("native replay requires an unmodified publisher model topology")
     if getattr(model, "archlab_native_replay", False):
         raise ValueError("native replay already configured")
-    if attention_backend not in ("sdpa_native", "sdpa_bounded", "fa4", "sdpa") or not isinstance(checkpoint_layers, bool):
+    if attention_backend not in ("sdpa_native", "sdpa_bounded", "sdpa") or not isinstance(checkpoint_layers, bool):
         raise ValueError("invalid native replay execution configuration")
     for layer in backbone.layers:
         attention = layer.self_attn
@@ -253,7 +234,6 @@ def enable_native_replay(model, *, attention_backend="sdpa_native", checkpoint_l
             _checkpoint_layer(layer)
     if adapted:
         wrapper._native_replay = dict(backend=attention_backend, checkpoint=checkpoint_layers)
-        wrapper._native_context_cache.invalidate()
         for adapter in wrapper.adapters:
             # TileLang and simplicial preludes already own causal/window masks
             # inside their reductions. The native normal prelude uses the same

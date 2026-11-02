@@ -1,5 +1,8 @@
 """The V4.1 proposal's additive branch, independent of the base-model backend.
 
+Retained as the parameter and initialization source of the GDN/Triadic preludes;
+its 2-simplicial core runs only as the small-test reference.
+
 This does not implement or replace V4.1's attention, mHC or Engram. The caller
 must insert it after attention hc_post, retaining the original single-pass
 coefficient flow. Each batch row is one contiguous document segment; packing
@@ -14,10 +17,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from archlab.architectures.simplicial_attention import (
-    reference_simplicial,
-    simplicial_attention,
-)
+from archlab.architectures.simplicial_attention import reference_simplicial
 
 
 @dataclass(frozen=True)
@@ -72,12 +72,10 @@ class RMSNorm(nn.Module):
 
 
 class V41SimplicialAdapter(nn.Module):
-    def __init__(self, config: V41AdapterConfig, *, seed=42, backend="triton"):
+    def __init__(self, config: V41AdapterConfig, *, seed=42, backend="reference"):
         super().__init__()
-        if backend not in ("triton", "reference", "deterministic"):
-            raise ValueError(
-                "choose Triton, deterministic Triton, or the explicit small-test reference"
-            )
+        if backend != "reference":
+            raise ValueError("the V4.1 simplicial branch keeps only its small-test reference")
         if torch.get_default_device().type not in ("cpu", "meta"):
             raise ValueError("construct on CPU/meta, then move to the execution device")
         self.config, self.backend = config, backend
@@ -127,14 +125,7 @@ class V41SimplicialAdapter(nn.Module):
         k1 = self.k1_norm(self.k1(x).reshape(kv_shape))
         k2 = self.k2_norm(self.k2(x).reshape(kv_shape))
         v1, v2 = self.v1(x).reshape(kv_shape), self.v2(x).reshape(kv_shape)
-        if self.backend == "deterministic":
-            from archlab.architectures.simplicial_deterministic import (
-                deterministic_simplicial_attention,
-            )
-
-            core = deterministic_simplicial_attention
-        else:
-            core = simplicial_attention if self.backend == "triton" else reference_simplicial
+        core = reference_simplicial
         # Keep triple products and value products in FP32. BF16-intermediate
         # core arithmetic failed the production-window gradient oracle near
         # cancellation; projections and residual outputs remain BF16.

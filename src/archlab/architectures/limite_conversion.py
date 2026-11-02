@@ -30,13 +30,13 @@ from archlab.architectures.simplicial_attention import reference_simplicial
 @dataclass(frozen=True)
 class LimiteConversionConfig:
     short_window: int = 16
-    backend: str = "packed"
+    backend: str = "tilelang"
 
     def __post_init__(self):
         if type(self.short_window) is not int or not 1 <= self.short_window <= 16:
             raise ValueError("conversion short_window must be an integer in [1, 16]")
-        if self.backend not in {"reference", "packed", "tilelang"}:
-            raise ValueError("conversion backend must be reference, packed or tilelang")
+        if self.backend not in {"reference", "tilelang"}:
+            raise ValueError("conversion backend must be reference or tilelang")
 
 
 def _validate_mask(mask, q, key_length, long_window):
@@ -86,37 +86,20 @@ def _joint_reduce(module, q, k, v, mask, *, scaling, dropout=0.0, **kwargs):
                 long_window=long_window, dynamic_length=True, shared_gradient_dtype=torch.float64,
             )
     else:
-        # Existing simplicial kernels apply D**-0.5; retain Limite's own scale.
         query_dtype = torch.float64 if q.dtype == torch.float64 else torch.float32
-        scaled_query = q.to(query_dtype) * (scaling * q.shape[-1] ** 0.5)
-        if config.backend == "reference":
-            if decode:
-                groups = q.shape[2] // k.shape[2]
-                k1, k2, v1, v2 = [
-                    value.to(query_dtype).repeat_interleave(groups, dim=2)
-                    for value in (short[0], k, short[1], v)
-                ]
-                scores = torch.einsum("bhd,bjhd,bkhd->bhjk", q[:, 0].to(query_dtype), k1, k2) * scaling
-                probabilities = scores.flatten(-2).softmax(-1).reshape_as(scores)
-                output = torch.einsum("bhjk,bjhd,bkhd->bhd", probabilities, v1, v2)[:, None]
-            else:
-                output = reference_simplicial(scaled_query, short[0].to(query_dtype),
-                                             k.to(query_dtype), short[1].to(query_dtype), v.to(query_dtype),
-                                             short_window, long_window)
+        if decode:
+            groups = q.shape[2] // k.shape[2]
+            k1, k2, v1, v2 = [
+                value.to(query_dtype).repeat_interleave(groups, dim=2)
+                for value in (short[0], k, short[1], v)
+            ]
+            scores = torch.einsum("bhd,bjhd,bkhd->bhjk", q[:, 0].to(query_dtype), k1, k2) * scaling
+            probabilities = scores.flatten(-2).softmax(-1).reshape_as(scores)
+            output = torch.einsum("bhjk,bjhd,bkhd->bhd", probabilities, v1, v2)[:, None]
         else:
-            from archlab.architectures.simplicial_packed import (
-                packed_simplicial_attention,
-                packed_simplicial_decode,
-            )
-
-            if decode:
-                output = packed_simplicial_decode(
-                    scaled_query.float(), short[0].float(), k.float(), short[1].float(), v.float(),
-                )
-            else:
-                output = packed_simplicial_attention(
-                    scaled_query.float(), short[0], k, short[1], v, short_window, long_window,
-                )
+            output = reference_simplicial(q.to(query_dtype), short[0].to(query_dtype),
+                                         k.to(query_dtype), short[1].to(query_dtype), v.to(query_dtype),
+                                         short_window, long_window, scale=scaling)
     return output.to(v.dtype), None
 
 

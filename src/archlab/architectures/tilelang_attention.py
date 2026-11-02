@@ -6,8 +6,8 @@ see docs/NOTICE.md). The short-axis extension normalizes all key pairs jointly.
 BF16 tensor products use FP32 softmax and outputs. Shared-gradient atomics
 default to FP32; true Limite conversion explicitly selects FP64 accumulation
 before returning BF16 gradients to avoid amplified BF16 rounding ties.
-This fresh-run precision contract deliberately differs from the historical
-Triton FP32/TF32x3 path; checkpoint backends may not be silently changed.
+This fresh-run precision contract deliberately differs from the
+retired Triton FP32/TF32x3 path; checkpoint backends may not be silently changed.
 """
 
 from functools import cache

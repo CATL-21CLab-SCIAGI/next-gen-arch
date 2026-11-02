@@ -20,8 +20,8 @@ settings:
     address: local
     num_cpus: 32
     runtime_env:
-      # Select the installed FA4 namespace before stock workers import engines.
-      worker_process_setup_hook: archlab.architectures.fa4_attention.fa4_runtime_contract
+      # Resolve the container FA4 namespace before stock workers import engines.
+      worker_process_setup_hook: archlab.training.runtime.flash_attn_namespace
       env_vars:
         VERL_MFU_DEVICE_NAME: B300
         TRANSFER_QUEUE_ENABLE: "1"

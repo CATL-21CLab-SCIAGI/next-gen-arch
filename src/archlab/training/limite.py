@@ -24,7 +24,6 @@ from archlab.architectures.limite_adapter import (
     LimiteAdapterConfig,
     insertion_metadata,
     install_adapters,
-    set_normal_attention_backward,
     set_normal_attention_kernel,
     set_trainable_mode,
 )
@@ -63,6 +62,8 @@ class LimiteConfig(PretrainedConfig):
             raise ValueError("attention insertion and replacement are distinct experiments")
         self.parameter_dtypes = parameter_dtypes or {}
         self.normal_kernel = normal_kernel
+        if normal_backward != "tilelang":
+            raise ValueError("the FA4 backward is retired; re-export with the TileLang backward")
         self.normal_backward = normal_backward
         self.trainable_mode = trainable_mode
         if backbone_attention not in ("sdpa", "flash_attention_2"):
@@ -116,7 +117,6 @@ class LimiteForCausalLM(PreTrainedModel):
             if not _same_adapter(self.policy.model.adapter_config, config.adapter):
                 raise ValueError("exported adapter geometry differs from publisher construction")
             set_normal_attention_kernel(self.policy, config.normal_kernel)
-            set_normal_attention_backward(self.policy, config.normal_backward)
             set_trainable_mode(self.policy, config.trainable_mode)
             layers = (*self.policy.model.base.layers, *self.policy.model.adapters)
         self._restore_dtypes()
@@ -306,12 +306,12 @@ def load_legacy_checkpoint(snapshot, checkpoint, *, device="cpu", target_attenti
                    for name, value in state.items())):
         raise ValueError("checkpoint tensor inventory, shape or dtype differs from publisher construction")
     target.load_state_dict(state, strict=True)
-    # GQA/FA4 kernel choices are TileLang execution settings, not weights; a native
-    # retarget (e.g. for serving) uses the native defaults instead of re-applying them.
+    # GQA kernel choice is a TileLang execution setting, not weights; a native
+    # retarget (e.g. for serving) uses the native default instead of re-applying it.
     retarget_native = target_adapter["attention_backend"] == "native"
+    if receipt.get("normal_backward", "tilelang") != "tilelang" and target_attention_backend is None:
+        raise ValueError("the FA4 backward is retired; pass target_attention_backend to retarget")
     set_normal_attention_kernel(model, "shared" if retarget_native else receipt.get("normal_kernel", "shared"))
-    set_normal_attention_backward(
-        model, "tilelang" if retarget_native else receipt.get("normal_backward", "tilelang"))
     set_trainable_mode(model, "full")
     return model, receipt
 
@@ -407,7 +407,6 @@ def export_model(model, snapshot, destination, *, source_checkpoint=None, parent
                           for name, p in model.named_parameters()},
         trainable_mode=model.model.trainable_mode if inserted else "full",
         normal_kernel=getattr(model.model, "normal_kernel", "shared"),
-        normal_backward=getattr(model.model, "normal_backward", "tilelang"),
         backbone_attention=backbone_attention
         or (model.model.base if inserted else model.model).config._attn_implementation,
     )

@@ -131,9 +131,9 @@ sample, only **104 / 83,403** retained long documents kept their terminal EOS.
 This plausibly contributes to repetitive generation and poor termination, but
 causality has not been established by a matched repair experiment.
 
-The opt-in `overlap-final-window` policy in `archlab.automodel.limite_adapter_data`
-preserves long-document endings with explicit overlap accounting and a new data
-contract. It does not change historical weights or automatically repair earlier
+The opt-in `overlap-final-window` policy of the retired AutoModel data module
+preserved long-document endings with explicit overlap accounting and a new data
+contract. It did not change historical weights or automatically repair earlier
 results. Short documents still require a separately qualified packing policy.
 
 ## Evidence and reproduction limits

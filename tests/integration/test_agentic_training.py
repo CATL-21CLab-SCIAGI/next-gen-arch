@@ -672,7 +672,7 @@ def test_native_context_forward_backward_memory(tmp_path):
 
     import torch.distributed as dist
 
-    import_module("archlab.training.megatron")  # verified FA4 namespace before TE
+    import_module("archlab.training.megatron")  # container FA4 namespace before TE
     from megatron.core import parallel_state
     from megatron.core.optimizer.clip_grads import get_grad_norm_fp32
     from verl.workers.engine.megatron.transformer_impl import MegatronEngineWithLMHead

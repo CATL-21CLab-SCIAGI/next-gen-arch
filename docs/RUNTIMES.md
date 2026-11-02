@@ -13,7 +13,7 @@
 
 The validated container owns PyTorch, CUDA, NCCL, Transformer Engine and Megatron. Record installed versions, imported paths, container identity and upstream revision. The repository owns integration code, not replacement framework installations.
 
-Project kernels are written in TileLang only; CuTe DSL and Triton kernels were retired on 2026-11-02. Container packages that ship their own kernels (FlashAttention, Transformer Engine, cuDNN SDPA, vLLM) remain container dependencies with recorded versions.
+Project kernels are written in TileLang only; the FA4 (CuTe DSL) backward and the Triton simplicial kernels were retired on 2026-11-02. GDN/Triadic preludes still call the pinned `cute-triadic-gdn` package until its TileLang replacement is qualified. The RL hook `archlab.training.runtime.flash_attn_namespace` only resolves the container's FA4 wheel namespace for Transformer Engine. Container packages that ship their own kernels (FlashAttention, Transformer Engine, cuDNN SDPA, vLLM) remain container dependencies with recorded versions.
 
 ## Qualification boundaries
 

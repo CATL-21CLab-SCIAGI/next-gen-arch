@@ -15,7 +15,6 @@ def test_architecture_modules_do_not_depend_on_training_runtime() -> None:
     forbidden_prefixes = (
         "megatron",
         "archlab.megatron",
-        "archlab.optimizers",
         "archlab.training",
     )
     violations: list[tuple[str, str]] = []

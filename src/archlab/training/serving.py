@@ -70,7 +70,7 @@ def _paged_simplicial_attention(module, query, key, value, attention_mask, *, sc
         unified_kv_cache_update,
     )
 
-    from archlab.architectures.simplicial_paged import simplicial_paged_attention
+    from archlab.architectures.tilelang_paged import tilelang_paged_attention
 
     batch, heads, tokens, dim = query.shape
     if batch != 1 or scaling != module.scaling or attention_mask is not None:
@@ -79,15 +79,14 @@ def _paged_simplicial_attention(module, query, key, value, attention_mask, *, sc
     k1, v1 = (tensor[0] for tensor in module._short_values)
     long_window = _GLOBAL_WINDOW if module.is_global else module.window_span
     short_window = min(module._short_window, long_window)
-    # Native reduction contract: FP32 queries pre-scaled so the kernel's D^-1/2 yields `scaling`.
-    q = q.float() * (scaling * dim ** 0.5)
     if get_forward_context().attn_metadata is None:
         # Profiling/dummy run: no request cache exists; reduce over the packed tokens directly.
-        from archlab.architectures.simplicial_packed import packed_simplicial_attention
+        from archlab.architectures.tilelang_attention import tilelang_attention
 
         packed_long = tokens if module.is_global else long_window
-        out = packed_simplicial_attention(q[None], k1[None].float(), k[None].float(), v1[None].float(),
-                                          v[None].float(), min(short_window, packed_long), packed_long)[0]
+        out = tilelang_attention(q[None], k[None], v[None], scaling=scaling, long_window=packed_long,
+                                 short=(k1[None], v1[None]), short_window=min(short_window, packed_long),
+                                 dynamic_length=True)[0]
     else:
         long_owner, short_owner = module.archlab_long_attention, module.archlab_short_attention
         long_metadata, _, long_cache, _ = get_attention_context(long_owner.layer_name)
@@ -95,9 +94,9 @@ def _paged_simplicial_attention(module, query, key, value, attention_mask, *, sc
         unified_kv_cache_update(k, v, long_owner.layer_name)
         unified_kv_cache_update(k1, v1, short_owner.layer_name)
         seq, position = _token_layout(long_metadata, tokens)
-        out = simplicial_paged_attention(
-            q, short_cache, long_cache, short_metadata.block_table, seq, position,
-            short_window=short_window, long_window=long_window, scale=dim ** -0.5,
+        out = tilelang_paged_attention(
+            q.contiguous(), short_cache, long_cache, short_metadata.block_table, seq, position,
+            short_window=short_window, long_window=long_window, scaling=scaling,
             long_block_table=long_metadata.block_table)
     return out.to(value.dtype).view(1, tokens, heads, dim), None
 

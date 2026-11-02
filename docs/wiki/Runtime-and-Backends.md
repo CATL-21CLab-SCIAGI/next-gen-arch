@@ -7,8 +7,6 @@ The current RL interface is the [package-backed training workflow](../TRAINING.m
 | verl | RL execution and serving coordination | Data, reward, rollout identity, policy lag and optimizer/restart checks |
 | Megatron Core / Transformer Engine | Distributed training and retained pretraining | Model construction, optimizer grouping, topology, checkpoint and numerical checks |
 | TileLang attention | Architecture-specific attention kernels | Forward/backward parity and end-to-end throughput for the model geometry |
-| Speedrun | Frozen small-model reference | Historical arguments, packing, optimizer and data order |
-| AutoModel references | Historical model loading and numerical implementations | Model-specific reference tests; no current custom RL executor |
 
 Megatron and TileLang are not competing scheduler backends: the former distributes training, while the latter implements kernels. A configuration name or successful import does not qualify a model/backend combination.
 
