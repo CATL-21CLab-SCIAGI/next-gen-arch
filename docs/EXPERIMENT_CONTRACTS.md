@@ -21,9 +21,9 @@ Discrete-step rounding, actual parameter counts, executed fallback FLOPs and mea
 | RL | Behavior policy, sampling settings, reward, normalization, replay, generated tokens and applied updates |
 | Systems comparison | Hardware, topology, compilation state and timing window |
 
-Use `archlab.contracts.assert_paired_controls(baseline, variant)` on the two
-resolved result mappings. It rejects mismatches in the frozen comparison axes.
-The historical `pair-check` CLI is retired.
+Record the frozen comparison axes in the experiment recipe and its amendments.
+The scratch-comparison checker `archlab.contracts` and the `pair-check` CLI were
+retired with their only callers; use their recorded source revision to reproduce them.
 
 ## Promotion and reporting
 

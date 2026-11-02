@@ -16,11 +16,7 @@ Use the existing validated GPU runtime. Development setup is in [the contributio
 
 ## Inspect frozen evidence
 
-The frozen manifest remains in `src/archlab/data/parameter-scale-100m-1b-v1-manifest.json`. Its library reader is retained:
-
-```bash
-PYTHONPATH=src python -c 'from archlab.registry import verify_manifest; print(verify_manifest())'
-```
+The frozen manifest remains in `src/archlab/data/parameter-scale-100m-1b-v1-manifest.json`. Its reader (`archlab.registry`) was retired on 2026-11-02; use commit `7124d82` or the run's recorded revision.
 
 Historical commands and checkpoint flags belong to the recorded source revision. The maintained RL workflow is documented in the [training guide](TRAINING.md); see the [retirement boundary](wiki/Code-Map.md#retirement-boundary) before using an old launcher.
 
@@ -28,12 +24,7 @@ Historical commands and checkpoint flags belong to the recorded source revision.
 
 The accepted safe-autotune policy uses max-autotune for 13 variants and default compilation for KDA, Kimi K3 KDA and Qwen GDN. Keep the `baseline` optimizer recipe when reproducing backend effects.
 
-```bash
-PYTHONPATH=src python -m archlab.speedrun.campaign_compare \
-  --megatron-root /path/to/megatron-10m \
-  --reference src/archlab/data/speedrun-10m-reference.csv \
-  --output-dir /path/to/backend-comparison
-```
+Run `archlab.speedrun.campaign_compare` from commit `7124d82` (retired afterwards) with `--reference src/archlab/data/speedrun-10m-reference.csv`.
 
 Historical recovery/override sets are explicit in their policy manifests. Do not merge duplicate keys or silently replace failures.
 

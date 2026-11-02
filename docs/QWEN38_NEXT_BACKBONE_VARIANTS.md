@@ -50,4 +50,4 @@ Check parameter counts/shapes, optimizer tags, GDN/attention gradients, DP agree
 
 Sampling is cache-free raw continuation. Its throughput is not a serving benchmark.
 
-[Infrastructure](TRAINING_INFRASTRUCTURE.md) · [Recipes](../recipes/pretrain/qwen/models.yaml)
+Infrastructure and recipes: retired 2026-11-02; see commit `7124d82`.

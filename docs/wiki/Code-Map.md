@@ -5,22 +5,21 @@ Project Python lives in `src/archlab`. The distribution is `next-gen-arch`; impo
 | Directory | Owns |
 | --- | --- |
 | `training/` | Typed experiment contracts, model integration, admission and thin verl entry points |
-| `architectures/` | Model definitions, attention kernels and numerical references |
-| `megatron/` | Megatron/Transformer Engine integration and retained pretraining |
-| `optimizers/` | Architecture-specific optimizer extensions |
+| `architectures/` | Limite preludes, TileLang attention kernels and numerical references |
+| `megatron/` | Native Limite bridge for verl's Megatron engine |
+| `optimizers/` | Limite warmup optimizer state |
 | `data/`, `preprocessing/` | Reproducible indexes, conversion and provenance |
 | `evaluation/` | Benchmark selection, scoring and paired statistics |
 | `reporting/`, `tracking/` | Evidence readers, analysis and metric ingestion |
 | `storage/`, `serving/` | Verified artifact operations, export and inference utilities |
 | `qualification/` | Independent attention/decode numerical checks |
-| `automodel/` | Retained numerical, loading and checkpoint references for historical models |
-| `speedrun/` | Frozen small-model reference and primitives still used by Megatron |
+| `automodel/` | Limite adapter model, loss and checkpoint contract |
 | `prompts/` | Reusable versioned prompts |
 | `third_party/verl/` | Pinned upstream trainer, rollouts, checkpoints and monitoring |
 
 ## Maintained execution
 
-Use `archlab resolve`, `archlab qualify` and `archlab train`; see the [training guide](../TRAINING.md). verl owns RL execution. Architecture modules stay independent of trainers and optimizers. Megatron distributes training; TileLang supplies attention kernels. These are separate configuration choices, each requiring evidence for the actual model combination.
+Use `archlab resolve`, `archlab qualify` and `archlab train`; see the [training guide](../TRAINING.md). verl owns RL execution. Architecture modules stay independent of trainers and optimizers. Megatron distributes training; TileLang supplies every project-owned kernel. These are separate configuration choices, each requiring evidence for the actual model combination.
 
 ## Retirement boundary
 
@@ -32,6 +31,6 @@ Checksum-verified originals of the retired files are kept locally in `.legacy/20
 
 On 2026-11-01, the unused Qwen request-file controller, fixed matched-reasoning watcher, PIQA script shim, misnamed Flash-Next forwarding launcher and orphan Miles argv fixture were retired. Their dedicated tests were removed; PIQA identity tests now import `archlab.evaluation.qwen38_piqa` directly. Originals of every changed or deleted file are checksum-verified in ignored `.legacy/20261101-code-compact/`, with `MANIFEST.json` recording hashes and the source revision.
 
-Run PIQA through `python -m archlab.evaluation.qwen38_piqa`. Retained Megatron launches use explicit recipes: dense Qwen uses `scripts/launch/run_qwen38_27b_quarter_dlc.sh`, and Flash-Next uses `scripts/launch/run_qwen38_flash_next_full_dlc.sh` as described in the [infrastructure guide](../TRAINING_INFRASTRUCTURE.md#launch-configuration). The dense launcher rejects Flash-Next recipes before runtime admission. Scientific recipes, numerical references, separate linked checkouts and immutable run snapshots were preserved; running jobs continue from their existing source snapshots.
+On 2026-11-02 the codebase became TileLang-only and was cut to the active Limite, agentic-RL and teacher-SFT lines. Retired: speedrun, Megatron scratch pretraining and its launchers, Qwen3.8 (including PIQA), DeepSeek-V4.1 scratch/AutoModel/evaluation/serving, the kimi/frontier/sota/fog/dsa/engram/linsimp/prelude-loop families, Megatron simplicial pilots, Qwen3.5 architecture-switch distillation, and the CuTe/Triton kernels. Originals, their recipes and dedicated tests are checksum-verified in ignored `.legacy/20261102-tilelang-only/MANIFEST.json`. Running jobs continue from their immutable source snapshots.
 
 [Browse source](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/tree/main/src/archlab) · [Browse recipes](https://github.com/CATL-21CLab-SCIAGI/next-gen-arch/tree/main/recipes)

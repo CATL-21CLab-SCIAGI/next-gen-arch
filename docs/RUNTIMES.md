@@ -4,34 +4,26 @@
 
 | Path | Entry or boundary | Scope |
 | --- | --- | --- |
-| Speedrun | `archlab.speedrun` | Frozen nanochat/modded-nanogpt comparison behavior |
-| Megatron runtime | `archlab.megatron.runtime` | Validate and describe the container-owned runtime |
-| Megatron comparison | `archlab.megatron.train` | Shared project architecture math under the MCore lifecycle |
-| Model-specific Megatron | Qwen entries under `archlab.megatron` | Named model and checkpoint contracts |
-| verl | `archlab.training`, `third_party/verl` | Current RL execution, rollouts and monitoring |
-| NeMo AutoModel references | `archlab.automodel` | Retained loading and numerical references; custom trainers retired |
+| verl | `archlab.training`, `third_party/verl` | SFT and RL execution, rollouts and monitoring |
+| Megatron under verl | `archlab.megatron.limite`, `archlab.training.megatron` | Native Limite bridge for verl's Megatron engine |
+| Attention kernels | `archlab.architectures.tilelang_*` | The only project-owned GPU kernels (TileLang) |
 | Serving | `archlab.training.serving`, `archlab.serving` | Qualified model plugins and checkpoint export |
 
 ## Runtime ownership
 
 The validated container owns PyTorch, CUDA, NCCL, Transformer Engine and Megatron. Record installed versions, imported paths, container identity and upstream revision. The repository owns integration code, not replacement framework installations.
 
-The speedrun lineage records modded-nanogpt commit `f411b3d346aa52d3504324ca93c230fd84c6c07f`. Historical Megatron comparison provenance includes `55ac7082517c3878ae653c07c09c534b8aed49f6`; these are run identities, not vendored dependencies.
+Project kernels are written in TileLang only; CuTe DSL and Triton kernels were retired on 2026-11-02. Container packages that ship their own kernels (FlashAttention, Transformer Engine, cuDNN SDPA, vLLM) remain container dependencies with recorded versions.
 
 ## Qualification boundaries
 
-- A mechanism in speedrun is not automatically native to TP/PP/CP/EP.
-- The 16-variant Megatron comparison used TP=PP=CP=1.
-- The 100M multi-node reproduction qualified baseline data parallelism.
-- Native parallelism probes establish capacity/numerics for their tested models.
-- Kernel/backend selection requires numerical and restart evidence for the actual model; the current CLI delegates RL execution to verl.
-
-[Backend evidence](BACKEND_COMPARISON.md) · [Retention decision](BACKEND_RETENTION.md)
+- Kernel/backend selection requires numerical and restart evidence for the actual model; the CLI delegates SFT and RL execution to verl.
+- The speedrun, Megatron scratch-comparison and Qwen3.8/DeepSeek-V4.1 pretraining runtimes are retired; reproduce their [recorded results](BACKEND_COMPARISON.md) from the immutable source revision they name.
 
 ## Portable configuration
 
 Recipes use `env:NAME`, `package:relative/path`, and launch overrides. YAML proposals may document geometry without being executable builders; check the named entry.
 
-Use the [training guide](TRAINING.md) for `resolve`, `qualify` and `train`. Historical `doctor`, `verify`, `show` and `render` CLI commands are retired. The retained Megatron catalog renderer is `python -m archlab.megatron.launch_config --help`.
+Use the [training guide](TRAINING.md) for `resolve`, `qualify` and `train`. Historical `doctor`, `verify`, `show`, `render` commands and the Megatron catalog renderer are retired.
 
 Reusable prompt text lives in `src/archlab/prompts/`. Marin remains a research reference, not an implemented third training backend; see the [optimization audit](OPTIMIZATION_AUDIT.md).

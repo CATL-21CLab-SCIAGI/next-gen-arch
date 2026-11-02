@@ -30,4 +30,4 @@ Retiring the standalone speedrun trainer requires mature resume parity, paired m
 
 Shared primitives have since moved to neutral modules, but frozen packing/tokenizer semantics still require care. Do not infer retirement readiness from one short probe.
 
-[Backend comparison](BACKEND_COMPARISON.md) · [Infrastructure boundaries](TRAINING_INFRASTRUCTURE.md)
+[Backend comparison](BACKEND_COMPARISON.md)

@@ -1,7 +1,7 @@
 [project]
 name = "next-gen-arch"
 version = "0.1.0"
-description = "A backend-aware architecture lab spanning speedrun experiments and Megatron scaling"
+description = "Architecture research on pretrained language models: inserted attention preludes, SFT and agentic RL"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
@@ -9,7 +9,7 @@ license-files = ["LICENSE", "docs/NOTICE.md", "docs/licenses/*.txt"]
 authors = [
     {name = "CATL 21C Lab SCIAGI"},
 ]
-keywords = ["language-model", "pytorch", "megatron", "architecture", "scaling-laws"]
+keywords = ["language-model", "pytorch", "verl", "tilelang", "architecture", "scaling-laws"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
@@ -28,7 +28,6 @@ dependencies = [
     "pyyaml>=6.0.3",
     "requests>=2.32.5",
     "safetensors>=0.6.2",
-    "tiktoken>=0.11.0",
     "tokenizers>=0.22.0",
 ]
 
@@ -59,7 +58,6 @@ dev = [
     "tenacity>=9.1.4",
 ]
 
-reference = ["rustbpe>=0.1.0", "wandb>=0.21.3"]
 tracking = ["mlflow-skinny==3.16.1"]
 agentic = ["e2b==2.24.0"]
 eval = [
@@ -98,8 +96,4 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # Persisted enums retain their historical str()/repr() behavior.
-"src/archlab/contracts.py" = ["UP042"]
 "src/archlab/training/bootstrap.py" = ["UP042"]
-"src/archlab/speedrun/base_train.py" = ["E402"]
-"src/archlab/speedrun/tok_train.py" = ["E402"]
-"src/archlab/speedrun/tokenizer.py" = ["B019", "E402"]

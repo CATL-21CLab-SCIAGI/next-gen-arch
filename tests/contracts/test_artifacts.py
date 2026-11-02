@@ -101,19 +101,3 @@ def test_concurrent_writers_publish_complete_json(tmp_path):
     value = json.loads(path.read_text())
     assert value["content"] == str(value["index"]) * 1000
     assert list(tmp_path.iterdir()) == [path]
-
-
-def test_unicode_identity_dialects_remain_distinct_and_unchanged():
-    from archlab.evaluation.qwen38_piqa import _canonical_sha256 as piqa_hash
-    from archlab.megatron.qwen38_27b_train import _canonical_sha256 as trainer_hash
-    from archlab.provenance import stable_json_sha256
-
-    payload = {"文本": "数学"}
-    escaped = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    utf8 = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    assert piqa_hash(payload) == trainer_hash(payload) == escaped
-    assert stable_json_sha256(payload) == utf8 != escaped

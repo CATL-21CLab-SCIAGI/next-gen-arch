@@ -16,9 +16,9 @@ Research-policy speedrun and Megatron comparison runs reject dirty source. Other
 
 ## Manifest API
 
-Use the dataset-manifest functions in `archlab.provenance` from data preparation
-code, and `verify_dataset_manifest(root, manifest, mode="full")` before launch.
-The historical `data-manifest` CLI is retired.
+Data preparation modules write SHA256 receipts with `archlab.artifacts`; verify
+them before launch. The scratch-pretraining manifest helpers (`archlab.provenance`)
+and the `data-manifest` CLI were retired on 2026-11-02 with their only callers.
 
 `full` rehashes content. `metadata` validates inventory and sizes against a trusted prior transfer ledger; record which was used.
 
