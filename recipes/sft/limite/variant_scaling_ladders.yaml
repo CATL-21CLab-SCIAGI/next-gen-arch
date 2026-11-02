@@ -147,3 +147,10 @@ amendments:
       ARM-nc-warm parents carry trained preludes, so their qualification and training launch
       with parent_stage=adapter_endpoint. The first q-*-warm attempts failed the original_base
       receipt check before training; their logs are kept under queue/logs/failed-parent-stage.
+  - date: 2026-11-02
+    name: delta-kernel-provenance
+    reason: >-
+      The maintained tree replaced cute-triadic-gdn with TileLang delta kernels. Every queued
+      run executes from source snapshot 4aec6d0, so all gdn/triadic results here use the
+      cute-triadic-gdn kernels and their recorded GPU-hours. A delta run from a later snapshot
+      re-exports its parent with attention_backend=tilelang and is reported as a kernel change.
