@@ -1,7 +1,7 @@
 """Triadic/GDN branches using the existing DeepSeek residual adapter shell.
 
-The official dependency owns GPU delta-rule and causal-convolution kernels.
-Both E=1 GDN and E>1 Triadic use the same causal q/k/v convolution, normalized
+TileLang kernels own the GPU delta rule; the causal convolution is a Torch
+depthwise convolution. Both E=1 GDN and E>1 Triadic use the same causal q/k/v convolution, normalized
 keys/queries, sigmoid write strength and per-slice log decay. Unlike RF LinSimp,
 the second axis is a learned feature vector of the same token, not a second
 token window. This is an explicit mechanism comparison, not a softmax drop-in.
@@ -19,7 +19,7 @@ from torch.nn import functional as F
 from archlab.architectures.deepseek_v41_adapter import V41AdapterConfig, V41SimplicialAdapter
 from archlab.architectures.triadic_attention import (
     SUPPORTED_FEATURE_DIMS,
-    causal_conv_attention,
+    causal_conv,
     triadic_gdn_attention,
 )
 
@@ -62,11 +62,11 @@ def _initialization_generator(seed, name):
 class V41TriadicAttentionAdapter(nn.Module):
     """E=1 is GDN; E>1 is the joint-key Triadic gated delta rule."""
 
-    def __init__(self, config: V41AdapterConfig, *, feature_dim=4, seed=42, backend="official"):
+    def __init__(self, config: V41AdapterConfig, *, feature_dim=4, seed=42, backend="tilelang"):
         super().__init__()
         _geometry(config, feature_dim)
-        if backend not in ("official", "reference"):
-            raise ValueError("Triadic adapter backend must be official or reference")
+        if backend not in ("tilelang", "reference"):
+            raise ValueError("Triadic adapter backend must be tilelang or reference")
         self.config, self.feature_dim, self.backend = config, feature_dim, backend
         source = V41SimplicialAdapter(config, seed=seed, backend="reference")
         self.read_logits, self.write_logits = source.read_logits, source.write_logits
@@ -123,15 +123,16 @@ class V41TriadicAttentionAdapter(nn.Module):
             "backend": self.backend,
         }
 
-    def forward(self, streams, *, cu_seqlens=None):
+    def forward(self, streams):
+        """Each batch row is one document."""
         with torch.autocast(
             streams.device.type,
             dtype=torch.bfloat16,
             enabled=streams.dtype == torch.bfloat16,
         ):
-            return self._forward(streams, cu_seqlens=cu_seqlens)
+            return self._forward(streams)
 
-    def _forward(self, streams, *, cu_seqlens):
+    def _forward(self, streams):
         c = self.config
         if streams.ndim != 4 or streams.shape[-2:] != (c.streams, c.width):
             raise ValueError("expected [batch, sequence, residual_streams, width]")
@@ -152,13 +153,7 @@ class V41TriadicAttentionAdapter(nn.Module):
                     F.linear(x32, self.q2.weight.float()),
                 ]
             joined = torch.cat(parts, -1)
-            convolved = causal_conv_attention(
-                joined,
-                self.conv_weight.float(),
-                self.qkv_channels,
-                backend=self.backend,
-                cu_seqlens=cu_seqlens,
-            )
+            convolved = causal_conv(joined, self.conv_weight.float(), self.qkv_channels)
             channels = c.query_heads * c.head_dim
             q, k, v = convolved[..., : self.qkv_channels].split(channels, -1)
             shape = (batch, length, c.query_heads, c.head_dim)
@@ -179,7 +174,7 @@ class V41TriadicAttentionAdapter(nn.Module):
                 + self.dt_bias.float()
             )
             beta = F.linear(x32, self.beta_projection.weight.float()).sigmoid()
-            core_dtype = torch.bfloat16 if self.backend == "official" else x.dtype
+            core_dtype = torch.bfloat16 if self.backend == "tilelang" else x.dtype
             attended = (
                 triadic_gdn_attention(
                     q.to(core_dtype),
@@ -191,7 +186,6 @@ class V41TriadicAttentionAdapter(nn.Module):
                     beta,
                     backend=self.backend,
                     scale=c.head_dim**-0.5,
-                    cu_seqlens=cu_seqlens,
                 )
                 .to(x.dtype)
                 .flatten(-2)

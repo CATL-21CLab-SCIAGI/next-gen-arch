@@ -215,7 +215,7 @@ INSERTION = ["variant=normal", "trainable_mode=adapter", "insertion={variant: gd
 def inserted_assets(prepared_assets):
     model, data, publisher = prepared_assets
     adapter = {"variant": "gdn", "heads": 5, "feature_dim": 1, "compensation": 184,
-               "attention_backend": "official", "native_shape": {"width": 1280}}
+               "attention_backend": "tilelang", "native_shape": {"width": 1280}}
     config = json.loads((model / "config.json").read_text())
     config.update(conversion={}, adapter=adapter, trainable_mode="adapter")
     (model / "config.json").write_text(json.dumps(config))

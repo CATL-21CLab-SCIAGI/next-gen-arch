@@ -82,6 +82,7 @@ def test_invalid_variant():
     dict(variant="gdn", attention_backend="reference"),
     dict(variant="normal", heads=5),
     dict(variant="simplicial", attention_backend="official"),
+    dict(variant="triadic", heads=5, feature_dim=4, attention_backend="official"),
     dict(variant="normal", compensation=-1),
 ])
 def test_prelude_mechanism_contracts(invalid):
@@ -123,28 +124,33 @@ def test_delta_prelude_starts_at_identity_keeps_rows_separate_and_learns(config)
         prelude(hidden, dict(cache=object()))
 
 
-@pytest.mark.parametrize("shape", [(2, 7), (3, 5), (2, 8)])
-def test_official_token_bucket_changes_neither_rows_nor_gradients(monkeypatch, shape):
-    from archlab.architectures import limite_adapter
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="TileLang delta kernels need a GPU")
+@pytest.mark.parametrize("config", [GDN, TRIADIC])
+def test_tilelang_delta_prelude_matches_reference(config):
+    from dataclasses import replace
 
     cfg, native_cls = _native()
-    config = LimiteAdapterConfig(variant="triadic", heads=5, feature_dim=4, attention_backend="official")
-    prelude = DeltaPrelude(native_cls(cfg, 1), config, 1)
-    prelude.core.backend = "reference"  # the CPU oracle stands in for the official kernels
+    torch.manual_seed(3)
+    reference = DeltaPrelude(native_cls(cfg, 1), config, 1).cuda()
     with torch.no_grad():
-        prelude.core.output.weight.normal_(std=0.02)
-    hidden = torch.randn(*shape, cfg.hidden_size)
-    results = []
-    for bucket in (1, 16):
-        monkeypatch.setattr(limite_adapter, "OFFICIAL_TOKEN_BUCKET", bucket)
-        prelude.zero_grad()
+        reference.core.output.weight.normal_(std=0.02)
+    tilelang = DeltaPrelude(native_cls(cfg, 1), replace(config, attention_backend="tilelang"), 1).cuda()
+    tilelang.load_state_dict(reference.state_dict())
+    hidden = torch.randn(2, 150, cfg.hidden_size, device="cuda")
+    outputs, gradients = [], []
+    for prelude in (reference, tilelang):
         out = prelude(hidden, dict(cache=None))
         out.square().sum().backward()
-        results.append((out, {n: p.grad.clone() for n, p in prelude.named_parameters()}))
-    (exact, exact_grads), (bucketed, bucketed_grads) = results
-    torch.testing.assert_close(bucketed, exact)
-    for name, grad in exact_grads.items():
-        torch.testing.assert_close(bucketed_grads[name], grad, msg=name)
+        outputs.append(out - hidden)
+        gradients.append({n: p.grad for n, p in prelude.named_parameters() if p.grad is not None})
+
+    def relative(a, b):
+        return ((a.double() - b.double()).norm() / b.double().norm().clamp_min(1e-12)).item()
+
+    assert relative(outputs[1], outputs[0]) < 0.02
+    assert set(gradients[1]) == set(gradients[0])
+    for name, gradient in gradients[0].items():
+        assert relative(gradients[1][name], gradient) < 0.05, name
 
 
 def test_matched_compensation_meets_the_recipe_bound_on_native_geometry():

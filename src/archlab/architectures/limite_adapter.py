@@ -26,7 +26,6 @@ from archlab.architectures.limite_bindings import bind_native_forward
 
 SOFTMAX_VARIANTS = ("normal", "simplicial")
 DELTA_VARIANTS = ("gdn", "triadic")
-OFFICIAL_TOKEN_BUCKET = 1024
 
 
 @dataclass(frozen=True)
@@ -53,8 +52,9 @@ class LimiteAdapterConfig:
         else:
             from archlab.architectures.triadic_attention import SUPPORTED_FEATURE_DIMS
 
-            if self.attention_backend not in ("official", "reference"):
-                raise ValueError("delta preludes use the official or reference Triadic backend")
+            if self.attention_backend not in ("tilelang", "reference"):
+                raise ValueError("delta preludes use the TileLang or reference backend; the CuTe "
+                                 "kernels are retired, so re-export with attention_backend=tilelang")
             if self.heads < 1 or (self.variant == "gdn") != (self.feature_dim == 1):
                 raise ValueError("GDN has one feature slice; Triadic has more than one")
             if self.feature_dim not in SUPPORTED_FEATURE_DIMS:
@@ -313,17 +313,7 @@ class DeltaPrelude(nn.Module):
     def forward(self, hidden, context):
         if context["cache"] is not None:
             raise ValueError("delta preludes have no qualified cached decode")
-        batch, length, width = hidden.shape
-        tokens = batch * length
-        # The official kernels compile once per packed token count. Rounding it up
-        # bounds their cache; the zero tail is its own document, so no state reaches it.
-        bucket = OFFICIAL_TOKEN_BUCKET if self.config.attention_backend == "official" else 1
-        padded = -(-tokens // bucket) * bucket
-        packed = F.pad(hidden.reshape(1, tokens, 1, width), (0, 0, 0, 0, 0, padded - tokens))
-        offsets = torch.arange(0, tokens + 1, length, device=hidden.device, dtype=torch.int32)
-        if padded > tokens:
-            offsets = F.pad(offsets, (0, 1), value=padded)
-        mixed = self.core(packed, cu_seqlens=offsets)[:, :tokens].reshape(batch, length, width)
+        mixed = self.core(hidden.unsqueeze(-2)).squeeze(-2)
         if self.compensation is None:
             return mixed
         x = self.upstream.rms_norm(hidden)

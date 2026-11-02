@@ -1,15 +1,13 @@
 """Independent FP64 joint-state oracle and all-input gradient qualification."""
 
 import unittest
-from types import SimpleNamespace
-from unittest.mock import patch
 
 import torch
 from torch.nn import functional as F
 
 from archlab.architectures.triadic_attention import (
-    _official_runtime_identity,
-    causal_conv_reference,
+    SUPPORTED_FEATURE_DIMS,
+    causal_conv,
     triadic_gdn_attention,
     triadic_gdn_reference,
 )
@@ -92,25 +90,17 @@ class TriadicAttentionTests(unittest.TestCase):
             triadic_gdn_reference(*inputs), joint_matrix_oracle(*inputs), atol=1e-12, rtol=1e-12
         )
 
-    def test_causality_and_packed_document_reset(self):
+    def test_causality(self):
         inputs = small_inputs()
         altered = [x.clone() for x in inputs]
         for x in altered:
             x[:, 2:] += 4
-        actual = triadic_gdn_reference(*inputs)
         torch.testing.assert_close(
-            actual[:, :2], triadic_gdn_reference(*altered)[:, :2], rtol=0, atol=0
+            triadic_gdn_reference(*inputs)[:, :2],
+            triadic_gdn_reference(*altered)[:, :2],
+            rtol=0,
+            atol=0,
         )
-        offsets = torch.tensor([0, 2, 4], dtype=torch.int32)
-        packed = triadic_gdn_reference(*inputs, cu_seqlens=offsets)
-        separate = torch.cat(
-            [
-                triadic_gdn_reference(*[x[:, left:right] for x in inputs])
-                for left, right in ((0, 2), (2, 4))
-            ],
-            1,
-        )
-        torch.testing.assert_close(packed, separate, rtol=0, atol=0)
 
     def test_joint_erase_is_not_independent_slice_erasure(self):
         inputs = small_inputs(features=2)
@@ -128,50 +118,25 @@ class TriadicAttentionTests(unittest.TestCase):
         wrong = torch.stack(outputs, 1) * (3**-0.5)
         self.assertGreater((triadic_gdn_reference(*inputs) - wrong).abs().max().item(), 1e-3)
 
-    def test_no_implicit_production_cpu_fallback(self):
-        with self.assertRaisesRegex(ValueError, "Hopper or datacenter Blackwell"):
+    def test_backend_is_explicit(self):
+        with self.assertRaisesRegex(ValueError, "tilelang or reference"):
             triadic_gdn_attention(*small_inputs(), backend="official")
         torch.testing.assert_close(
             triadic_gdn_attention(*small_inputs(), backend="reference"),
             triadic_gdn_reference(*small_inputs()),
         )
 
-    def test_metadata_cannot_masquerade_as_actual_dsl_version(self):
-        _official_runtime_identity.cache_clear()
-        with (
-            patch(
-                "archlab.architectures.triadic_attention.metadata.version",
-                return_value="4.7.1",
-            ),
-            patch(
-                "archlab.architectures.triadic_attention.importlib.import_module",
-                return_value=SimpleNamespace(__version__="4.5.0", __file__=__file__),
-            ),
-            self.assertRaisesRegex(RuntimeError, "imported 4.5.0"),
-        ):
-            _official_runtime_identity()
-
-    def test_invalid_packed_boundaries(self):
-        with self.assertRaisesRegex(ValueError, "strictly increase"):
-            triadic_gdn_reference(
-                *small_inputs(), cu_seqlens=torch.tensor([0, 2, 2, 4], dtype=torch.int32)
-            )
-
-    def test_convolution_scalar_oracle_and_document_reset(self):
+    def test_convolution_scalar_oracle(self):
         torch.manual_seed(22)
-        x = torch.randn(1, 6, 3, dtype=torch.float64, requires_grad=True)
+        x = torch.randn(2, 6, 3, dtype=torch.float64, requires_grad=True)
         weight = torch.randn(3, 4, dtype=torch.float64, requires_grad=True)
-        offsets = torch.tensor([0, 2, 6], dtype=torch.int32)
-        actual = causal_conv_reference(x, weight, 2, cu_seqlens=offsets)
+        actual = causal_conv(x, weight, 2)
         rows = []
-        for left, right in ((0, 2), (2, 6)):
-            for index in range(left, right):
-                value = sum(
-                    x[:, index - 3 + slot] * weight[:, slot]
-                    for slot in range(4)
-                    if index - 3 + slot >= left
-                )
-                rows.append(torch.cat((F.silu(value[:, :2]), value[:, 2:]), -1))
+        for index in range(6):
+            value = sum(
+                x[:, index - 3 + slot] * weight[:, slot] for slot in range(4) if index - 3 + slot >= 0
+            )
+            rows.append(torch.cat((F.silu(value[:, :2]), value[:, 2:]), -1))
         expected = torch.stack(rows, 1)
         torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
         ga = torch.autograd.grad(actual.sum(), (x, weight), retain_graph=True)
@@ -179,44 +144,51 @@ class TriadicAttentionTests(unittest.TestCase):
         for actual_gradient, expected_gradient in zip(ga, ge, strict=True):
             torch.testing.assert_close(actual_gradient, expected_gradient, rtol=1e-12, atol=1e-12)
 
-    @unittest.skipUnless(torch.cuda.is_available(), "official kernel qualification needs a GPU")
-    def test_official_gpu_output_and_all_seven_gradients(self):
-        # Run on the actual container with the pinned dependency. Never skip a
-        # missing/mismatched dependency on a supported GPU.
+    @unittest.skipUnless(torch.cuda.is_available(), "TileLang kernel qualification needs a GPU")
+    def test_tilelang_output_and_all_seven_gradients(self):
+        # Every supported slice count, two rows, a chunk tail and a multi-chunk scan.
         device = torch.device("cuda")
-        if torch.cuda.get_device_capability()[0] not in (9, 10):
-            self.skipTest("official kernel supports Hopper/datacenter Blackwell")
         generator = torch.Generator(device=device).manual_seed(121)
 
         def normal(*shape):
             return torch.randn(*shape, generator=generator, device=device)
 
-        q, k = [F.normalize(normal(1, 64, 2, 128), dim=-1).to(torch.bfloat16) for _ in range(2)]
-        v = normal(1, 64, 2, 128).mul(0.5).to(torch.bfloat16)
-        k2, q2 = [F.normalize(F.softplus(normal(1, 64, 2, 4)), dim=-1) for _ in range(2)]
-        g = -F.softplus(normal(1, 64, 2, 4)).mul(0.1)
-        beta = normal(1, 64, 2).sigmoid()
-        inputs = [t.detach().requires_grad_(True) for t in (q, k, v, k2, q2, g, beta)]
-        reference_inputs = [t.detach().double().requires_grad_(True) for t in inputs]
-        actual = triadic_gdn_attention(*inputs)
-        expected = triadic_gdn_reference(*reference_inputs)
-        cotangent = normal(*actual.shape).to(torch.bfloat16)
-        actual_gradients = torch.autograd.grad(actual, inputs, cotangent)
-        expected_gradients = torch.autograd.grad(expected, reference_inputs, cotangent.double())
-
-        def relative(a, b):
-            return ((a.double() - b).norm() / b.norm().clamp_min(1e-12)).item()
-
-        self.assertLess(relative(actual, expected), 0.02)
-        for name, actual_gradient, expected_gradient in zip(
-            ("q", "k", "v", "k2", "q2", "g", "beta"),
-            actual_gradients,
-            expected_gradients,
+        for features, (batch, length) in zip(
+            SUPPORTED_FEATURE_DIMS, [(2, 100), (1, 64), (1, 200), (2, 130), (1, 128), (1, 192)],
             strict=True,
         ):
-            with self.subTest(input=name):
-                self.assertTrue(actual_gradient.isfinite().all())
-                self.assertLess(relative(actual_gradient, expected_gradient), 0.05)
+            q, k = [F.normalize(normal(batch, length, 2, 128), dim=-1).to(torch.bfloat16)
+                    for _ in range(2)]
+            v = normal(batch, length, 2, 128).mul(0.5).to(torch.bfloat16)
+            if features == 1:
+                k2 = q2 = torch.ones(batch, length, 2, 1, device=device)
+            else:
+                k2, q2 = [F.normalize(F.softplus(normal(batch, length, 2, features)), dim=-1)
+                          for _ in range(2)]
+            g = -F.softplus(normal(batch, length, 2, features)).mul(0.1)
+            beta = normal(batch, length, 2).sigmoid()
+            inputs = [t.detach().requires_grad_(True) for t in (q, k, v, k2, q2, g, beta)]
+            reference_inputs = [t.detach().double().requires_grad_(True) for t in inputs]
+            actual = triadic_gdn_attention(*inputs)
+            expected = triadic_gdn_reference(*reference_inputs)
+            cotangent = normal(*actual.shape).to(torch.bfloat16)
+            actual_gradients = torch.autograd.grad(actual, inputs, cotangent)
+            expected_gradients = torch.autograd.grad(expected, reference_inputs, cotangent.double())
+
+            def relative(a, b):
+                return ((a.double() - b).norm() / b.norm().clamp_min(1e-12)).item()
+
+            with self.subTest(features=features, output=True):
+                self.assertLess(relative(actual, expected), 0.02)
+            for name, actual_gradient, expected_gradient in zip(
+                ("q", "k", "v", "k2", "q2", "g", "beta"),
+                actual_gradients,
+                expected_gradients,
+                strict=True,
+            ):
+                with self.subTest(features=features, input=name):
+                    self.assertTrue(actual_gradient.isfinite().all())
+                    self.assertLess(relative(actual_gradient, expected_gradient), 0.05)
 
 
 if __name__ == "__main__":
