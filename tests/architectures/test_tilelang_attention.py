@@ -63,6 +63,9 @@ def normal_reference(q, k, v, positions, window):
         (32, 1025, 1300, [0, 1, 31, 32, 33, 1024, 1025, 1299]),
         (48, 49, 130, list(range(130))),
         (64, 2048, 2048, [0, 63, 64, 65, 1025, 2047]),
+        (7, 7, 7, list(range(7))),
+        (24, 25, 25, list(range(25))),
+        (40, 301, 301, list(range(0, 301, 5)) + [300]),
     ],
 )
 def test_forward_and_all_gradients(variant, normal_kernel, short, long, n, positions, dynamic_length=False):
