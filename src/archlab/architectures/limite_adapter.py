@@ -363,7 +363,8 @@ def matched_compensation(native_layers, configs, *, anchor=64, alignment=8):
     def total(config):
         return sum(prelude_parameters(layer, config) for layer in layers)
 
-    target = total(LimiteAdapterConfig(variant="simplicial", short_window=16, compensation=anchor))
+    target = total(LimiteAdapterConfig(variant="simplicial", short_window=16, compensation=anchor,
+                                       attention_backend="reference"))
     unit = 3 * width * alignment * len(layers)
     result = {}
     for name, config in configs.items():
