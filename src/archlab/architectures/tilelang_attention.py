@@ -357,9 +357,9 @@ def tilelang_attention(
 ):
     """Ordinary GQA or joint 2-simplicial softmax; no implicit fallback.
 
-    Static-length full-causal simplicial layers use the exact virtual-query
-    cuDNN decomposition in ``simplicial_virtual``. Sliding-window, runtime-length
-    and decode paths use the TileLang joint kernel, whose arithmetic decode matches.
+    Static-length simplicial training uses the exact virtual-query cuDNN
+    decomposition in ``simplicial_virtual``. Runtime-length (prefill, conversion,
+    RL) and decode paths use the TileLang joint kernel, whose arithmetic decode matches.
 
     ``shared_gradient_dtype`` changes only the four K/V accumulation buffers.
     Projections, tensor products and returned input gradients remain BF16.
@@ -393,12 +393,13 @@ def tilelang_attention(
     k1, v1 = short if short else (k, v)
     window = 0 if dynamic_length and long_window >= q.shape[1] else long_window
     w1 = min(short_window, long_window)
-    if short and w1 > 1 and long_window >= q.shape[1] and not dynamic_length:
+    if short and w1 > 1 and not dynamic_length:
         from archlab.architectures.simplicial_virtual import virtual_simplicial
 
         if shared_gradient_dtype != torch.float32:
             raise ValueError("wide shared gradient accumulation requires the joint kernel")
-        return virtual_simplicial(q, k1, k, v1, v, short_window=w1, scale=scaling)
+        return virtual_simplicial(q, k1, k, v1, v, short_window=w1, long_window=long_window,
+                                  scale=scaling)
     return _JointAttention.apply(
         q, k1, k, v1, v, _short_slots(w1) if short else 1, w1, window, scaling,
         dynamic_length, shared_gradient_dtype,

@@ -178,5 +178,13 @@ amendments:
     lr: inherited from simplicial-w16-nc
     rungs: cold 25/50/100M; warm 25/50/100M
     kernel_cost: padded slots set the cost (w24 = w32, w48 = w64), about 2x and 4x w16
-    source: the snapshot of the commit that adds the kernel; earlier arms keep 4aec6d0
+    training_kernel: >-
+      Static-length training runs the exact virtual-query decomposition: container cuDNN
+      attention over HQ*w virtual heads (causal globally, 512-query chunks against a banded
+      mask locally) with TileLang combine and gradient gathers; the joint softmax delta enters
+      through a corrected output. At 14k tokens fwd+bwd is 7x faster than the joint kernel
+      for global layers and 1.7-1.9x for window-1025 layers, with the same oracle error.
+    source: >-
+      the snapshot of the commit that adds the virtual-query kernel; earlier arms keep 4aec6d0,
+      so w<=16 and w>16 arms differ in training kernel within BF16 oracle bounds
     serving: paged decode still caps the short window at 16; these arms report CE only
