@@ -143,3 +143,7 @@ amendments:
     warm_export: >-
       ossfs rejects safetensors serialization; the ARM-nc-warm export is staged node-locally
       and copied with EXPORT.json last, as the parent exports. Failed first attempts are kept.
+    warm_launch: >-
+      ARM-nc-warm parents carry trained preludes, so their qualification and training launch
+      with parent_stage=adapter_endpoint. The first q-*-warm attempts failed the original_base
+      receipt check before training; their logs are kept under queue/logs/failed-parent-stage.
