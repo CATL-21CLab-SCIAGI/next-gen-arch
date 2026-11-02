@@ -154,3 +154,29 @@ amendments:
       run executes from source snapshot 4aec6d0, so all gdn/triadic results here use the
       cute-triadic-gdn kernels and their recorded GPU-hours. A delta run from a later snapshot
       re-exports its parent with attention_backend=tilelang and is reported as a kernel change.
+  - date: 2026-11-02
+    name: muon
+    reason: >-
+      Several inserted arms lead normal at 25-50M; test whether the optimizer changes the
+      gaps. Only the optimizer differs from each AdamW arm: same parents, data, schedule,
+      clip and snapshot 4aec6d0 (so delta arms keep their kernels).
+    optimizer: >-
+      Megatron-native Muon (verl optim.optimizer=muon) as in the qualified Qwen3.8 path:
+      Polar Express coefficients, 8 Newton-Schulz steps, medium FP32 matmul precision,
+      AdamW for embeddings, head and vectors, update RMS matched to AdamW
+      (muon_match_adamw_update_rms) so the AdamW LR grid transfers.
+    arms: [none+muon, normal-nc+muon, gdn-nc+muon, triadic-e4-nc+muon], warm normal-nc and triadic-e4-nc
+    lr: 50M grid {3e-4, 1e-3, 3e-3} per arm with edge extension
+    rungs: 25/50/100M; warm W50/W100; 200M for none, normal-nc and triadic-e4-nc
+  - date: 2026-11-02
+    name: wide-simplicial-windows
+    reason: >-
+      Short-window CE barely moved over w4-w16 and every w ran the same 16-slot kernel. The
+      TileLang joint kernel now pads the short axis to 32 or 64 slots (64 // slots queries
+      per tile; the w<=16 launch is unchanged), so the second-key axis extends past 16.
+    arms: simplicial-w{24,32,48,64}-nc cold and warm (frozen 50M warmup at 1e-4, then full)
+    lr: inherited from simplicial-w16-nc
+    rungs: cold 25/50/100M; warm 25/50/100M
+    kernel_cost: padded slots set the cost (w24 = w32, w48 = w64), about 2x and 4x w16
+    source: the snapshot of the commit that adds the kernel; earlier arms keep 4aec6d0
+    serving: paged decode still caps the short window at 16; these arms report CE only

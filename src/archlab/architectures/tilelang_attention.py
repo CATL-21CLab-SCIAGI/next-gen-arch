@@ -17,9 +17,22 @@ import tilelang.language as T
 import torch
 
 
+MAX_SHORT_WINDOW = 64
+
+
 @cache
 def _unused_lengths(device):
     return torch.empty(3, device=device, dtype=torch.int32)
+
+
+def _short_slots(window):
+    """Padded short-axis tile: 16 for the recorded w<=16 kernels, else a power of two.
+
+    A query tile holds 64 // slots queries, so every tile keeps 64 query-pair rows.
+    """
+    if not 1 <= window <= MAX_SHORT_WINDOW:
+        raise ValueError(f"short window must be in [1, {MAX_SHORT_WINDOW}]")
+    return max(16, 1 << (window - 1).bit_length())
 
 
 @tilelang.jit(out_idx=[5, 6], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
@@ -270,9 +283,9 @@ class _JointAttention(torch.autograd.Function):
         xs = [x.contiguous() for x in (q, k1, k2, v1, v2)]
         b, n, h, d = q.shape
         hk = k1.shape[2]
-        bq = 4 if s == 16 else 64
+        bq = 64 // s if s > 1 else 64
         cfg = (b, None if dynamic_length else n, h, hk, d, s, w1, w2, scale, bq)
-        out, lse = _forward_kernel(*cfg, BN=128 if s == 16 else 64)(*xs, _unused_lengths(q.device))
+        out, lse = _forward_kernel(*cfg, BN=128 if s > 1 else 64)(*xs, _unused_lengths(q.device))
         ctx.save_for_backward(*xs, out, lse)
         ctx.cfg = cfg
         ctx.shared_gradient_dtype = shared_gradient_dtype
@@ -350,7 +363,8 @@ def tilelang_attention(
     import math
 
     _validate(q, k, v, short)
-    if not math.isfinite(scaling) or scaling <= 0 or long_window < 1 or not 1 <= short_window <= 16:
+    if (not math.isfinite(scaling) or scaling <= 0 or long_window < 1
+            or not 1 <= short_window <= MAX_SHORT_WINDOW):
         raise ValueError("invalid attention scale/window")
     if k.shape[1] != q.shape[1] or (short and short[0].shape[1] != q.shape[1]):
         raise ValueError("training attention requires matching sequence lengths")
@@ -374,8 +388,9 @@ def tilelang_attention(
         )
     k1, v1 = short if short else (k, v)
     window = 0 if dynamic_length and long_window >= q.shape[1] else long_window
+    w1 = min(short_window, long_window)
     return _JointAttention.apply(
-        q, k1, k, v1, v, 16 if short else 1, min(short_window, long_window), window, scaling,
+        q, k1, k, v1, v, _short_slots(w1) if short else 1, w1, window, scaling,
         dynamic_length, shared_gradient_dtype,
     )
 
@@ -384,20 +399,23 @@ def tilelang_decode(q, k, v, *, scaling, short=None, lengths=None,
                     query_position=None, long_window=None):
     """Cached one-token attention using the same TileLang softmax arithmetic.
 
-    Local simplicial decoding retains up to three masked older keys so its
-    BN128 tiles start at the same BQ4 query group as training/prefill. The
+    Local simplicial decoding retains up to BQ - 1 masked older keys so its
+    BN128 tiles start at the same query group as training/prefill, where
+    BQ = 64 // short slots (4 for windows up to 16). The
     effective attention window is unchanged. Positions are caller-owned host
     integers; this path never reads a device position tensor.
     """
     _validate(q, k, v, short)
     if q.shape[1] != 1 or torch.is_grad_enabled():
         raise ValueError("cached TileLang decode requires one token without gradients")
+    s = _short_slots(short[0].shape[1]) if short else 1
+    bq = 64 // s if short else 64
     key_lower = 0
     if query_position is not None or long_window is not None:
         if (short is None or lengths is not None or type(query_position) is not int
                 or query_position < 0 or type(long_window) is not int or long_window < 1):
             raise ValueError("aligned local decode requires a position, window and simplicial history")
-        start = max(0, query_position // 4 * 4 - long_window + 1)
+        start = max(0, query_position // bq * bq - long_window + 1)
         required = query_position + 1 - start
         if k.shape[1] < required:
             raise ValueError("aligned local decode lacks its masked query-group history")
@@ -405,11 +423,7 @@ def tilelang_decode(q, k, v, *, scaling, short=None, lengths=None,
         key_lower = max(0, query_position - long_window + 1) - start
     k1, v1 = short if short else (k, v)
     b, _, h, d = q.shape
-    s = 16 if short else 1
-    w1 = k1.shape[1] if short else 1
-    if not 1 <= w1 <= s:
-        raise ValueError("cached short axis exceeds 16 keys")
-    cfg = (b, 1, h, k.shape[2], d, s, s, 1, scaling, 4 if short else 64)
+    cfg = (b, 1, h, k.shape[2], d, s, s, 1, scaling, bq)
     # Match the prefill key tiles: BF16 online probabilities depend on each
     # tile's running maximum, so changing BN changes the rounded reduction.
     out, _ = _forward_kernel(*cfg, BN=128 if short else 64,

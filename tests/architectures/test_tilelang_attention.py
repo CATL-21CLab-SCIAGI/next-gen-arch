@@ -59,6 +59,10 @@ def normal_reference(q, k, v, positions, window):
         (3, 5, 37, list(range(37))),
         (16, 1025, 2048, [0, 15, 16, 1024, 1025, 2047]),
         (16, 2048, 2048, [0, 15, 16, 1025, 2047]),
+        (24, 40, 97, list(range(0, 97, 3))),
+        (32, 1025, 1300, [0, 1, 31, 32, 33, 1024, 1025, 1299]),
+        (48, 49, 130, list(range(130))),
+        (64, 2048, 2048, [0, 63, 64, 65, 1025, 2047]),
     ],
 )
 def test_forward_and_all_gradients(variant, normal_kernel, short, long, n, positions, dynamic_length=False):
@@ -111,7 +115,8 @@ def test_forward_and_all_gradients(variant, normal_kernel, short, long, n, posit
     "short,long,n,positions",
     [(3, 5, 37, list(range(37))),
      (16, 1025, 1026, [0, 15, 16, 1024, 1025]),
-     (16, 1111, 1111, [0, 15, 16, 1024, 1110])],
+     (16, 1111, 1111, [0, 15, 16, 1024, 1110]),
+     (40, 1111, 1111, [0, 39, 40, 1024, 1110])],
 )
 def test_runtime_sequence_forward_and_all_gradients(variant, normal_kernel, short, long, n, positions):
     test_forward_and_all_gradients(variant, normal_kernel, short, long, n, positions, dynamic_length=True)
@@ -157,9 +162,10 @@ def test_conversion_wide_shared_gradients_preserve_forward_reference_and_repeats
         previous = gradients
 
 
-@pytest.mark.parametrize("variant", ["normal", "simplicial"])
+@pytest.mark.parametrize("variant,short_window", [("normal", 1), ("simplicial", 16), ("simplicial", 24),
+                                                  ("simplicial", 64)])
 @pytest.mark.parametrize("n", [1, 17, 1025, 1026, 8192])
-def test_decode_joint_softmax(variant, n):
+def test_decode_joint_softmax(variant, short_window, n):
     from archlab.architectures.tilelang_attention import tilelang_decode
 
     torch.manual_seed(83)
@@ -167,7 +173,7 @@ def test_decode_joint_softmax(variant, n):
     k, v = [torch.randn(2, n, 2, 128, device="cuda", dtype=torch.bfloat16) for _ in range(2)]
     short = (
         tuple(
-            torch.randn(2, min(16, n), 2, 128, device="cuda", dtype=torch.bfloat16)
+            torch.randn(2, min(short_window, n), 2, 128, device="cuda", dtype=torch.bfloat16)
             for _ in range(2)
         )
         if variant == "simplicial"
@@ -187,7 +193,8 @@ def test_decode_joint_softmax(variant, n):
     assert relative(actual, oracle) < 0.005
 
 
-def test_local_decode_matches_prefill_across_all_query_phases_and_masks_older_keys():
+@pytest.mark.parametrize("short_window,group", [(16, 4), (32, 2)])
+def test_local_decode_matches_prefill_across_all_query_phases_and_masks_older_keys(short_window, group):
     from archlab.architectures.tilelang_attention import tilelang_attention, tilelang_decode
 
     torch.manual_seed(8317)
@@ -197,10 +204,10 @@ def test_local_decode_matches_prefill_across_all_query_phases_and_masks_older_ke
     ]
     with torch.no_grad():
         full = tilelang_attention(q, k, v, scaling=.1, long_window=1025,
-                                  short=(k1, v1), short_window=16, dynamic_length=True)
-        for position in (0, 15, 1023, 1024, 1025, 1026, 1027, 1100, 1101, 1102, 1103):
-            start = max(0, position + 1 - 1028)
-            short_start = max(0, position - 15)
+                                  short=(k1, v1), short_window=short_window, dynamic_length=True)
+        for position in (0, 15, 31, 1023, 1024, 1025, 1026, 1027, 1100, 1101, 1102, 1103):
+            start = max(0, position // group * group - 1024)
+            short_start = max(0, position - short_window + 1)
             actual = tilelang_decode(q[:, position:position + 1], k[:, start:position + 1],
                 v[:, start:position + 1], scaling=.1,
                 short=(k1[:, short_start:position + 1], v1[:, short_start:position + 1]),
