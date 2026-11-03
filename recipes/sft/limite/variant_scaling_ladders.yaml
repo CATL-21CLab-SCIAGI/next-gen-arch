@@ -179,13 +179,12 @@ amendments:
     rungs: cold 25/50/100M; warm 25/50/100M
     kernel_cost: padded slots set the cost (w24 = w32, w48 = w64), about 2x and 4x w16
     training_kernel: >-
-      Static-length training runs the exact virtual-query decomposition: container cuDNN
-      attention over HQ*w virtual heads (causal globally, 512-query chunks against a banded
-      mask locally) with TileLang combine and gradient gathers; the joint softmax delta enters
-      through a corrected output. At 14k tokens fwd+bwd is 7x faster than the joint kernel
-      for global layers and 1.7-1.9x for window-1025 layers, with the same oracle error.
-    source: >-
-      the snapshot of the commit that adds the virtual-query kernel; earlier arms keep 4aec6d0,
-      so w<=16 and w>16 arms differ in training kernel within BF16 oracle bounds
-    control: K100-simplicial-w16-nc reruns the w16 100M rung on the new kernel
+      All arms train on the TileLang joint kernel. The Megatron engine runs runtime-length
+      attention, which the virtual-query decomposition (feff6a9, static-length calls only)
+      does not serve; measured wide throughput scales with padded slots (w32 6.8k, w64 3.5k
+      tok/s versus w16 13k). The decomposition is 7x faster for global and 1.7-1.9x for
+      window-1025 layers but has about 3x the joint kernel's BF16 gradient error, so
+      enabling it in training is a separate numerics contract.
+    source: snapshot feff6a9; its training path equals the joint kernel of earlier arms
+    control: K100-simplicial-w16-nc reruns the w16 100M rung on snapshot feff6a9
     serving: paged decode still caps the short window at 16; these arms report CE only
