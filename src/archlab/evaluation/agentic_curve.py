@@ -26,8 +26,9 @@ FAMILIES = {
                     engine=dict(language_model_only=True, enable_prefix_caching=True),
                     invocation=dict(enable_thinking=False)),
     "archlab_limite": dict(tool_parser="hermes", context=131072, chat_template_kwargs={},
-                           engine=dict(enable_prefix_caching=False,
+                           engine=dict(enable_prefix_caching=False, enforce_eager=True,
                                        attention_config=dict(backend="FLASH_ATTN", flash_attn_version=2)),
+                           register="archlab.training.serving",
                            invocation=dict(family="archlab_limite", tool_parser="hermes")),
 }
 
@@ -171,8 +172,12 @@ class VLLMBackend:
     """
 
     def __init__(self, args, output, profile):
+        import importlib
+
         from vllm.engine.arg_utils import AsyncEngineArgs
         from vllm.v1.engine.async_llm import AsyncLLM
+        if "register" in profile:
+            importlib.import_module(profile["register"]).register()
         self.output, self.turns, self.stats, self.sequence, self.route = output, {}, {}, 0, {}
         devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
         if args.engines > 1 and len(devices) < args.engines:
