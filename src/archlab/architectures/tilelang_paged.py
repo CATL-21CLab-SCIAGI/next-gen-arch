@@ -247,9 +247,9 @@ def _paged_tiled_kernel(HQ, HK, D, W1, W2, BS, scale, BQ=4, BN=64, threads=128, 
 
 
 def _decode_tile(group):
-    """Head-packing for the split kernel: GP*16 rows must tile the warps (16 rows per warp)."""
+    """Head-packing for the split kernel: 16 rows per warp keeps the FP32 accumulators in registers."""
     padded = 1 << max(group - 1, 0).bit_length()
-    return dict(GP=padded, threads=min(128, 32 * padded), **_DECODE)
+    return dict(GP=padded, threads=32 * padded, **_DECODE)
 
 
 _DECODE = dict(BN=64, stages=1)
