@@ -80,15 +80,19 @@ def completed_records(records, tasks, seeds):
     return expected, completed
 
 
-def summarize(records, tasks, seeds, *, bootstrap=2000):
-    """Missing infrastructure results never silently become zero or shrink the denominator."""
+def summarize(records, tasks, seeds, *, bootstrap=2000, fixed_grid=None):
+    """Missing infrastructure results never silently become zero or shrink the denominator.
+
+    ``fixed_grid`` is the manifest's declaration; manifests without one count as fixed from 48 tasks.
+    """
+    fixed_grid = len(tasks) >= 48 if fixed_grid is None else fixed_grid
     expected, completed = completed_records(records, tasks, seeds)
     per_task = {task: [completed[(task, seed)]["reward"] for seed in seeds
                        if (task, seed) in completed] for task in tasks}
     full_tasks = {task: sum(values) / len(seeds) for task, values in per_task.items()
                   if len(values) == len(seeds)}
     complete = len(completed) == len(expected)
-    result = dict(schema=SCHEMA, complete=complete, preliminary=len(tasks) < 48 or len(seeds) < 8,
+    result = dict(schema=SCHEMA, complete=complete, preliminary=not fixed_grid or len(seeds) < 8,
                   expected_samples=len(expected),
                   scored_samples=len(completed), missing_samples=len(expected) - len(completed),
                   task_count=len(tasks), complete_task_count=len(full_tasks), samples_per_task=len(seeds),
@@ -266,6 +270,7 @@ async def evaluate(args):
     rows = pq.read_table(data_path).to_pylist()
     by_task = {row["extra_info"]["instance_id"]: row for row in rows}
     tasks = manifest["task_ids"]
+    fixed_grid = manifest.get("fixed_grid", len(tasks) >= 48)
     if len(tasks) != len(set(tasks)) or set(tasks) != set(by_task):
         raise ValueError("Dataset and complete task grid disagree")
     seeds = tuple(int(x) for x in args.seeds.split(","))
@@ -301,7 +306,7 @@ async def evaluate(args):
                       evaluator_sha256=sha(__file__), temperature=1.0, top_p=1.0, top_k=-1,
                       **profile["invocation"],
                       seed_algorithm="sha256(task NUL sample) then sha256(sample_seed NUL turn), first32bits",
-                      scope="preliminary-subset" if len(tasks) < 48 or len(seeds) < 8 else "heldout-fixed-grid",
+                      scope="preliminary-subset" if not fixed_grid or len(seeds) < 8 else "heldout-fixed-grid",
                       training_axes=json.loads(args.training_axes.read_text()) if args.training_axes else {})
     invocation_path = output / "invocation.json"
     bind_invocation(invocation_path, invocation)
@@ -371,7 +376,7 @@ async def evaluate(args):
                 with episodes_path.open("a") as handle:
                     handle.write(json.dumps(record, allow_nan=False) + "\n")
                 records.append(record)
-                summary = summarize(records, tasks, seeds)
+                summary = summarize(records, tasks, seeds, fixed_grid=fixed_grid)
                 summary.update(label=args.label, manifest_sha256=sha(args.manifest),
                                invocation_sha256=sha(invocation_path), wall_seconds=time.monotonic() - started,
                                gpu_count=args.engines, training_axes=invocation["training_axes"])
@@ -391,7 +396,7 @@ async def evaluate(args):
         await gateway.shutdown()
         ray.shutdown()
         backend.shutdown()
-    return 0 if summarize(records, tasks, seeds)["complete"] else 2
+    return 0 if summarize(records, tasks, seeds, fixed_grid=fixed_grid)["complete"] else 2
 
 
 def main():

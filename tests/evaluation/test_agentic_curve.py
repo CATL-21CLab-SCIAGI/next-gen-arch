@@ -33,6 +33,13 @@ def test_complete_grid_keeps_failed_attempt_then_scores_retry():
     assert result["infrastructure_attempts"] == 1
 
 
+def test_manifest_declares_the_fixed_grid():
+    rows = [dict(task=task, seed=seed, status="scored", reward=0.0) for task in "ab" for seed in range(8)]
+    assert summarize(rows, ["a", "b"], list(range(8)), bootstrap=10)["preliminary"]
+    assert not summarize(rows, ["a", "b"], list(range(8)), bootstrap=10, fixed_grid=True)["preliminary"]
+    assert summarize(rows[:4] + rows[8:12], ["a", "b"], list(range(4)), bootstrap=10, fixed_grid=True)["preliminary"]
+
+
 def test_duplicate_scored_or_unexpected_episode_rejected():
     row = dict(task="a", seed=1, status="scored", reward=0.0)
     with pytest.raises(ValueError, match="Duplicate"):
