@@ -5,8 +5,10 @@ serves prefill, chunked prefill, decode and mixed batches. Short-window (K1/V1)
 and long-window (K2/V2) keys are gathered through one block table per axis
 (vLLM may place the two caches in different KV-cache groups). The arithmetic is
 the TileLang joint softmax of ``tilelang_attention``: BF16 query-short-key
-products and probabilities, FP32 scores, normalizers and outputs. Long-axis
-splits fill the GPU for decode; their log2 partials are merged exactly.
+products and probabilities, FP32 scores, normalizers and outputs. Two forms:
+decode packs a KV head's query heads into one program and splits the long axis
+to fill the GPU (log2 partials merged exactly); prefill-heavy batches with
+vLLM's ``query_start_loc`` tile consecutive queries of one request instead.
 Launch shapes depend only on tensor metadata, so the call is CUDA-graph safe.
 No backward is exposed.
 
