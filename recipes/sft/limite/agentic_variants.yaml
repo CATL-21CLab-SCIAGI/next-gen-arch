@@ -66,9 +66,10 @@ admission_to_rl:
   serving: vLLM Limite serving supports normal and simplicial preludes; triadic and gdn arms
     enter RL only after their recurrent-state serving passes logit parity
   # Amendment 2026-11-06: every arm is served with prefix caching, CUDA graphs and (simplicial) the
-  # query-tiled paged prefill kernel. Greedy probes on 6 held-out SFT histories (~12k tokens) keep
-  # max top-5 logprob drift <= 0.15 (simplicial) and 0.08 (normal) against the eager uncached reference,
-  # inside the single-sequence noise floor (0.22 and 0.09); serving-probe/ in the run directory.
+  # query-tiled paged prefill and head-packed decode kernels. Greedy probes on 6 held-out SFT histories
+  # (~12k tokens) keep max top-5 logprob drift <= 0.18 (simplicial) and 0.08 (normal) against the eager
+  # uncached reference, inside the single-sequence noise floor (0.22 and 0.09); serving-probe/ in the run
+  # directory.
 rl:
   recipe: recipes/rl/limite_code.yaml shape (verl GRPO, colocate, vLLM rollouts, DLC CPU sandboxes)
   tasks: 783 oracle-qualified mimo-v2.6-rl-crossdomain-v1 code train tasks; each seen <= 2 times per run
