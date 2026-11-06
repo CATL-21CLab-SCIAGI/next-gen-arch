@@ -144,6 +144,36 @@ def test_long_axis_splits_agree():
         torch.testing.assert_close(many, one, rtol=2e-2, atol=2e-2)
 
 
+@pytest.mark.parametrize("heads,kv_heads", [(4, 2), (8, 1)])
+@pytest.mark.parametrize("short_window,long_window", [(16, 64), (16, 10_000), (4, 4), (8, 37)])
+def test_tiled_prefill_matches_oracle_and_split_kernel(heads, kv_heads, short_window, long_window):
+    """Packed requests: full prefill, chunked prefill over a cached prefix, a decode step, an empty request."""
+    from archlab.architectures.tilelang_paged import tilelang_paged_attention
+
+    lengths = [130, 203, 41, 9]
+    queried = [range(0, 130), range(150, 203), range(40, 41), range(0, 0)]
+    (short, long), table, contiguous = _paged_batch(lengths, kv_heads, seed=17)
+    generator = torch.Generator(device="cpu").manual_seed(19)
+    seqs, positions, queries, expected, starts = [], [], [], [], [0]
+    for s, ((k1, k2, v1, v2), chosen) in enumerate(zip(contiguous, queried, strict=True)):
+        q = torch.randn(1, lengths[s], heads, DIM, generator=generator).bfloat16()
+        oracle = reference_simplicial(q.double(), k1.double(), k2.double(), v1.double(), v2.double(),
+                                      short_window, long_window, scale=SCALE)
+        for position in chosen:
+            seqs.append(s)
+            positions.append(position)
+            queries.append(q[0, position])
+            expected.append(oracle[0, position])
+        starts.append(starts[-1] + len(chosen))
+    args = (torch.stack(queries).cuda(), short, long, table,
+            torch.tensor(seqs, dtype=torch.int32, device="cuda"), torch.tensor(positions, dtype=torch.int32, device="cuda"))
+    kwargs = dict(short_window=short_window, long_window=long_window, scaling=SCALE)
+    tiled = tilelang_paged_attention(
+        *args, query_start_loc=torch.tensor(starts, dtype=torch.int32, device="cuda"), **kwargs)
+    torch.testing.assert_close(tiled.cpu(), torch.stack(expected).float(), rtol=3e-2, atol=3e-2)
+    torch.testing.assert_close(tiled, tilelang_paged_attention(*args, **kwargs), rtol=2e-2, atol=2e-2)
+
+
 def test_block_offsets_beyond_int32_elements():
     """Production caches hold > 2**31 elements: block * block_stride must not overflow (vLLM eval crash)."""
     from archlab.architectures.tilelang_paged import tilelang_paged_attention

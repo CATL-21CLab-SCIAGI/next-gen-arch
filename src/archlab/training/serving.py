@@ -97,7 +97,7 @@ def _paged_simplicial_attention(module, query, key, value, attention_mask, *, sc
         out = tilelang_paged_attention(
             q.contiguous(), short_cache, long_cache, short_metadata.block_table, seq, position,
             short_window=short_window, long_window=long_window, scaling=scaling,
-            long_block_table=long_metadata.block_table)
+            long_block_table=long_metadata.block_table, query_start_loc=long_metadata.query_start_loc)
     return out.to(value.dtype).view(1, tokens, heads, dim), None
 
 
