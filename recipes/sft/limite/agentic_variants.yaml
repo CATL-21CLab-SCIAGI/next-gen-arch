@@ -16,6 +16,10 @@ parents:
   arms:
     normal-nc-warm: {run: W100-normal-nc-warm, val_ce: 0.5512}            # control
     simplicial-w16-nc-warm: {run: W100-simplicial-w16-nc-warm, val_ce: 0.5504}
+    # Amendment 2026-11-06: the wider simplicial arms with the next-best W100 CE join; SFT order is
+    # w16, normal, w24, w32 (strongest first, control second).
+    simplicial-w24-nc-warm: {run: W100-simplicial-w24-nc-warm, val_ce: 0.5509}
+    simplicial-w32-nc-warm: {run: W100-simplicial-w32-nc-warm, val_ce: 0.5513}
     triadic-e4-nc-warm: {run: W100-triadic-e4-nc-warm, val_ce: 0.5515}
     gdn-nc-warm: {run: W100-gdn-nc-warm}
   # triadic and gdn W100 endpoints were trained with the retired CuTe delta kernels; their
@@ -50,8 +54,15 @@ agentic_sft:
   seed: 42
 admission_to_rl:
   # Measured on every arm with the same sampler; failures are recorded, never waived.
-  protocol: first assistant turn of each held-out task emits one parseable bash call or idle EOS (>= 90% of 64)
-  capability: nonzero verifier reward on held-out MiMo code tasks, 4 samples x 53 exported held-out tasks
+  # Amendment 2026-11-06: one grid serves both gates. Tasks are the 41 baseline-qualified held-out tasks
+  # (Qwen evaluator QUALIFICATION accepted ∩ crossdomain code held-out ∩ exported image; frozen as
+  # results/limite-agentic-variants-20261106/heldout-41, prompts audited under the Limite template).
+  # The 12 other exported held-out tasks have no oracle qualification, so a zero there is uninformative.
+  grid: archlab.evaluation.agentic_curve, 41 tasks x 8 seeds, MiMo harness v4 (300 turns, 8192-token
+    turns, temperature 1, top_p 1, 7200 s), DLC CPU sandboxes; missing verdicts stay missing
+  protocol: first assistant turn of each episode emits one parseable bash call or idle EOS (>= 90%)
+  capability: nonzero verifier reward on the grid (pass@1 and success@8, task bootstrap CI);
+    the pre-SFT agentic parent is the paired baseline
   serving: vLLM Limite serving supports normal and simplicial preludes; triadic and gdn arms
     enter RL only after their recurrent-state serving passes logit parity
 rl:
