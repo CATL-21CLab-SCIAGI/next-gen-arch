@@ -24,8 +24,16 @@ _SHORT_SLOTS = 16
 
 
 @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
-def _paged_kernel(HQ, HK, D, W1, W2, BS, scale, BN=64):
+def _paged_kernel(HQ, HK, D, W1, W2, BS, scale, GP, BN=64, threads=32, stages=1):
+    """Decode form: one program per (token, KV head, long-axis split).
+
+    The G = HQ / HK query heads sharing a KV head are packed as GP >= G groups of 16
+    virtual rows, so every gathered K2/V2 tile serves all of them (rows of padding heads
+    are masked and never written).
+    """
     S = _SHORT_SLOTS
+    G = HQ // HK
+    M = GP * S
     tokens, splits, requests, short_width, long_width = T.dynamic(
         "tokens, splits, requests, short_width, long_width")
     short_blocks, long_blocks = T.dynamic("short_blocks, long_blocks")
@@ -46,42 +54,42 @@ def _paged_kernel(HQ, HK, D, W1, W2, BS, scale, BN=64):
         MAX: T.Tensor([splits, tokens, HQ], T.float32),
         SUM: T.Tensor([splits, tokens, HQ], T.float32),
     ):
-        with T.Kernel(tokens, HQ, splits, threads=32) as (t, h, split):
-            a = T.alloc_shared([S, D], T.bfloat16)
-            vlo = T.alloc_fragment([S, D], T.float32)
+        with T.Kernel(tokens, HK, splits, threads=threads) as (t, g, split):
+            a = T.alloc_shared([M, D], T.bfloat16)
+            vlo = T.alloc_fragment([M, D], T.float32)
             kv = T.alloc_shared([BN, D], T.bfloat16)
             vv = T.alloc_shared([BN, D], T.bfloat16)
-            score = T.alloc_fragment([S, BN], T.float32)
-            prob = T.alloc_fragment([S, BN], T.bfloat16)
-            acc = T.alloc_fragment([S, D], T.float32)
-            rowmax = T.alloc_fragment([S], T.float32)
-            rowmax2 = T.reshape(rowmax, [1, S])
-            rowz = T.alloc_fragment([S], T.float32)
-            rowz2 = T.reshape(rowz, [1, S])
-            mx = T.alloc_fragment([1], T.float32)
-            old = T.alloc_fragment([1], T.float32)
-            current_max = T.alloc_fragment([1], T.float32)
-            z = T.alloc_fragment([1], T.float32)
-            zz = T.alloc_fragment([1], T.float32)
-            output = T.alloc_fragment([1, D], T.float32)
-            result = T.reshape(vlo, [1, S, D])
-            g = h // (HQ // HK)
+            score = T.alloc_fragment([M, BN], T.float32)
+            prob = T.alloc_fragment([M, BN], T.bfloat16)
+            acc = T.alloc_fragment([M, D], T.float32)
+            rowmax = T.alloc_fragment([M], T.float32)
+            rowmax2 = T.reshape(rowmax, [GP, S])
+            rowz = T.alloc_fragment([M], T.float32)
+            rowz2 = T.reshape(rowz, [GP, S])
+            mx = T.alloc_fragment([GP], T.float32)
+            old = T.alloc_fragment([GP], T.float32)
+            current_max = T.alloc_fragment([GP], T.float32)
+            z = T.alloc_fragment([GP], T.float32)
+            zz = T.alloc_fragment([GP], T.float32)
+            output = T.alloc_fragment([GP, D], T.float32)
+            result = T.reshape(vlo, [GP, S, D])
             seq = SEQ[t]
             pos = POS[t]
             split_length = T.ceildiv(long_width * BS, splits)
             lo = T.max(T.max(pos - W2 + 1, 0), split * split_length)
             hi = T.min(pos, (split + 1) * split_length - 1)
-            for r, d in T.Parallel(S, D):
-                j = T.max(pos - r, 0)
+            for r, d in T.Parallel(M, D):
+                j = T.max(pos - r % S, 0)
                 block = T.cast(SHORT_TABLE[seq, j // BS], "int64")
-                valid = r < W1 and pos - r >= 0
+                valid = r // S < G and r % S < W1 and pos - r % S >= 0
                 a[r, d] = T.if_then_else(
-                    valid, Q[t, h, d].astype(T.float32) * K1[block, j % BS, g, d].astype(T.float32), 0)
+                    valid, Q[t, g * G + T.min(r // S, G - 1), d].astype(T.float32)
+                    * K1[block, j % BS, g, d].astype(T.float32), 0)
                 vlo[r, d] = T.if_then_else(valid, V1[block, j % BS, g, d], 0)
             T.clear(acc)
             T.clear(z)
             T.fill(mx, -T.infinity(T.float32))
-            for tile in T.Pipelined(T.if_then_else(hi >= lo, T.ceildiv(hi - lo + 1, BN), 0), num_stages=1):
+            for tile in T.Pipelined(T.if_then_else(hi >= lo, T.ceildiv(hi - lo + 1, BN), 0), num_stages=stages):
                 for k, d in T.Parallel(BN, D):
                     key = T.min(lo + tile * BN + k, hi)
                     block = T.cast(LONG_TABLE[seq, key // BS], "int64")
@@ -89,32 +97,37 @@ def _paged_kernel(HQ, HK, D, W1, W2, BS, scale, BN=64):
                     vv[k, d] = V2[block, key % BS, g, d]
                 T.clear(score)
                 T.gemm(a, kv, score, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                for r, k in T.Parallel(S, BN):
+                for r, k in T.Parallel(M, BN):
                     score[r, k] = T.if_then_else(
-                        r < W1 and pos - r >= 0 and lo + tile * BN + k <= hi,
+                        r // S < G and r % S < W1 and pos - r % S >= 0 and lo + tile * BN + k <= hi,
                         score[r, k] * scale * 1.4426950408889634,
                         -T.infinity(T.float32),
                     )
                 T.reduce_max(score, rowmax, dim=1)
                 T.reduce_max(rowmax2, current_max, dim=1)
                 T.copy(mx, old)
-                mx[0] = T.max(mx[0], current_max[0])
-                for r, k in T.Parallel(S, BN):
-                    score[r, k] = T.exp2(score[r, k] - mx[0])
+                for i in T.Parallel(GP):
+                    mx[i] = T.if_then_else(i < G, T.max(mx[i], current_max[i]), 0)
+                for r, k in T.Parallel(M, BN):
+                    score[r, k] = T.exp2(score[r, k] - mx[r // S])
                 T.reduce_sum(score, rowz, dim=1)
                 T.reduce_sum(rowz2, zz, dim=1)
-                z[0] = z[0] * T.exp2(old[0] - mx[0]) + zz[0]
-                for r, d in T.Parallel(S, D):
-                    acc[r, d] *= T.exp2(old[0] - mx[0])
+                for i in T.Parallel(GP):
+                    z[i] = z[i] * T.exp2(old[i] - mx[i]) + zz[i]
+                for r, d in T.Parallel(M, D):
+                    acc[r, d] *= T.exp2(old[r // S] - mx[r // S])
                 T.copy(score, prob)
                 T.gemm(prob, vv, acc, policy=T.GemmWarpPolicy.FullRow)
-            for r, d in T.Parallel(S, D):
+            for r, d in T.Parallel(M, D):
                 vlo[r, d] *= acc[r, d]
             T.reduce_sum(result, output, dim=1)
-            for d in T.Parallel(D):
-                OUT[split, t, h, d] = output[0, d]
-            MAX[split, t, h] = mx[0]
-            SUM[split, t, h] = z[0]
+            for i, d in T.Parallel(GP, D):
+                if i < G:
+                    OUT[split, t, g * G + i, d] = output[i, d]
+            for i in T.Parallel(GP):
+                if i < G:
+                    MAX[split, t, g * G + i] = mx[i]
+                    SUM[split, t, g * G + i] = z[i]
 
     return main
 
@@ -233,6 +246,13 @@ def _paged_tiled_kernel(HQ, HK, D, W1, W2, BS, scale, BQ=4, BN=64, threads=128, 
     return main
 
 
+def _decode_tile(group):
+    """Head-packing for the split kernel: GP*16 rows must tile the warps (16 rows per warp)."""
+    padded = 1 << max(group - 1, 0).bit_length()
+    return dict(GP=padded, threads=min(128, 32 * padded), **_DECODE)
+
+
+_DECODE = dict(BN=64, stages=1)
 # Swept on B300 at Limite geometry (10/2 heads, D=128): 2.6x faster than BQ=4/128 threads; BQ=16 is no better.
 _TILE_QUERIES = 8
 _TILE = dict(BN=64, threads=256, stages=2)
@@ -305,11 +325,13 @@ def tilelang_paged_attention(q, short_cache, long_cache, block_table, token_seq,
     capacity = long_block_table.shape[1] * block_size
     if splits is None:
         programs = 4 * torch.cuda.get_device_properties(q.device).multi_processor_count
-        splits = max(1, min(-(-programs // (tokens * heads)), -(-capacity // 512)))
+        splits = max(1, min(-(-programs // (tokens * kv_heads)), -(-capacity // 512)))
     partial = torch.empty((splits, tokens, heads, dim), device=q.device, dtype=torch.float32)
     maxima = torch.empty((splits, tokens, heads), device=q.device, dtype=torch.float32)
     sums = torch.empty((splits, tokens, heads), device=q.device, dtype=torch.float32)
-    kernel = _paged_kernel(heads, kv_heads, dim, int(short_window), int(long_window), int(block_size), float(scaling))
+    group = heads // kv_heads
+    kernel = _paged_kernel(heads, kv_heads, dim, int(short_window), int(long_window), int(block_size), float(scaling),
+                           **_decode_tile(group))
     kernel(q, short_cache[0], short_cache[1], long_cache[0], long_cache[1], block_table, long_block_table,
            token_seq, token_pos, partial, maxima, sums)
     # Empty splits carry max=-inf and sum=0; every token's own key keeps one split nonempty.

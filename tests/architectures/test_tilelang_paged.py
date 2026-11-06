@@ -144,7 +144,7 @@ def test_long_axis_splits_agree():
         torch.testing.assert_close(many, one, rtol=2e-2, atol=2e-2)
 
 
-@pytest.mark.parametrize("heads,kv_heads", [(4, 2), (8, 1)])
+@pytest.mark.parametrize("heads,kv_heads", [(4, 2), (10, 2), (8, 1)])
 @pytest.mark.parametrize("short_window,long_window", [(16, 64), (16, 10_000), (4, 4), (8, 37)])
 def test_tiled_prefill_matches_oracle_and_split_kernel(heads, kv_heads, short_window, long_window):
     """Packed requests: full prefill, chunked prefill over a cached prefix, a decode step, an empty request."""
