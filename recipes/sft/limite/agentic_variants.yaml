@@ -18,6 +18,9 @@ parents:
     simplicial-w16-nc-warm: {run: W100-simplicial-w16-nc-warm, val_ce: 0.5504}
     triadic-e4-nc-warm: {run: W100-triadic-e4-nc-warm, val_ce: 0.5515}
     gdn-nc-warm: {run: W100-gdn-nc-warm}
+  # triadic and gdn W100 endpoints were trained with the retired CuTe delta kernels; their
+  # parents need a TileLang-delta parity check before export (2026-11-06 export refused).
+  blocked: [triadic-e4-nc-warm, gdn-nc-warm]
   export: archlab.training.limite.export_continued_insertion
   # Violetto's text-only template rejects tools; agentic stages use the publisher (base)
   # template with the native Hermes tool block. Tokenizer and EOS rows are identical.
@@ -33,11 +36,16 @@ agentic_sft:
     split: sha256(instance_id) mod 1e4 < 500 -> validation
     max_length: 131072   # native context; teacher episodes run 40k-130k tokens
     generation_eos_token_id: 151645
+    manifest_sha256: see /mnt/oss/datasets/tokenized/limite-agentic-qwen-teachers-128k-20261106/manifest.json
+    train: {rows: 1037, tasks: 550, assistant_tokens: 20858997, input_tokens: 46437660}
+    validation: {rows: 64, tasks: 32, assistant_tokens: 1298525}
+    # 36,928 solved of 175,025 indexed sessions; 4,492 fewest-turn candidates; 3,518 encoded
+    # (rejections by reason in the manifest), then at most 2 per task.
   schedule:
     global_batch_rows: 32
     optimizer: {name: AdamW, betas: [0.9, 0.95], weight_decay: 0, clip: 1.0}
     lr: {peak: 1.0e-4, warmup: 10% of steps, decay: cosine, final: 1.0e-5}  # the protocol-recovering LR
-    supervised_tokens: two epochs of the prepared train split (fixed once prepared; same for every arm)
+    supervised_tokens: 41717994   # two epochs of train assistant tokens; 65 steps reach 41,948,138
     evaluations: 4
   seed: 42
 admission_to_rl:
