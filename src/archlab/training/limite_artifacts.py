@@ -23,10 +23,11 @@ def verify_export(path):
 
 
 def verify_trained_insertion(path):
-    """Return the receipt of adapter-trained preludes after checking their recorded lineage.
+    """Return the receipt of trained preludes after checking their recorded lineage.
 
     The weights must descend from a fresh zero-output, adapter-scope insertion export with
-    the same prelude geometry, through a checkpoint receipt that is unchanged.
+    the same prelude geometry, through checkpoint receipts that are unchanged. Continued
+    full-weight training adds hops whose parents are full-scope trained insertions.
     """
     receipt = verify_export(path)
     insertion = receipt.get("insertion") or {}
@@ -37,8 +38,11 @@ def verify_trained_insertion(path):
         raise ValueError("trained insertion parent receipt changed")
     parent_receipt = verify_export(parent["path"])
     fresh = parent_receipt.get("insertion") or {}
-    if (fresh.get("output_state") != "zero" or fresh.get("trainable_mode") != "adapter"
-            or parent_receipt["state_sha256"] != parent["state_sha256"]
+    if fresh.get("output_state") == "trained" and fresh.get("trainable_mode") == "full":
+        verify_trained_insertion(parent["path"])
+    elif fresh.get("output_state") != "zero" or fresh.get("trainable_mode") != "adapter":
+        raise ValueError("trained insertion does not descend from its fresh adapter-scope parent")
+    if (parent_receipt["state_sha256"] != parent["state_sha256"]
             or insertion != {**fresh, "output_state": "trained", "trainable_mode": insertion["trainable_mode"]}):
         raise ValueError("trained insertion does not descend from its fresh adapter-scope parent")
     if sha256_file(Path(source["path"]) / source["receipt"]) != source["receipt_sha256"]:

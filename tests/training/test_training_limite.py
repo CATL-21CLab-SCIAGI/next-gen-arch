@@ -236,7 +236,10 @@ def test_trained_insertion_export_changes_only_preludes_and_keeps_parent_assets(
                         chat_template=template)
 
     def checkpoint(name, change):
-        model = AutoModelForCausalLM.from_pretrained(parent)
+        return checkpoint_from(parent, name, change)
+
+    def checkpoint_from(source, name, change):
+        model = AutoModelForCausalLM.from_pretrained(source)
         with torch.no_grad():
             change(model.policy)
         model.train().eval()
@@ -288,6 +291,29 @@ def test_trained_insertion_export_changes_only_preludes_and_keeps_parent_assets(
     with pytest.raises(ValueError, match="checkpoint checksum mismatch"):
         limite.export_trained_insertion(parent, receipt_path, tmp_path / "corrupt-export", chat_template=template)
     from archlab.training.limite_artifacts import verify_trained_insertion
+
+    def train_everything(policy):
+        for parameter in policy.parameters():
+            parameter.add_(.01)
+
+    continued, continued_path = checkpoint_from(tmp_path / "full", "continued", train_everything)
+    with pytest.raises(ValueError, match="full-scope trained insertion"):
+        limite.export_continued_insertion(tmp_path / "export", continued_path, tmp_path / "adapter-continued")
+    tools = limite.export_continued_insertion(tmp_path / "full", continued_path, tmp_path / "tools")
+    assert tools["insertion"] == full["insertion"] and "chat_template" not in tools
+    assert tools["parent_export"]["path"] == str((tmp_path / "full").resolve())
+    assert tools["state_sha256"] == limite._state_digest(continued.policy.state_dict())
+    assert (tmp_path / "tools" / "chat_template.jinja").read_bytes() == (SNAPSHOT / "chat_template.jinja").read_bytes()
+    assert verify_trained_insertion(tmp_path / "tools") == tools
+    same = limite.export_continued_insertion(tmp_path / "full", continued_path, tmp_path / "same", chat_template=template)
+    assert {n for n in same["files"] if same["files"][n] != full["files"].get(n)} == {"model.safetensors"}
+    _, unchanged_full = checkpoint_from(tmp_path / "full", "unchanged-full", lambda policy: None)
+    with pytest.raises(ValueError, match="unchanged"):
+        limite.export_continued_insertion(tmp_path / "full", unchanged_full, tmp_path / "unchanged-continued")
+    atomic_write_json(tmp_path / "full" / "EXPORT.json",
+                      dict(json.loads((tmp_path / "full" / "EXPORT.json").read_text()), note="x"))
+    with pytest.raises(ValueError, match="checksum mismatch|receipt changed"):
+        verify_trained_insertion(tmp_path / "tools")
 
     atomic_write_json(receipt_path, dict(json.loads(receipt_path.read_text()), note="rewritten"))
     with pytest.raises(ValueError, match="checkpoint receipt changed"):

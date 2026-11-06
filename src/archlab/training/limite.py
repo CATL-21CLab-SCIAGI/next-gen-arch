@@ -472,6 +472,51 @@ def export_trained_insertion(parent, checkpoint_receipt, destination, *, chat_te
     insertion = parent_receipt.get("insertion") or {}
     if insertion.get("output_state") != "zero" or insertion.get("trainable_mode") != "adapter":
         raise ValueError("trained preludes require their fresh adapter-scope insertion parent")
+    weights, changed = _trained_weights(parent, receipt_path)
+    if frozen := [name for name in changed if not name.startswith(_PRELUDE_PREFIX)]:
+        raise ValueError(f"adapter training changed backbone tensors: {frozen[:8]}")
+    receipt = _export_trained(parent, parent_receipt, receipt_path, weights, destination,
+                              chat_template=chat_template, trainable_mode=trainable_mode)
+    if receipt["insertion"] != {**insertion, "output_state": "trained", "trainable_mode": trainable_mode}:
+        raise ValueError("trained export changed the insertion geometry")
+    differing = {name for name in set(receipt["files"]) | set(parent_receipt["files"])
+                 if receipt["files"].get(name) != parent_receipt["files"].get(name)}
+    if trainable_mode != "adapter":
+        exported, original = (json.loads((root / "config.json").read_text()) for root in (Path(destination), parent))
+        if exported == {**original, "trainable_mode": trainable_mode}:
+            differing.discard("config.json")
+    if differing != {"model.safetensors"}:
+        raise ValueError(f"trained export assets differ from the parent: {sorted(differing)}")
+    return verify_trained_insertion(destination)
+
+
+def export_continued_insertion(parent, checkpoint_receipt, destination, *, chat_template=None):
+    """Export full-weight training continued from a full-scope trained-insertion export.
+
+    Every tensor may change; the tensor inventory and prelude geometry may not.
+    ``chat_template`` names the template publisher of the export (``None``: the original
+    publisher's). Besides the weights, only those template assets may differ from the parent,
+    e.g. when a math-chat endpoint becomes the parent of tool-calling SFT.
+    """
+    parent, receipt_path = Path(parent), Path(checkpoint_receipt)
+    parent_receipt = verify_trained_insertion(parent)
+    insertion = parent_receipt["insertion"]
+    if insertion.get("trainable_mode") != "full":
+        raise ValueError("continued training requires a full-scope trained insertion parent")
+    weights, _ = _trained_weights(parent, receipt_path)
+    receipt = _export_trained(parent, parent_receipt, receipt_path, weights, destination,
+                              chat_template=chat_template, trainable_mode="full")
+    if receipt["insertion"] != insertion:
+        raise ValueError("continued export changed the insertion geometry")
+    differing = {name for name in set(receipt["files"]) | set(parent_receipt["files"])
+                 if receipt["files"].get(name) != parent_receipt["files"].get(name)}
+    if "model.safetensors" not in differing or not differing <= {"model.safetensors", *_TEMPLATE_ASSETS}:
+        raise ValueError(f"continued export assets differ from the parent: {sorted(differing)}")
+    return verify_trained_insertion(destination)
+
+
+def _trained_weights(parent, receipt_path):
+    """Checksum-verified trained weights with the parent's inventory, and the tensors that changed."""
     files = json.loads(receipt_path.read_text())["files"]
     if "model.safetensors" not in files:
         raise ValueError("checkpoint receipt does not cover model.safetensors")
@@ -489,12 +534,14 @@ def export_trained_insertion(parent, checkpoint_receipt, destination, *, chat_te
                 changed.append(name)
     if not changed:
         raise ValueError("checkpoint leaves the insertion parent unchanged")
-    if frozen := [name for name in changed if not name.startswith(_PRELUDE_PREFIX)]:
-        raise ValueError(f"adapter training changed backbone tensors: {frozen[:8]}")
+    return weights, changed
+
+
+def _export_trained(parent, parent_receipt, receipt_path, weights, destination, *, chat_template, trainable_mode):
     model = LimiteForCausalLM.from_pretrained(parent)
     load_safetensors_model(model, weights, strict=True, device="cpu")
     set_trainable_mode(model.policy, trainable_mode)
-    receipt = export_model(
+    return export_model(
         model.policy, model.config.publisher_snapshot, destination,
         source_checkpoint=dict(path=str(receipt_path.parent.resolve()), receipt=receipt_path.name,
                                receipt_sha256=sha256_file(receipt_path)),
@@ -502,17 +549,6 @@ def export_trained_insertion(parent, checkpoint_receipt, destination, *, chat_te
                            state_sha256=parent_receipt["state_sha256"]),
         chat_template=chat_template, backbone_attention=model.config.backbone_attention,
     )
-    if receipt["insertion"] != {**insertion, "output_state": "trained", "trainable_mode": trainable_mode}:
-        raise ValueError("trained export changed the insertion geometry")
-    differing = {name for name in set(receipt["files"]) | set(parent_receipt["files"])
-                 if receipt["files"].get(name) != parent_receipt["files"].get(name)}
-    if trainable_mode != "adapter":
-        exported, original = (json.loads((root / "config.json").read_text()) for root in (Path(destination), parent))
-        if exported == {**original, "trainable_mode": trainable_mode}:
-            differing.discard("config.json")
-    if differing != {"model.safetensors"}:
-        raise ValueError(f"trained export assets differ from the parent: {sorted(differing)}")
-    return verify_trained_insertion(destination)
 
 
 # Explicit package extension requested by verl's external_lib setting.

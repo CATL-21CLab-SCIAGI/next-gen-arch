@@ -27,7 +27,8 @@ from archlab.artifacts import sha256_file
 class BootstrapParentStage(str, Enum):
     original_base = "original_base"
     package_sft = "package_sft"
-    # Preludes trained by a completed adapter phase over their original-base insertion.
+    # Preludes trained by a completed adapter phase over their original-base insertion, or a
+    # continued full-weight endpoint of such preludes (verify_trained_insertion walks the chain).
     adapter_endpoint = "adapter_endpoint"
 
 

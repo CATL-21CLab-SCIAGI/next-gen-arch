@@ -1,0 +1,53 @@
+# Versioned scientific contract. Successor to variant_scaling_ladders.yaml for agentic RL:
+# its W100 endpoints (100M supervised math tokens, every weight trained) become agents by
+# one shared agentic SFT stage, then matched GRPO on MiMo code repair compares attention
+# variants. The 2026-10-13 conversion bootstrap (docs/LIMITE_AGENTIC_CONVERSION.md) learned
+# the native tool protocol from <=510 public trajectories but solved no MiMo task; this
+# contract changes the teacher data (thousands of solved on-policy MiMo episodes), not the
+# protocol or the deployed agent.
+name: limite-agentic-variants-v1
+question: >-
+  Starting from matched math-SFT endpoints that differ only in their inserted prelude
+  mechanism, which variant becomes the better MiMo code-repair agent after the same agentic
+  SFT, and which learns more verified repairs per GPU-hour and per generated token in GRPO?
+parents:
+  ladder: recipes/sft/limite/variant_scaling_ladders.yaml
+  rung: W100   # warm parents, 100M supervised tokens, every weight trained, best LR per arm
+  arms:
+    normal-nc-warm: {run: W100-normal-nc-warm, val_ce: 0.5512}            # control
+    simplicial-w16-nc-warm: {run: W100-simplicial-w16-nc-warm, val_ce: 0.5504}
+    triadic-e4-nc-warm: {run: W100-triadic-e4-nc-warm, val_ce: 0.5515}
+    gdn-nc-warm: {run: W100-gdn-nc-warm}
+  export: archlab.training.limite.export_continued_insertion
+  # Violetto's text-only template rejects tools; agentic stages use the publisher (base)
+  # template with the native Hermes tool block. Tokenizer and EOS rows are identical.
+  chat_template: paradigma-inc/limite-1b-base@cc612bafcd4acd8445936201694c8c41aea8e479
+agentic_sft:
+  recipe: recipes/sft/limite_teacher_preludes.yaml   # parent_stage=adapter_endpoint, trainable_mode=full
+  data:
+    prepared: limite-agentic-qwen-teachers-128k-20261106
+    producer: results/agentic-data-20261106/prepare_teacher_sft.py
+    teachers: solved (verifier reward 1, completed) Qwen3.5 BashOnlyAgent episodes from RL waves 5-8 and the 4B pilot
+    selection: at most 2 shortest solved episodes per task; one bash call per assistant turn; native Hermes round trip
+    exclusions: every mimo-v2.6-rl-crossdomain-v1 code held-out task (64, including the evaluator's 43) by id and problem hash
+    split: sha256(instance_id) mod 1e4 < 500 -> validation
+    max_length: 131072   # native context; teacher episodes run 40k-130k tokens
+    generation_eos_token_id: 151645
+  schedule:
+    global_batch_rows: 32
+    optimizer: {name: AdamW, betas: [0.9, 0.95], weight_decay: 0, clip: 1.0}
+    lr: {peak: 1.0e-4, warmup: 10% of steps, decay: cosine, final: 1.0e-5}  # the protocol-recovering LR
+    supervised_tokens: two epochs of the prepared train split (fixed once prepared; same for every arm)
+    evaluations: 4
+  seed: 42
+admission_to_rl:
+  # Measured on every arm with the same sampler; failures are recorded, never waived.
+  protocol: first assistant turn of each held-out task emits one parseable bash call or idle EOS (>= 90% of 64)
+  capability: nonzero verifier reward on held-out MiMo code tasks, 4 samples x 53 exported held-out tasks
+  serving: vLLM Limite serving supports normal and simplicial preludes; triadic and gdn arms
+    enter RL only after their recurrent-state serving passes logit parity
+rl:
+  recipe: recipes/rl/limite_code.yaml shape (verl GRPO, colocate, vLLM rollouts, DLC CPU sandboxes)
+  tasks: 783 oracle-qualified mimo-v2.6-rl-crossdomain-v1 code train tasks; each seen <= 2 times per run
+  matched: seed, task order, batch, group size, response budget, steps and sandbox harness across arms
+  metrics: held-out pass@1 every 10 steps, solved tasks per GPU-hour, generated tokens per solved task
