@@ -74,7 +74,7 @@ def test_family_profile_selects_native_tool_format_and_context(tmp_path):
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "archlab_limite"}))
     limite = family(tmp_path)
     assert limite["tool_parser"] == "hermes" and limite["context"] == 131072
-    assert limite["engine"]["enable_prefix_caching"] is False and "enable_thinking" not in limite["invocation"]
+    assert limite["engine"]["enable_prefix_caching"] is True and "enable_thinking" not in limite["invocation"]
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5_text"}))
     assert family(tmp_path)["invocation"] == {"enable_thinking": False}
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))

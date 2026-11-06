@@ -26,7 +26,9 @@ FAMILIES = {
                     engine=dict(language_model_only=True, enable_prefix_caching=True),
                     invocation=dict(enable_thinking=False)),
     "archlab_limite": dict(tool_parser="hermes", context=131072, chat_template_kwargs={},
-                           engine=dict(enable_prefix_caching=False, enforce_eager=True,
+                           # Prefix caching and CUDA graphs stay inside the batch-composition noise floor
+                           # for normal and simplicial preludes (limite-agentic-variants-20261106 serving probe).
+                           engine=dict(enable_prefix_caching=True,
                                        attention_config=dict(backend="FLASH_ATTN", flash_attn_version=2)),
                            register="archlab.training.serving",
                            invocation=dict(family="archlab_limite", tool_parser="hermes")),
