@@ -1,3 +1,4 @@
+import json
 
 import pytest
 
@@ -5,6 +6,7 @@ from archlab.evaluation.agentic_curve import (
     bind_invocation,
     completed_records,
     error_outcome,
+    family,
     paired_difference,
     policy_cap_reason,
     sample_seed,
@@ -66,6 +68,18 @@ def test_only_seed_prefix_expansion_permitted(tmp_path):
         bind_invocation(path, dict(seeds=[101, 211, 307], model_bindings={"sha": "changed"}))
     with pytest.raises(ValueError, match="different"):
         bind_invocation(path, dict(seeds=[211, 101, 307], model_bindings={"sha": "abc"}))
+
+
+def test_family_profile_selects_native_tool_format_and_context(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "archlab_limite"}))
+    limite = family(tmp_path)
+    assert limite["tool_parser"] == "hermes" and limite["context"] == 131072
+    assert limite["engine"]["enable_prefix_caching"] is False and "enable_thinking" not in limite["invocation"]
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5_text"}))
+    assert family(tmp_path)["invocation"] == {"enable_thinking": False}
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    with pytest.raises(ValueError, match="No agentic evaluation profile"):
+        family(tmp_path)
 
 
 def test_paired_comparison_accounts_for_task_dependence():

@@ -19,6 +19,26 @@ from pathlib import Path
 
 SCHEMA = "archlab-agentic-evaluation-v1"
 SEEDS = (101, 211, 307, 401, 503, 601, 701, 809)
+# Per model family: native tool format, context and the qualified serving settings.
+# Limite serving is qualified on FlashAttention-2 metadata with one prefill per request.
+FAMILIES = {
+    "qwen3_5": dict(tool_parser="qwen3_coder", context=262144, chat_template_kwargs={"enable_thinking": False},
+                    engine=dict(language_model_only=True, enable_prefix_caching=True),
+                    invocation=dict(enable_thinking=False)),
+    "archlab_limite": dict(tool_parser="hermes", context=131072, chat_template_kwargs={},
+                           engine=dict(enable_prefix_caching=False,
+                                       attention_config=dict(backend="FLASH_ATTN", flash_attn_version=2)),
+                           invocation=dict(family="archlab_limite", tool_parser="hermes")),
+}
+
+
+def family(model):
+    model_type = json.loads((Path(model) / "config.json").read_text())["model_type"]
+    if model_type.startswith("qwen3_5"):
+        return FAMILIES["qwen3_5"]
+    if model_type not in FAMILIES:
+        raise ValueError(f"No agentic evaluation profile for model type {model_type!r}")
+    return FAMILIES[model_type]
 
 
 def sha(path):
@@ -144,19 +164,38 @@ def policy_cap_reason(reward, turns):
 
 
 class VLLMBackend:
-    """Token transport only; seed receipts demonstrate that the full grid is sampled."""
+    """Token transport only; seed receipts demonstrate that the full grid is sampled.
 
-    def __init__(self, args, output):
+    With several engines each gets one visible GPU (engine cores inherit CUDA_VISIBLE_DEVICES when
+    spawned) and every session stays on one engine, assigned round-robin.
+    """
+
+    def __init__(self, args, output, profile):
         from vllm.engine.arg_utils import AsyncEngineArgs
         from vllm.v1.engine.async_llm import AsyncLLM
-        self.output, self.turns, self.stats, self.sequence = output, {}, {}, 0
-        self.engine = AsyncLLM.from_engine_args(AsyncEngineArgs(
-            model=str(args.model), skip_tokenizer_init=True, dtype="bfloat16", tensor_parallel_size=1,
-            language_model_only=True, max_model_len=262144, max_num_seqs=max(8, args.concurrency),
-            max_num_batched_tokens=32768, enable_chunked_prefill=True,
-            gpu_memory_utilization=args.gpu_memory, enable_prefix_caching=True, seed=0))
+        self.output, self.turns, self.stats, self.sequence, self.route = output, {}, {}, 0, {}
+        devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
+        if args.engines > 1 and len(devices) < args.engines:
+            raise ValueError("Each engine needs its own visible GPU")
+        per_engine = max(8, math.ceil(args.concurrency / args.engines))
+        self.engines = []
+        for index in range(args.engines):
+            if args.engines > 1:
+                os.environ["CUDA_VISIBLE_DEVICES"] = devices[index]
+            self.engines.append(AsyncLLM.from_engine_args(AsyncEngineArgs(
+                model=str(args.model), skip_tokenizer_init=True, dtype="bfloat16", tensor_parallel_size=1,
+                max_model_len=profile["context"], max_num_seqs=per_engine,
+                max_num_batched_tokens=32768, enable_chunked_prefill=True,
+                gpu_memory_utilization=args.gpu_memory, seed=0, **profile["engine"])))
+        if args.engines > 1:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(devices)
+
+    def shutdown(self):
+        for engine in self.engines:
+            engine.shutdown()
 
     def reset(self, seed):
+        self.route[seed] = self.engines[len(self.route) % len(self.engines)]
         self.turns[seed] = 0
         self.stats[seed] = dict(generated_tokens=0, maximum_prompt_tokens=0, generation_calls=0,
                                length_limited_calls=0)
@@ -177,7 +216,7 @@ class VLLMBackend:
         self.sequence += 1
         unique_id = f"eval-{self.sequence}"
         output = None
-        async for result in self.engine.generate(TokensPrompt(prompt_token_ids=prompt_ids),
+        async for result in self.route[base_seed].generate(TokensPrompt(prompt_token_ids=prompt_ids),
                                                  SamplingParams(**params), request_id=unique_id):
             output = result
         if output is None or len(output.outputs) != 1:
@@ -247,12 +286,14 @@ async def evaluate(args):
     assets = [path for pattern in ("*.index.json", "tokenizer*", "chat_template*", "generation_config.json", "*RECEIPT*.json")
               for path in args.model.glob(pattern) if path.is_file()]
     model_bindings = {path.name: {"sha256": sha(path), "bytes": path.stat().st_size} for path in weight_files + assets}
+    profile = family(args.model)
     invocation = dict(schema=SCHEMA, label=args.label, model=str(args.model.resolve()), model_bindings=model_bindings,
                       model_config_sha256=sha(args.model / "config.json"), manifest_sha256=sha(args.manifest),
-                      tasks=tasks, seeds=seeds, context_tokens=262144, initial_prompt_tokens=8192,
+                      tasks=tasks, seeds=seeds, context_tokens=profile["context"], initial_prompt_tokens=8192,
                       session_seconds=7200, harness_bindings=bindings, source_snapshot=str(args.source.resolve()),
                       evaluator_sha256=sha(__file__), temperature=1.0, top_p=1.0, top_k=-1,
-                      enable_thinking=False, seed_algorithm="sha256(task NUL sample) then sha256(sample_seed NUL turn), first32bits",
+                      **profile["invocation"],
+                      seed_algorithm="sha256(task NUL sample) then sha256(sample_seed NUL turn), first32bits",
                       scope="preliminary-subset" if len(tasks) < 48 or len(seeds) < 8 else "heldout-fixed-grid",
                       training_axes=json.loads(args.training_axes.read_text()) if args.training_axes else {})
     invocation_path = output / "invocation.json"
@@ -265,10 +306,11 @@ async def evaluate(args):
         if name in os.environ:
             env[name] = os.environ[name]
     os.environ.update(env)
-    backend = VLLMBackend(args, output)
+    backend = VLLMBackend(args, output, profile)
     gateway = _GatewayActor(GatewayActorConfig(
-        tokenizer=tokenizer, generation_eos_token_id=eos, tool_parser_name="qwen3_coder", rollout_backend="vllm",
-        apply_chat_template_kwargs={"enable_thinking": False}, prompt_length=8192, response_length=253952), backend)
+        tokenizer=tokenizer, generation_eos_token_id=eos, tool_parser_name=profile["tool_parser"],
+        rollout_backend="vllm", apply_chat_template_kwargs=profile["chat_template_kwargs"],
+        prompt_length=8192, response_length=profile["context"] - 8192), backend)
     ray.init(address="local", num_cpus=max(4, math.ceil(args.concurrency / 4) + 2), num_gpus=0,
              include_dashboard=False, runtime_env={"env_vars": dict(env, CUDA_VISIBLE_DEVICES="")})
     await gateway.start()
@@ -325,7 +367,7 @@ async def evaluate(args):
                 summary = summarize(records, tasks, seeds)
                 summary.update(label=args.label, manifest_sha256=sha(args.manifest),
                                invocation_sha256=sha(invocation_path), wall_seconds=time.monotonic() - started,
-                               gpu_count=1, training_axes=invocation["training_axes"])
+                               gpu_count=args.engines, training_axes=invocation["training_axes"])
                 atomic_json(output / "summary.json", summary)
             print(json.dumps({key: record.get(key) for key in ("task", "seed", "status", "reward", "termination", "seconds")}), flush=True)
 
@@ -341,7 +383,7 @@ async def evaluate(args):
     finally:
         await gateway.shutdown()
         ray.shutdown()
-        backend.engine.shutdown()
+        backend.shutdown()
     return 0 if summarize(records, tasks, seeds)["complete"] else 2
 
 
@@ -355,8 +397,10 @@ def main():
     parser.add_argument("--concurrency", type=int, default=16)
     parser.add_argument("--gpu-memory", type=float, default=0.85)
     parser.add_argument("--attempts", type=int, default=3)
+    parser.add_argument("--engines", type=int, default=1, help="vLLM engines, one visible GPU each")
     args = parser.parse_args()
-    if not 1 <= args.concurrency <= 32 or not 0 < args.gpu_memory < 1 or args.attempts < 1:
+    if (not 1 <= args.engines <= 8 or not 1 <= args.concurrency <= 32 * args.engines
+            or not 0 < args.gpu_memory < 1 or args.attempts < 1):
         parser.error("Invalid resource/retry bound")
     paths = [str(args.source / part) for part in ("src", "third_party/verl", "third_party/verl/third_party/uni_agent",
                                                  "third_party/verl/third_party/mimoagent-osr/src")]
