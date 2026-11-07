@@ -43,7 +43,7 @@ def _layout(lengths):
 
 
 @pytest.mark.parametrize("heads,kv_heads", [(4, 2), (10, 2), (8, 1)])
-@pytest.mark.parametrize("short_window,long_window", [(16, 64), (16, 10_000), (4, 4)])
+@pytest.mark.parametrize("short_window,long_window", [(16, 64), (16, 10_000), (4, 4), (24, 64), (32, 10_000)])
 @pytest.mark.parametrize("hnd", [False, True])
 def test_matches_oracle_for_prefill_and_decode_tokens(heads, kv_heads, short_window, long_window, hnd):
     from archlab.architectures.tilelang_paged import tilelang_paged_attention
@@ -145,7 +145,7 @@ def test_long_axis_splits_agree():
 
 
 @pytest.mark.parametrize("heads,kv_heads", [(4, 2), (10, 2), (8, 1)])
-@pytest.mark.parametrize("short_window,long_window", [(16, 64), (16, 10_000), (4, 4), (8, 37)])
+@pytest.mark.parametrize("short_window,long_window", [(16, 64), (16, 10_000), (4, 4), (8, 37), (24, 64), (32, 10_000)])
 def test_tiled_prefill_matches_oracle_and_split_kernel(heads, kv_heads, short_window, long_window):
     """Packed requests: full prefill, chunked prefill over a cached prefix, a decode step, an empty request."""
     from archlab.architectures.tilelang_paged import tilelang_paged_attention

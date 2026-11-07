@@ -22,18 +22,18 @@ import tilelang
 import tilelang.language as T
 import torch
 
-_SHORT_SLOTS = 16
+_ROWS = 128  # virtual rows per prefill program; one warp per 16 rows
+_MAX_SHORT_WINDOW = 64
 
 
 @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
-def _paged_kernel(HQ, HK, D, W1, W2, BS, scale, GP, BN=64, threads=32, stages=1):
+def _paged_kernel(HQ, HK, D, W1, W2, BS, scale, GP, S=16, BN=64, threads=32, stages=1):
     """Decode form: one program per (token, KV head, long-axis split).
 
     The G = HQ / HK query heads sharing a KV head are packed as GP >= G groups of 16
     virtual rows, so every gathered K2/V2 tile serves all of them (rows of padding heads
     are masked and never written).
     """
-    S = _SHORT_SLOTS
     G = HQ // HK
     M = GP * S
     tokens, splits, requests, short_width, long_width = T.dynamic(
@@ -135,7 +135,7 @@ def _paged_kernel(HQ, HK, D, W1, W2, BS, scale, GP, BN=64, threads=32, stages=1)
 
 
 @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
-def _paged_tiled_kernel(HQ, HK, D, W1, W2, BS, scale, BQ=4, BN=64, threads=128, stages=1):
+def _paged_tiled_kernel(HQ, HK, D, W1, W2, BS, scale, BQ=4, S=16, BN=64, threads=128, stages=1):
     """Prefill form: one program per BQ consecutive query tokens of one request.
 
     The BQ x 16 virtual-query rows share each gathered K2/V2 tile (as in the dense training kernel).
@@ -143,7 +143,6 @@ def _paged_tiled_kernel(HQ, HK, D, W1, W2, BS, scale, BQ=4, BN=64, threads=128, 
     past the last tile have no rows. Queries of a request are consecutive tokens with consecutive
     positions, as vLLM packs them.
     """
-    S = _SHORT_SLOTS
     M = BQ * S
     tokens, programs, requests, bounds, short_width, long_width = T.dynamic(
         "tokens, programs, requests, bounds, short_width, long_width")
@@ -248,16 +247,25 @@ def _paged_tiled_kernel(HQ, HK, D, W1, W2, BS, scale, BQ=4, BN=64, threads=128, 
     return main
 
 
-def _decode_tile(group):
+def _slots(short_window):
+    """Virtual rows per query and head: the short window rounded up to whole 16-row warp tiles."""
+    return 16 * -(-short_window // 16)
+
+
+def _decode_tile(group, short_window):
     """Head-packing for the split kernel: 16 rows per warp keeps the FP32 accumulators in registers."""
-    padded = 1 << max(group - 1, 0).bit_length()
-    return dict(GP=padded, threads=32 * padded, **_DECODE)
+    padded, slots = 1 << max(group - 1, 0).bit_length(), _slots(short_window)
+    return dict(GP=padded, S=slots, threads=2 * padded * slots, **_DECODE)
+
+
+def _tile_queries(short_window):
+    return max(1, _ROWS // _slots(short_window))
 
 
 _DECODE = dict(BN=64, stages=1)
-# Swept on B300 at Limite geometry (10/2 heads, D=128): 2.6x faster than BQ=4/128 threads; BQ=16 is no better.
-_TILE_QUERIES = 8
-_TILE = dict(BN=64, threads=256, stages=2)
+# Swept on B300 at Limite geometry (10/2 heads, D=128, W1=16): 128 rows on 8 warps (BQ=8) is 2.6x faster
+# than BQ=4 on 4 warps; 256 rows is no better.
+_TILE = dict(BN=64, stages=2)
 
 
 def _tiled_paged_attention(q, short_cache, long_cache, block_table, long_block_table, token_pos,
@@ -265,15 +273,17 @@ def _tiled_paged_attention(q, short_cache, long_cache, block_table, long_block_t
     tokens, heads, dim = q.shape
     requests = min(query_start_loc.numel() - 1, block_table.shape[0])
     block_table, long_block_table = block_table[:requests], long_block_table[:requests]
+    queries, slots = _tile_queries(short_window), _slots(short_window)
     tiles = torch.zeros(requests + 1, device=q.device, dtype=torch.int32)
     lengths = query_start_loc[1:requests + 1] - query_start_loc[:requests]
-    tiles[1:] = torch.cumsum((lengths + _TILE_QUERIES - 1) // _TILE_QUERIES, 0)
+    tiles[1:] = torch.cumsum((lengths + queries - 1) // queries, 0)
     starts = query_start_loc[:requests + 1].contiguous()
     # Host-known upper bound on the tile count: no device synchronization, fixed per captured shape.
-    grid = torch.empty(-(-tokens // _TILE_QUERIES) + requests, device=q.device, dtype=torch.int32)
+    grid = torch.empty(-(-tokens // queries) + requests, device=q.device, dtype=torch.int32)
     out = torch.empty((tokens, heads, dim), device=q.device, dtype=torch.float32)
     kernel = _paged_tiled_kernel(heads, short_cache.shape[3], dim, int(short_window), int(long_window),
-                                 int(short_cache.shape[2]), float(scaling), BQ=_TILE_QUERIES, **_TILE)
+                                 int(short_cache.shape[2]), float(scaling), BQ=queries, S=slots,
+                                 threads=2 * queries * slots, **_TILE)
     kernel(q, short_cache[0], short_cache[1], long_cache[0], long_cache[1], block_table, long_block_table,
            starts, tiles, token_pos, grid, out)
     return out
@@ -289,7 +299,7 @@ def tilelang_paged_attention(q, short_cache, long_cache, block_table, token_seq,
     ``long_block_table`` is given, also the long cache. Block zero may be the
     null block; every slot inside a token's windows must be allocated.
     With ``query_start_loc`` (vLLM's packed request offsets) a batch holding at
-    least ``_TILE_QUERIES`` tokens per request uses the query-tiled prefill kernel;
+    least one query tile of tokens per request uses the query-tiled prefill kernel;
     decode-dominated batches keep the long-axis split kernel.
     """
     long_block_table = block_table if long_block_table is None else long_block_table
@@ -300,8 +310,8 @@ def tilelang_paged_attention(q, short_cache, long_cache, block_table, token_seq,
             or short_cache.shape[2:] != long_cache.shape[2:]
             or short_cache.shape[-1] != dim or heads % short_cache.shape[3] or dim not in (64, 128)):
         raise ValueError("incompatible paged simplicial geometry")
-    if not 1 <= short_window <= min(long_window, _SHORT_SLOTS):
-        raise ValueError("require 1 <= short_window <= min(long_window, 16)")
+    if not 1 <= short_window <= min(long_window, _MAX_SHORT_WINDOW):
+        raise ValueError(f"require 1 <= short_window <= min(long_window, {_MAX_SHORT_WINDOW})")
     if not math.isfinite(scaling) or scaling <= 0:
         raise ValueError("invalid attention scale")
     tables = (block_table, long_block_table, token_seq, token_pos)
@@ -316,7 +326,7 @@ def tilelang_paged_attention(q, short_cache, long_cache, block_table, token_seq,
         raise ValueError("queries and metadata must be contiguous; cache rows must be dense")
     if tokens == 0:
         return torch.empty((0, heads, dim), device=q.device, dtype=torch.float32)
-    if query_start_loc is not None and tokens >= _TILE_QUERIES * (query_start_loc.numel() - 1):
+    if query_start_loc is not None and tokens >= _tile_queries(short_window) * (query_start_loc.numel() - 1):
         if query_start_loc.dtype != torch.int32 or query_start_loc.device != q.device or splits is not None:
             raise ValueError("tiled prefill takes int32 query_start_loc on the query device and no splits")
         return _tiled_paged_attention(q, short_cache, long_cache, block_table, long_block_table, token_pos,
@@ -333,7 +343,7 @@ def tilelang_paged_attention(q, short_cache, long_cache, block_table, token_seq,
     sums = torch.empty((splits, tokens, heads), device=q.device, dtype=torch.float32)
     group = heads // kv_heads
     kernel = _paged_kernel(heads, kv_heads, dim, int(short_window), int(long_window), int(block_size), float(scaling),
-                           **_decode_tile(group))
+                           **_decode_tile(group, short_window))
     kernel(q, short_cache[0], short_cache[1], long_cache[0], long_cache[1], block_table, long_block_table,
            token_seq, token_pos, partial, maxima, sums)
     # Empty splits carry max=-inf and sum=0; every token's own key keeps one split nonempty.
